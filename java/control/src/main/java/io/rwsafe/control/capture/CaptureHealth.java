@@ -10,7 +10,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * The Health screen's capture components (SR-HOST-2: the breaker's state and what it skipped): the capture store (mode,
- * key, stored records and the counts of every reason content was not stored) and the watermark. Counts only.
+ * key, records, chunks, bytes against MAX_STORE_BYTES, what a rotation has not re-wrapped yet, and the counts of every
+ * reason content was not stored) and the watermark. Counts only.
  */
 @Component
 public class CaptureHealth {
@@ -18,12 +19,17 @@ public class CaptureHealth {
     private final CaptureSink sink;
     private final CaptureWatermark watermark;
     private final CaptureKeyring keys;
+    private final ChunkFiles files;
+    private final StoreCap cap;
     private final Database database;
 
-    public CaptureHealth(CaptureSink sink, CaptureWatermark watermark, CaptureKeyring keys, Database database) {
+    public CaptureHealth(CaptureSink sink, CaptureWatermark watermark, CaptureKeyring keys, ChunkFiles files,
+                         StoreCap cap, Database database) {
         this.sink = sink;
         this.watermark = watermark;
         this.keys = keys;
+        this.files = files;
+        this.cap = cap;
         this.database = database;
     }
 
@@ -33,13 +39,15 @@ public class CaptureHealth {
 
     private ComponentView store(boolean databaseUp) {
         Map<CaptureSink.Outcome, Long> c = sink.counts();
+        long other = c.entrySet().stream().filter(e -> switch (e.getKey()) {
+            case STORED, NO_ACKNOWLEDGEMENT, WATERMARK, DETECTOR_HIT, CAPTURE_OFF -> false;
+            default -> true;
+        }).mapToLong(Map.Entry::getValue).sum();
         String skipped = "since start: stored " + c.get(CaptureSink.Outcome.STORED)
             + ", without acknowledgement " + c.get(CaptureSink.Outcome.NO_ACKNOWLEDGEMENT)
             + ", above the watermark " + c.get(CaptureSink.Outcome.WATERMARK)
             + ", detector hit refused " + c.get(CaptureSink.Outcome.DETECTOR_HIT)
-            + ", other " + (c.get(CaptureSink.Outcome.NO_USER) + c.get(CaptureSink.Outcome.NOT_REDACT_VERDICT)
-                + c.get(CaptureSink.Outcome.MASKING_UNAVAILABLE) + c.get(CaptureSink.Outcome.KEY_UNAVAILABLE)
-                + c.get(CaptureSink.Outcome.FAILED));
+            + ", evicted for the cap " + cap.evicted() + ", other " + other;
         if (!sink.enabled()) {
             return new ComponentView("capture", "UNKNOWN", "capture is off: metadata and verdicts only");
         }
@@ -47,14 +55,23 @@ public class CaptureHealth {
             return new ComponentView("capture", "DOWN", keys.unavailableReason() + ": content is not stored; "
                 + skipped);
         }
-        String totals = "";
-        if (databaseUp) {
-            CaptureStore.Totals t = database.captures().totals();
-            totals = t.records() + " records (" + t.ciphertextBytes() + " bytes) under key " + keys.activeId().orElse("")
-                + "; ";
+        if (!files.available()) {
+            return new ComponentView("capture", "DOWN", "capture store volume not writable: content is not stored; "
+                + skipped);
         }
-        boolean degraded = c.get(CaptureSink.Outcome.DETECTOR_HIT) > 0 || c.get(CaptureSink.Outcome.FAILED) > 0;
-        return new ComponentView("capture", degraded ? "DEGRADED" : "UP", "redacted mode; " + totals + skipped);
+        String totals = "";
+        boolean rotationPending = false;
+        if (databaseUp) {
+            CaptureStore.Totals t = database.captures().totals(keys.activeId().orElse(null));
+            rotationPending = t.recordsUnderOtherKeys() + t.chunksUnderOtherKeys() > 0;
+            totals = t.records() + " records, " + t.chunks() + " chunks, " + t.storedBytes() + " of " + cap.maxBytes()
+                + " bytes, " + t.heldRecords() + " on hold; under older keys: " + t.recordsUnderOtherKeys()
+                + " records and " + t.chunksUnderOtherKeys() + " chunks; ";
+        }
+        boolean degraded = c.get(CaptureSink.Outcome.DETECTOR_HIT) > 0 || c.get(CaptureSink.Outcome.FAILED) > 0
+            || c.get(CaptureSink.Outcome.STORE_FULL) > 0 || rotationPending;
+        return new ComponentView("capture", degraded ? "DEGRADED" : "UP", "redacted mode, active key "
+            + keys.activeId().orElse("") + "; " + totals + skipped);
     }
 
     private ComponentView watermark() {

@@ -13,10 +13,17 @@ import org.springframework.stereotype.Component;
 @Component
 public class DiskUsageProbe {
 
-    /** The used fraction {@code 0..1} of the filesystem holding {@code path}, or NaN. */
+    /** The used fraction {@code 0..1} of the filesystem holding {@code path} (its nearest existing ancestor), or NaN. */
     public double usedFraction(Path path) {
+        Path p = path == null ? null : path.toAbsolutePath();
+        while (p != null && !Files.exists(p)) {
+            p = p.getParent();
+        }
+        if (p == null) {
+            return Double.NaN;
+        }
         try {
-            FileStore store = Files.getFileStore(path);
+            FileStore store = Files.getFileStore(p);
             long total = store.getTotalSpace();
             return total <= 0 ? Double.NaN : 1.0 - (double) store.getUsableSpace() / total;
         } catch (IOException | SecurityException e) {

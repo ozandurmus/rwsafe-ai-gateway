@@ -27,11 +27,11 @@ public final class CaptureWatermark {
     private final DiskUsageProbe probe;
     private final Clock clock;
     private final WatermarkBreaker breaker = new WatermarkBreaker();
-    private volatile WatermarkBreaker.State lastLogged;
+    private volatile String lastLogged;
 
     @Autowired
     public CaptureWatermark(ControlProperties properties, DiskUsageProbe probe) {
-        this(properties.capture().watermarkPaths(), probe, Clock.systemUTC());
+        this(properties.capture().watchedPaths(), probe, Clock.systemUTC());
     }
 
     CaptureWatermark(List<Path> paths, DiskUsageProbe probe, Clock clock) {
@@ -56,10 +56,16 @@ public final class CaptureWatermark {
         Instant now = clock.instant();
         breaker.record(highest, now);
         WatermarkBreaker.State state = breaker.state(now);
-        if (state != lastLogged) {
-            lastLogged = state;
-            // A state and a percentage only: no path, no host.
-            LOG.info("capture watermark: {} ({} used)", state, percent(breaker.lastUsed()));
+        boolean stale = breaker.stale(now);
+        String logged = state + (stale ? "/stale" : "");
+        if (!logged.equals(lastLogged)) {
+            lastLogged = logged;
+            // A state and a percentage only: no path, no host. A stale breaker has no current reading (D-06).
+            if (stale) {
+                LOG.warn("capture watermark: {} (no disk reading for 5 minutes: content is not persisted)", state);
+            } else {
+                LOG.info("capture watermark: {} ({} used)", state, percent(breaker.lastUsed()));
+            }
         }
     }
 

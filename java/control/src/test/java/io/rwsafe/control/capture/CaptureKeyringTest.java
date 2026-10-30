@@ -3,6 +3,7 @@ package io.rwsafe.control.capture;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -12,11 +13,13 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.Set;
-import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** Envelope encryption under the capture key (AGENTS.md 4.13): sealed, bound to its record, shredded by rotation. */
+/**
+ * The capture key ring (AGENTS.md 4.13): wrapping bound to the key id and purpose, keyed addresses, planned re-wrap
+ * without opening content, emergency shredding by the Secret's {@code shredded} list, and an unusable Secret refused.
+ */
 class CaptureKeyringTest {
 
     @TempDir
@@ -30,44 +33,48 @@ class CaptureKeyringTest {
     }
 
     @Test
-    void sealsAndOpensBoundToTheRecord() throws Exception {
+    void wrapsBoundToKeyAndPurpose() throws Exception {
         writeKey(dir, "cap-2026a");
         CaptureKeyring ring = new CaptureKeyring(dir);
         assertTrue(ring.available());
-        byte[] plain = "synthetic: customer [REDACTED:TCKN] asks about fees".getBytes(StandardCharsets.UTF_8);
-        byte[] aad = CaptureSink.aad(UUID.randomUUID());
-        CaptureKeyring.Sealed s = ring.seal(plain, aad);
-        assertEquals("cap-2026a", s.keyId());
-        assertEquals(60, s.wrappedKey().length);
-        assertFalse(new String(s.ciphertext(), StandardCharsets.ISO_8859_1).contains("customer"));
-        assertArrayEquals(plain, ring.open(s.keyId(), s.wrappedKey(), s.nonce(), s.ciphertext(), aad).orElseThrow());
-        assertTrue(ring.open(s.keyId(), s.wrappedKey(), s.nonce(), s.ciphertext(), CaptureSink.aad(UUID.randomUUID()))
-            .isEmpty(), "a ciphertext moved to another event does not open");
-        byte[] tampered = s.ciphertext().clone();
-        tampered[0] ^= 1;
-        assertTrue(ring.open(s.keyId(), s.wrappedKey(), s.nonce(), tampered, aad).isEmpty());
-        assertFalse(s.toString().contains("customer"));
+        byte[] dek = CaptureKeyring.newKey();
+        CaptureKeyring.Wrapped w = ring.wrap(dek, "chunk|aa");
+        assertEquals("cap-2026a", w.keyId());
+        assertEquals(CaptureKeyring.WRAPPED_BYTES, w.wrapped().length);
+        assertArrayEquals(dek, ring.unwrap("cap-2026a", w.wrapped(), "chunk|aa").orElseThrow());
+        assertTrue(ring.unwrap("cap-2026a", w.wrapped(), "chunk|bb").isEmpty(), "another purpose does not open");
+        byte[] tampered = w.wrapped().clone();
+        tampered[20] ^= 1;
+        assertTrue(ring.unwrap("cap-2026a", tampered, "chunk|aa").isEmpty());
+        assertFalse(w.toString().contains(new String(dek, StandardCharsets.ISO_8859_1)));
+        byte[] text = "synthetic chunk".getBytes(StandardCharsets.UTF_8);
+        assertEquals(ring.address(text, 0, text.length), ring.address(text, 0, text.length));
+        assertEquals(64, ring.address(text, 0, text.length).length());
     }
 
     @Test
-    void rotationKeepsOldRecordsUntilTheOldKeyIsRemoved() throws Exception {
+    void plannedRotationRewrapsAndTheShreddedListDestroysAKey() throws Exception {
         writeKey(dir, "cap-2026a");
         CaptureKeyring ring = new CaptureKeyring(dir);
-        byte[] aad = CaptureSink.aad(UUID.randomUUID());
-        CaptureKeyring.Sealed old = ring.seal(new byte[] {1, 2, 3}, aad);
+        byte[] dek = CaptureKeyring.newKey();
+        CaptureKeyring.Wrapped old = ring.wrap(dek, "record|x");
+        byte[] text = "synthetic chunk".getBytes(StandardCharsets.UTF_8);
+        String oldAddress = ring.address(text, 0, text.length);
 
         writeKey(dir, "cap-2026b");
         Files.writeString(dir.resolve("active"), "cap-2026b\n");
         ring.reload();
         assertEquals("cap-2026b", ring.activeId().orElseThrow());
-        assertEquals(Set.of("cap-2026a", "cap-2026b"), ring.ids());
-        assertTrue(ring.open(old.keyId(), old.wrappedKey(), old.nonce(), old.ciphertext(), aad).isPresent());
+        assertNotEquals(oldAddress, ring.address(text, 0, text.length), "addresses are keyed per capture key");
+        CaptureKeyring.Wrapped moved = ring.rewrap(old.keyId(), old.wrapped(), "record|x").orElseThrow();
+        assertEquals("cap-2026b", moved.keyId());
+        assertArrayEquals(dek, ring.unwrap("cap-2026b", moved.wrapped(), "record|x").orElseThrow());
 
-        Files.delete(dir.resolve("cap-2026a.key"));
+        Files.writeString(dir.resolve("shredded"), "cap-2026a\n");
         ring.reload();
-        assertFalse(ring.has("cap-2026a"));
-        assertTrue(ring.open(old.keyId(), old.wrappedKey(), old.nonce(), old.ciphertext(), aad).isEmpty(),
-            "crypto-shredded");
+        assertEquals(Set.of("cap-2026a"), ring.shredded());
+        assertFalse(ring.has("cap-2026a"), "a listed key is never used, even while its file is mounted");
+        assertTrue(ring.unwrap(old.keyId(), old.wrapped(), "record|x").isEmpty());
     }
 
     @Test
@@ -80,10 +87,12 @@ class CaptureKeyringTest {
         writeKey(dir, "cap-b");
         CaptureKeyring two = new CaptureKeyring(dir);
         assertFalse(two.available(), "two keys and no active file");
-        assertThrows(IllegalStateException.class, () -> two.seal(new byte[1], new byte[1]));
+        assertThrows(IllegalStateException.class, () -> two.wrap(new byte[32], "x"));
         Files.writeString(dir.resolve("active"), "cap-c");
         assertFalse(new CaptureKeyring(dir).available(), "the active key is not mounted");
         Files.writeString(dir.resolve("active"), "cap-b");
         assertTrue(new CaptureKeyring(dir).available());
+        Files.writeString(dir.resolve("shredded"), "cap-b");
+        assertFalse(new CaptureKeyring(dir).available(), "the active key is listed as shredded");
     }
 }

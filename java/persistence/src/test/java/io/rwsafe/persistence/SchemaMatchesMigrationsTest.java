@@ -51,25 +51,34 @@ class SchemaMatchesMigrationsTest {
         }
     }
 
-    /** V6, AGENTS.md 4.13: the capture table's only text columns are a pseudonym, a key id and a rule-set version. */
+    /**
+     * V6, ADR-009 "bodies in PostgreSQL: rejected": the capture tables hold no content column at all; their only text
+     * columns are a pseudonym, key ids, a keyed address and a rule-set version, their only binary columns fixed-size
+     * wrapped keys and a MAC. The chunk bytes live on the capture volume.
+     */
     @Test
-    void capturedContentIsStoredAsCiphertextOnly() throws Exception {
+    void noCaptureTableHoldsContent() throws Exception {
         DataSource ds = TestDatabase.fresh();
         Database.migrateAndOpen(ds);
         java.util.Set<String> text = new java.util.TreeSet<>();
+        java.util.Set<String> binary = new java.util.TreeSet<>();
         try (Connection c = ds.getConnection(); PreparedStatement q = c.prepareStatement(
-            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'redacted_capture'");
+            "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_name IN "
+                + "('capture_record', 'capture_chunk', 'capture_manifest', 'capture_store_usage')");
              ResultSet r = q.executeQuery()) {
             while (r.next()) {
-                String type = r.getString(2);
+                String name = r.getString(1) + "." + r.getString(2);
+                String type = r.getString(3);
                 if (type.equals("text") || type.contains("character")) {
-                    text.add(r.getString(1));
-                }
-                if (r.getString(1).equals("ciphertext")) {
-                    assertEquals("bytea", type);
+                    text.add(name);
+                } else if (type.equals("bytea")) {
+                    binary.add(name);
                 }
             }
         }
-        assertEquals(java.util.Set.of("key_id", "mask_rule_set", "user_pseudonym"), text);
+        assertEquals(java.util.Set.of("capture_chunk.chunk_digest", "capture_chunk.key_id", "capture_record.key_id",
+            "capture_record.mask_rule_set", "capture_record.user_pseudonym"), text);
+        assertEquals(java.util.Set.of("capture_chunk.wrapped_key", "capture_record.manifest_mac",
+            "capture_record.wrapped_key"), binary);
     }
 }

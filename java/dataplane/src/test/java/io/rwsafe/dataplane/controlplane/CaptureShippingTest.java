@@ -137,6 +137,26 @@ class CaptureShippingTest {
         assertTrue(String.join("", received).contains(MARK));
     }
 
+    /** PR 25 review D-05: without a spool nothing is counted stripped; a held chunk ships with its content, counted. */
+    @Test
+    void withoutASpoolAHeldChunkShipsItsContentAndNothingIsCountedStripped() throws Exception {
+        up.set(false);
+        BoundedEventQueue queue = new BoundedEventQueue(1_000);
+        EventShipper shipper = new EventShipper(queue, uri(), null, 0, EventShipper.SEGMENT_BYTES, Duration.ofMillis(5),
+            () -> Double.NaN);
+        Thread t = new Thread(shipper);
+        t.start();
+        queue.emit(event(MARK));
+        Thread.sleep(100);
+        up.set(true);
+        waitFor(() -> shipper.shipped() == 1);
+        shipper.stop();
+        t.join(10_000);
+        assertEquals(0, shipper.captureStripped());
+        assertEquals(1, shipper.captureShipped());
+        assertTrue(String.join("", received).contains(MARK));
+    }
+
     private static void waitFor(BooleanSupplier condition) throws InterruptedException {
         long deadline = System.currentTimeMillis() + 10_000;
         while (!condition.getAsBoolean()) {

@@ -241,30 +241,38 @@ public final class EventShipper implements Runnable {
                 if (!toSpool && post(chunk.json())) {
                     shipped.addAndGet(n);
                     captureShipped.addAndGet(chunk.captures());
-                } else if (spoolAppend(spoolLine(chunk))) {
+                } else if (spoolChunk(chunk)) {
                     if (!toSpool) {
                         // The control plane just refused: wait the back-off before replaying what was spooled (N-01).
                         nextReplayAtNanos = System.nanoTime() + Math.max(retryPause.toNanos() * 5, 1_000_000L);
                         toSpool = true;
                     }
-                } else {
-                    hold(chunk.json(), n);
+                } else if (hold(chunk.json(), n)) {
+                    captureShipped.addAndGet(chunk.captures());
                 }
             }
         }
     }
 
     /**
-     * The line a chunk is spooled as. Redacted content is persisted in the spool only while the spool's filesystem is
-     * below the Q-3 redacted watermark (SR-HOST-2); above it the events are spooled without their content, which is
-     * counted in {@link #captureStripped()}, and metadata and verdicts keep their path.
+     * Spools a chunk. Redacted content is persisted in the spool only while the spool's filesystem is below the Q-3
+     * redacted watermark (SR-HOST-2); above it the events are spooled without their content, and only what was actually
+     * written stripped is counted in {@link #captureStripped()} (PR 25 review D-05); metadata and verdicts keep their
+     * path. False when there is no spool or no room in it (the chunk is then held, content included).
      */
-    private String spoolLine(VerdictEventJson.Chunk chunk) {
-        if (chunk.captures() == 0 || spoolAllowsRedacted()) {
-            return chunk.json();
+    private boolean spoolChunk(VerdictEventJson.Chunk chunk) {
+        if (spoolDir == null) {
+            return false;
         }
-        captureStripped.addAndGet(chunk.captures());
-        return VerdictEventJson.array(chunk.events().stream().map(VerdictEvent::withoutCapture).toList());
+        if (chunk.captures() == 0 || spoolAllowsRedacted()) {
+            return spoolAppend(chunk.json());
+        }
+        boolean written = spoolAppend(
+            VerdictEventJson.array(chunk.events().stream().map(VerdictEvent::withoutCapture).toList()));
+        if (written) {
+            captureStripped.addAndGet(chunk.captures());
+        }
+        return written;
     }
 
     /** Reads the spool filesystem at most every {@link #WATERMARK_INTERVAL}; false until a reading allows it. */
@@ -308,17 +316,21 @@ public final class EventShipper implements Runnable {
         return empty;
     }
 
-    /** Spool full or absent: keep this batch until the control plane takes it; the queue fills behind it. */
-    private void hold(String json, int size) {
+    /**
+     * Spool full or absent: keep this batch until the control plane takes it; the queue fills behind it. True when it was
+     * shipped, false when it was counted lost at shutdown.
+     */
+    private boolean hold(String json, int size) {
         int attempts = 0;
         while (!post(json)) {
             if (!running && (++attempts >= SHUTDOWN_ATTEMPTS || flushBoundPassed())) {
                 lost.addAndGet(size);
-                return;
+                return false;
             }
             pause();
         }
         shipped.addAndGet(size);
+        return true;
     }
 
     private boolean post(String json) {

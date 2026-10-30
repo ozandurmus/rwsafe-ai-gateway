@@ -99,5 +99,7 @@ rwsafe:
   capture:
     mode: ${RWSAFE_CAPTURE_MODE:off}
     key-dir: ${RWSAFE_CAPTURE_KEY_DIR:/run/secrets/rwsafe-capture-key}
+    store-dir: ${RWSAFE_CAPTURE_STORE_DIR:/var/lib/rwsafe/capture}
+    max-store-bytes: ${RWSAFE_CAPTURE_MAX_STORE_BYTES:85899345920}
     retention: P90D
-    watermark-paths: ${RWSAFE_CAPTURE_WATERMARK_PATHS:${java.io.tmpdir}}
+    watermark-paths: ${RWSAFE_CAPTURE_WATERMARK_PATHS:}

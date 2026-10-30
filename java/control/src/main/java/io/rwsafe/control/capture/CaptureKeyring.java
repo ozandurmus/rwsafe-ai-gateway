@@ -6,15 +6,19 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import javax.crypto.Cipher;
+import javax.crypto.Mac;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import org.slf4j.Logger;
@@ -25,15 +29,15 @@ import org.springframework.stereotype.Component;
 
 /**
  * The capture keys (ADR-009 §2, AGENTS.md 4.13): rwsafe's own Secret, separate from the privacy HMAC key and the snapshot
- * signing key. Envelope encryption: every record gets a fresh 256-bit data key that encrypts its text with AES-GCM; the
- * data key is wrapped with AES-GCM under the active capture key; both bind the event id as associated data, so a
- * ciphertext cannot be moved to another record. Only key ids reach the database or a log.
+ * signing key. Every chunk and every record has a fresh 256-bit key of its own; the capture key only wraps those keys
+ * (AES-GCM, the key id and the wrapped key's purpose as associated data) and derives the keyed chunk address. Only key
+ * ids reach the database or a log.
  *
- * <p>The Secret holds one {@code <key id>.key} file per key (base64 of exactly 32 bytes) and an {@code active} file naming
- * the key new records use (with one key, that key). Rotation: mount a new key and point {@code active} at it; old records
- * stay readable while the old key is mounted. Crypto-shredding: remove the old key from the Secret; its records can no
- * longer be opened by anyone, and the retention job deletes their rows with a receipt. The directory is re-read every 5
- * minutes. Kubernetes' own {@code ..data} entries are skipped.
+ * <p>The Secret holds one {@code <key id>.key} file per key (base64 of exactly 32 bytes), an {@code active} file naming
+ * the key new material is wrapped under (with one key, that key), and optionally a {@code shredded} file listing, one per
+ * line, key ids deliberately destroyed without re-wrap (emergency crypto-shredding, PR 25 Q-3). A planned rotation mounts
+ * a new key, points {@code active} at it and lets the re-wrap job move every live record and chunk over; only then is the
+ * old key removed. The directory is re-read every 5 minutes. Kubernetes' own {@code ..data} entries are skipped.
  */
 @Component
 public final class CaptureKeyring {
@@ -41,20 +45,23 @@ public final class CaptureKeyring {
     static final int KEY_BYTES = 32;
     static final int NONCE_BYTES = 12;
     static final int TAG_BITS = 128;
+    /** nonce || GCM(capture key, 32-byte key) || tag. */
+    static final int WRAPPED_BYTES = NONCE_BYTES + KEY_BYTES + 16;
     private static final Logger LOG = LoggerFactory.getLogger(CaptureKeyring.class);
     private static final SecureRandom RANDOM = new SecureRandom();
 
-    /** One sealed text: the key it is under, the wrapped data key, the nonce and the ciphertext with its tag. */
-    public record Sealed(String keyId, byte[] wrappedKey, byte[] nonce, byte[] ciphertext) {
+    /** A key wrapped under {@code keyId}. */
+    public record Wrapped(String keyId, byte[] wrapped) {
 
         @Override
         public String toString() {
-            return "Sealed[" + keyId + "]";
+            return "Wrapped[" + keyId + "]";
         }
     }
 
     private final Path dir;
     private volatile Map<String, SecretKeySpec> keys = Map.of();
+    private volatile Set<String> shredded = Set.of();
     private volatile String activeId;
     private volatile String unavailableReason = "not loaded";
 
@@ -72,6 +79,7 @@ public final class CaptureKeyring {
     @Scheduled(initialDelayString = "PT5M", fixedDelayString = "PT5M")
     public synchronized void reload() {
         Map<String, SecretKeySpec> loaded = new HashMap<>();
+        Set<String> shreddedIds = new TreeSet<>();
         String active = null;
         String reason = null;
         if (dir == null || !Files.isDirectory(dir)) {
@@ -98,21 +106,35 @@ public final class CaptureKeyring {
                 } else if (loaded.size() == 1) {
                     active = loaded.keySet().iterator().next();
                 }
+                Path shreddedFile = dir.resolve("shredded");
+                if (Files.isRegularFile(shreddedFile)) {
+                    for (String line : Files.readAllLines(shreddedFile, StandardCharsets.US_ASCII)) {
+                        String id = line.strip();
+                        if (keyId(id)) {
+                            shreddedIds.add(id);
+                        }
+                    }
+                }
             } catch (IOException e) {
                 reason = "capture key directory unreadable";
             }
-            if (active == null || !loaded.containsKey(active)) {
-                reason = loaded.isEmpty() ? "no capture key mounted" : "the active capture key is not mounted";
+            if (active == null || !loaded.containsKey(active) || shreddedIds.contains(active)) {
+                reason = loaded.isEmpty() ? "no capture key mounted" : "the active capture key is not usable";
                 active = null;
             }
         }
-        boolean changed = !loaded.keySet().equals(keys.keySet()) || !java.util.Objects.equals(active, activeId);
+        // A key listed as shredded is never used, even if its file is still mounted.
+        loaded.keySet().removeAll(shreddedIds);
+        boolean changed = !loaded.keySet().equals(keys.keySet()) || !Objects.equals(active, activeId)
+            || !shreddedIds.equals(shredded);
         keys = Map.copyOf(loaded);
+        shredded = Set.copyOf(shreddedIds);
         activeId = active;
         unavailableReason = active == null ? (reason == null ? "no capture key" : reason) : null;
         if (changed) {
             // Key ids only, never key material.
-            LOG.info("capture keys: {} mounted, active {}", loaded.size(), active == null ? "none" : active);
+            LOG.info("capture keys: {} mounted, active {}, {} listed as shredded", loaded.size(),
+                active == null ? "none" : active, shreddedIds.size());
         }
     }
 
@@ -129,64 +151,107 @@ public final class CaptureKeyring {
         return Optional.ofNullable(activeId);
     }
 
-    /** The mounted key ids (a record under another id is shredded). */
+    /** The mounted key ids. */
     public Set<String> ids() {
         return new TreeSet<>(keys.keySet());
+    }
+
+    /** Key ids the Secret lists as deliberately destroyed (emergency crypto-shredding). */
+    public Set<String> shredded() {
+        return shredded;
     }
 
     public boolean has(String keyId) {
         return keys.containsKey(keyId);
     }
 
-    /** Seals {@code plain} under a fresh data key wrapped by the active key; {@code aad} binds the record. */
-    public Sealed seal(byte[] plain, byte[] aad) {
+    /** A fresh random 256-bit key (a chunk's data key or a record key); the caller zeroes it after use. */
+    public static byte[] newKey() {
+        byte[] k = new byte[KEY_BYTES];
+        RANDOM.nextBytes(k);
+        return k;
+    }
+
+    /** Wraps {@code key} under the active capture key; {@code purpose} binds what the key is for. */
+    public Wrapped wrap(byte[] key, String purpose) {
         String id = activeId;
         SecretKeySpec kek = id == null ? null : keys.get(id);
         if (kek == null) {
             throw new IllegalStateException("no active capture key");
         }
-        byte[] dek = new byte[KEY_BYTES];
-        RANDOM.nextBytes(dek);
         try {
             byte[] nonce = random(NONCE_BYTES);
-            byte[] ciphertext = gcm(Cipher.ENCRYPT_MODE, new SecretKeySpec(dek, "AES"), nonce, aad, plain);
-            byte[] wrapNonce = random(NONCE_BYTES);
-            byte[] wrapped = gcm(Cipher.ENCRYPT_MODE, kek, wrapNonce, wrapAad(id, aad), dek);
-            byte[] wrappedKey = new byte[NONCE_BYTES + wrapped.length];
-            System.arraycopy(wrapNonce, 0, wrappedKey, 0, NONCE_BYTES);
-            System.arraycopy(wrapped, 0, wrappedKey, NONCE_BYTES, wrapped.length);
-            return new Sealed(id, wrappedKey, nonce, ciphertext);
+            byte[] sealed = gcm(Cipher.ENCRYPT_MODE, kek, nonce, wrapAad(id, purpose), key);
+            byte[] out = new byte[NONCE_BYTES + sealed.length];
+            System.arraycopy(nonce, 0, out, 0, NONCE_BYTES);
+            System.arraycopy(sealed, 0, out, NONCE_BYTES, sealed.length);
+            return new Wrapped(id, out);
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("AES-GCM unavailable", e);
+        }
+    }
+
+    /** The key {@code wrapped} holds; empty when its capture key is not mounted or the wrapping does not authenticate. */
+    public Optional<byte[]> unwrap(String keyId, byte[] wrapped, String purpose) {
+        SecretKeySpec kek = keys.get(keyId);
+        if (kek == null || wrapped.length != WRAPPED_BYTES) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(gcm(Cipher.DECRYPT_MODE, kek, Arrays.copyOf(wrapped, NONCE_BYTES),
+                wrapAad(keyId, purpose), Arrays.copyOfRange(wrapped, NONCE_BYTES, wrapped.length)));
+        } catch (GeneralSecurityException e) {
+            return Optional.empty();
+        }
+    }
+
+    /** A planned rotation's re-wrap: the same key, now under the active capture key; the content is never decrypted. */
+    public Optional<Wrapped> rewrap(String keyId, byte[] wrapped, String purpose) {
+        Optional<byte[]> key = unwrap(keyId, wrapped, purpose);
+        if (key.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(wrap(key.get(), purpose));
         } finally {
-            Arrays.fill(dek, (byte) 0);
+            Arrays.fill(key.get(), (byte) 0);
         }
     }
 
     /**
-     * Opens a sealed text; empty when its key is not mounted (shredded) or the record does not authenticate (tampered,
-     * moved to another event).
+     * The keyed content address of a chunk under the active capture key: HMAC-SHA256 under a key derived from it, hex.
+     * After a rotation new chunks get new addresses (no deduplication across keys).
      */
-    public Optional<byte[]> open(String keyId, byte[] wrappedKey, byte[] nonce, byte[] ciphertext, byte[] aad) {
-        SecretKeySpec kek = keys.get(keyId);
-        if (kek == null || wrappedKey.length <= NONCE_BYTES) {
-            return Optional.empty();
+    public String address(byte[] data, int off, int len) {
+        String id = activeId;
+        SecretKeySpec kek = id == null ? null : keys.get(id);
+        if (kek == null) {
+            throw new IllegalStateException("no active capture key");
         }
-        byte[] dek = null;
+        byte[] label = "rwsafe-capture-address-v1".getBytes(StandardCharsets.US_ASCII);
+        byte[] material = kek.getEncoded();
+        byte[] derived = hmac(material, label, 0, label.length);
+        Arrays.fill(material, (byte) 0);
         try {
-            dek = gcm(Cipher.DECRYPT_MODE, kek, Arrays.copyOf(wrappedKey, NONCE_BYTES), wrapAad(keyId, aad),
-                Arrays.copyOfRange(wrappedKey, NONCE_BYTES, wrappedKey.length));
-            return Optional.of(gcm(Cipher.DECRYPT_MODE, new SecretKeySpec(dek, "AES"), nonce, aad, ciphertext));
-        } catch (GeneralSecurityException e) {
-            return Optional.empty();
+            return java.util.HexFormat.of().formatHex(hmac(derived, data, off, len));
         } finally {
-            if (dek != null) {
-                Arrays.fill(dek, (byte) 0);
-            }
+            Arrays.fill(derived, (byte) 0);
         }
     }
 
-    private static byte[] gcm(int mode, SecretKeySpec key, byte[] nonce, byte[] aad, byte[] input)
+    static byte[] hmac(byte[] key, byte[] data, int off, int len) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(key, "HmacSHA256"));
+            mac.update(data, off, len);
+            return mac.doFinal();
+        } catch (NoSuchAlgorithmException | InvalidKeyException e) {
+            throw new IllegalStateException("HmacSHA256 unavailable", e);
+        }
+    }
+
+    /** AES-256-GCM with a 12-byte nonce and a 128-bit tag. */
+    static byte[] gcm(int mode, SecretKeySpec key, byte[] nonce, byte[] aad, byte[] input)
         throws GeneralSecurityException {
         Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
         c.init(mode, key, new GCMParameterSpec(TAG_BITS, nonce));
@@ -194,14 +259,11 @@ public final class CaptureKeyring {
         return c.doFinal(input);
     }
 
-    private static byte[] wrapAad(String keyId, byte[] aad) {
-        byte[] id = ("rwsafe-capture-key|" + keyId + "|").getBytes(StandardCharsets.US_ASCII);
-        byte[] out = Arrays.copyOf(id, id.length + aad.length);
-        System.arraycopy(aad, 0, out, id.length, aad.length);
-        return out;
+    private static byte[] wrapAad(String keyId, String purpose) {
+        return ("rwsafe-capture-key|" + keyId + "|" + purpose).getBytes(StandardCharsets.US_ASCII);
     }
 
-    private static byte[] random(int n) {
+    static byte[] random(int n) {
         byte[] b = new byte[n];
         RANDOM.nextBytes(b);
         return b;

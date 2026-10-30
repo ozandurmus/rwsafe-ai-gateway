@@ -243,22 +243,35 @@ ROADMAP "Capture in redacted mode (Q-4 b)", acceptance SR-PRIV-10, SR-PRIV-11, S
 - Shared breaker `platform.capacity.WatermarkBreaker`: raw off at 75 %, redacted off at 85 %, resume 5 points lower
   (hysteresis is this lane's choice), no reading for 5 minutes trips it.
 - Control plane `control.capture`: the sink stores content only for a REDACT verdict of a user with an acknowledgement
-  of the current notice (`NoticeAcknowledgementService.contentCaptureAllowed`, PR 22), below the database volume's
+  of the current notice (`NoticeAcknowledgementService.contentCaptureAllowed`, PR 22), below the store volume's
   watermark (read every 30 s), when no Tier-1 detector hits the text (raw and normalised), after the masking layers ran
-  at persistence; everything else is dropped with a counted reason while metadata and verdicts are stored. Envelope
-  encryption: a per-record AES-256-GCM data key wrapped by the capture key (its own mounted Secret, rotation by an
-  `active` file, re-read every 5 minutes), event id as associated data. Retention 90 days and key shredding in the
-  protected windows, with receipts. Health shows `capture` and `capture-watermark`.
-- Migration V6 (`redacted_capture` ciphertext only, immutable except the legal hold, deletes ledgered; `capture_read`
-  and `capture_deletion_receipt` append-only and ledgered; at most 90 days by a check).
-- Read route `POST /api/v1/captures/{eventId}/read`: `security_admin` or `privacy_officer` with a reason code and a case
-  id; every request ledgered before anything opens; viewer, masked role and a masked dual session get 403; the text is
-  framed inert; the masked projection withholds it. A focused test proves the masked role and viewer reach no content
-  and no log line carries it (the Playwright leak probe is not on `main`).
-- Open: deploy wiring (the capture-key Secret, `RWSAFE_CAPTURE_*` in the ConfigMaps and contracts, a watermark path on
-  the database volume's filesystem); legal-hold API; SIEM deletion events; the screen that opens a record; masking
-  layers 4 (Turkish names) and 5 (free-text heuristics) before production capture (`TextMasker` is still
-  `rwmask-v1-slice1`); persisted skip counters (they restart at zero).
+  at persistence; everything else is dropped with a counted reason while metadata and verdicts are stored.
+- Storage per ADR-009 §2-§3 (PO decision on the PR 25 review, Q-1): content lives outside PostgreSQL in the capture
+  store on its own volume (`RWSAFE_CAPTURE_STORE_DIR`), as content-defined chunks (8-64 KiB, Gear hash) addressed by a
+  keyed HMAC and stored once (reference-counted); each chunk is AES-256-GCM under its own data key (per chunk, not per
+  record, because a deduplicated chunk is shared); a per-record key's HMAC binds event id, user, capture and expiry
+  times, truncation, rule set, size and the ordered chunk list. MAX_STORE_BYTES (80 GiB) evicts the oldest records
+  without a hold, receipted. Expiry counts from the event's own time, at most 90 days.
+- Keys (Q-3): the capture key is its own Secret (`<id>.key`, `active`, optional `shredded` list). A planned rotation
+  re-wraps every live or held record key and chunk key under the active key (`REWRAP` key events, content never
+  decrypted); emergency crypto-shredding is a listed key: its records are deleted with a `KEY_SHREDDED` receipt and an
+  `EMERGENCY_SHRED` key event. Maintenance (retention, cap, re-wrap, shred, orphan-file sweep) runs in the protected
+  windows. Health shows `capture` (bytes against the cap, records under older keys) and `capture-watermark`.
+- Migration V6: `capture_record`, `capture_manifest`, `capture_chunk`, `capture_store_usage` (metadata, wrapped keys and
+  references only; immutable except hold and wrapping; deletes and re-wraps ledgered), `capture_read`,
+  `capture_deletion_receipt` and `capture_key_event` (append-only, ledgered; the SIEM export reads the ledger).
+- Read route `POST /api/v1/captures/{eventId}/read`: MVP reader roles `security_admin` and `privacy_officer` (PO
+  decision Q-2 on the PR 25 review), `DSAR` for `privacy_officer` only, reason code and case id; every request
+  ledgered, refusals included, `SERVED` only after the record opened; expired records are never served; the text is
+  framed inert (C0/C1, the full Bidi_Control set, U+2028/2029); the masked projection withholds it. A focused test
+  proves the masked role and viewer reach no content and no log line carries it (the Playwright leak probe is not on
+  `main`).
+- Second review (Argon, `docs/reviews/PR25_2026_10_31_ARGON_REDACTED_CAPTURE.md`), answered by id in
+  `docs/reviews/PR25_2026_10_31_RESPONSE.md`; a confirmation review follows for the storage model.
+- Open: ADR-009 gaps listed in the response (C5 special-category flag, masking layers 4 and 5 at persistence, legal
+  hold and DSAR APIs, restore-time receipt replay, the worker module); deploy wiring (the capture PVC, the capture-key
+  Secret, `RWSAFE_CAPTURE_*` in the ConfigMaps and contracts); the screen that opens a record; persisted skip
+  counters.
 
 ## Not done
 

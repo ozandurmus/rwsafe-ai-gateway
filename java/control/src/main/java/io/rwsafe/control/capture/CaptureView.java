@@ -86,7 +86,15 @@ public final class CaptureView implements MaskedView {
         return readId;
     }
 
-    /** SEC-5: the text is inert data; nothing in it can move a cursor, recolour a terminal or reorder a line. */
+    /** The character every neutralised one becomes (U+FFFD). */
+    static final char REPLACEMENT = (char) 0xfffd;
+
+    /**
+     * SEC-5, PR 25 review D-03: the text is inert data; nothing in it can move a cursor, recolour a terminal, reorder a
+     * line or break one invisibly. Carriage returns are removed; C0 controls except line feed and tab, DEL and C1 controls
+     * (ANSI escapes start with ESC or CSI), the whole Unicode Bidi_Control set (U+061C, U+200E, U+200F, U+202A-U+202E,
+     * U+2066-U+2069) and the line and paragraph separators (U+2028, U+2029) become U+FFFD.
+     */
     static String inert(String s) {
         StringBuilder out = new StringBuilder(s.length());
         for (int i = 0; i < s.length(); i++) {
@@ -94,11 +102,17 @@ public final class CaptureView implements MaskedView {
             if (c == '\r') {
                 continue;
             }
-            boolean control = (c < 0x20 && c != '\n' && c != '\t') || (c >= 0x7f && c <= 0x9f);
-            boolean bidi = (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
-            out.append(control || bidi ? '�' : c);
+            out.append(neutralised(c) ? REPLACEMENT : c);
         }
         return out.toString();
+    }
+
+    static boolean neutralised(char c) {
+        boolean control = (c < 0x20 && c != '\n' && c != '\t') || (c >= 0x7f && c <= 0x9f);
+        boolean bidi = c == 0x061c || c == 0x200e || c == 0x200f || (c >= 0x202a && c <= 0x202e)
+            || (c >= 0x2066 && c <= 0x2069);
+        boolean separator = c == 0x2028 || c == 0x2029;
+        return control || bidi || separator;
     }
 
     @Override
