@@ -258,7 +258,10 @@ class PolicyRegistryIntegrationTest {
 
     @Test
     void theActivePolicyIsReSignedAtLeastEverySixHours() throws Exception {
-        IssuedSnapshot first = registry.currentSnapshot();
+        registry.reissueWhenDue();
+        IssuedSnapshot first = registry.latestSnapshot().orElseThrow(() -> new AssertionError("the scheduler issues"));
+        registry.reissueWhenDue();
+        assertEquals(first, registry.latestSnapshot().orElseThrow(), "a fresh snapshot is not re-issued");
         IssuedSnapshot sameWindow = registry.currentSnapshot(first.issuedAt().plus(Duration.ofHours(5)));
         assertEquals(first.version(), sameWindow.version());
         IssuedSnapshot reissued = registry.currentSnapshot(first.issuedAt().plus(Duration.ofHours(6)));

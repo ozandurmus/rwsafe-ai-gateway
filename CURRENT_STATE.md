@@ -125,6 +125,34 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
 - Verified end to end locally: the ICAP engine's replay scenarios reach the control plane and appear in the UI.
 - Local run: `docs/operations/LOCAL_RUN.md` "Control plane and admin UI".
 
+## Done (MVP control plane and admin UI, slice 2: branch `feature/mvp2-control-ui`, not yet merged)
+
+- Admin UI in Turkish and English (PO decision Q-38): one catalogue per language under `frontend/src/i18n` (keys in
+  English), every UI string moved there; the Turkish catalogue is typed against the English key set and a Vitest test
+  fails on a missing key, an empty text or a placeholder mismatch; tr-TR and en-GB numbers and dates (Europe/Istanbul);
+  server reason codes stay English identifiers, mapped to labels (`reason.code_<CODE>`). The user menu holds the roles,
+  the language switch and sign-out; the choice is remembered per user in the browser (no server-side user settings store
+  exists yet).
+- Policy registry (AGENTS.md section 6): Flyway V2 (`policy_rule_version`, `policy_approval`, `policy_snapshot`), seeded
+  once from `policy/registry-seed.yaml` (equal to the built-in development snapshot, proved by `RegistrySeedTest`). A
+  version has mode monitor or enforce and a rollout stage (pilot, 25 %, 50 %, all); a registry version becomes active only
+  with a `security_admin` and a `privacy_officer` approval by two different people (service check and database trigger);
+  a fail-closed class is never ALLOW or WARN in any version, monitor or enforce, and takes no exception; versions are
+  immutable; approvals and snapshots are append-only; every change is ledgered. REST `/api/v1/policy`: list, draft,
+  approve, simulation stub (counts how stored verdict events carrying a class would change), exception refusal. The
+  `privacy_officer` role is new (directory group binding).
+- Signed snapshot feed `GET /internal/v1/policy/snapshot` on its own connector (8091) per POLICY_SNAPSHOT_CONTRACT:
+  format 1, monotonic version, Ed25519 via the JDK over the exact body bytes, `X-RWSAFE-Key-Id`, `ETag` and 304; 503
+  with a reason without a signing key or a complete registry. Only active enforce versions at stage `all` are compiled
+  (format 1 has no group targeting). The active policy is re-signed under the next version at least every 6 hours with no
+  rule change (scheduled), and the compiler refuses a snapshot with a fail-closed class at ALLOW or WARN (contract changes
+  of the data-plane review, PR 14). Every issued snapshot is recorded and ledgered.
+- Screens: Policies (registry table with action, mode, rollout bar, version, status; versions, approval steps,
+  simulation panel and a new-version form for a selected rule) and Platforms (platform rows). The masked role reads both
+  through the funnel and changes nothing.
+- Local run: `docs/operations/LOCAL_RUN.md` "Control plane and admin UI" (dev signing key and its public key for a local
+  data plane, the snapshot feed with curl, the two-approval walk-through).
+
 ## Not done
 
 ICAP engine, later slices: Secure ICAP with mTLS, the signed snapshot pull, per-identity caps and the body semaphore,
@@ -132,8 +160,10 @@ the drain window, the verdict spool, decompression and base64 layers, the file p
 shape fingerprints, metrics (`docs/operations/LOCAL_RUN.md` lists them).
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
 neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeScript rules for `frontend/`; control plane
-later slices (mTLS on 8092, SAML, the policy registry and snapshot feed, C3 capture store, the Incidents, Policies,
-Platforms and Administration screens, Playwright masked-role leak probe, the cluster PostgreSQL Job); the
+later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules and group targeting of
+staged versions (both need a snapshot format with groups), a server-side user settings store for the UI language, the
+ratified decision record that mirrors the seed fixture, C3 capture store, the Incidents, Identities and roles and
+Administration screens, Playwright masked-role leak probe, the cluster PostgreSQL Job); the
 Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with them); Trivy image scanning and SBOM (with
 the first image, ship pipeline).
 

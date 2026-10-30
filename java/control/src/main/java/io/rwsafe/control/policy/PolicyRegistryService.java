@@ -13,6 +13,7 @@ import io.rwsafe.persistence.RegistryConflict;
 import io.rwsafe.persistence.VerdictQueries;
 import io.rwsafe.platform.verdict.Verdict;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -39,6 +40,7 @@ import org.springframework.stereotype.Service;
 public class PolicyRegistryService {
 
     public static final String ISSUER = "system:snapshot-issuer";
+    static final Duration SCHEDULE_INTERVAL = Duration.ofMinutes(5);
     private static final Logger LOG = LoggerFactory.getLogger(PolicyRegistryService.class);
     private static final Set<String> APPROVER_ROLES = Set.of(Roles.SECURITY_ADMIN, Roles.PRIVACY_OFFICER);
 
@@ -90,19 +92,25 @@ public class PolicyRegistryService {
      * refresh interval, else the next version, issued and ledgered.
      */
     public IssuedSnapshot currentSnapshot(Instant now) {
-        return database.policySnapshots().current(compiler, now.truncatedTo(ChronoUnit.SECONDS), config.snapshotRefresh(),
+        return currentSnapshot(now, config.snapshotRefresh());
+    }
+
+    private IssuedSnapshot currentSnapshot(Instant now, Duration refresh) {
+        return database.policySnapshots().current(compiler, now.truncatedTo(ChronoUnit.SECONDS), refresh,
             new AuditContext(ISSUER, "policy_snapshot.issue", "ACTIVE_POLICY_SIGNED", UUID.randomUUID().toString()));
     }
 
     /**
      * The scheduled re-sign (POLICY_SNAPSHOT_CONTRACT): the active policy is re-issued under the next version with a
      * fresh {@code issuedAt} at least every refresh interval (at most 6 hours), even when no data plane polls and no rule
-     * changed, so a data plane never runs into the 24-hour staleness limit.
+     * changed, so a data plane never runs into the 24-hour staleness limit. The check runs every 5 minutes and re-issues
+     * one interval early, so no snapshot outlives the refresh interval between two checks.
      */
     @Scheduled(initialDelayString = "PT1M", fixedDelayString = "PT5M")
     public void reissueWhenDue() {
+        Duration early = config.snapshotRefresh().minus(SCHEDULE_INTERVAL);
         try {
-            currentSnapshot();
+            currentSnapshot(clock.instant(), early.compareTo(Duration.ofMinutes(1)) < 0 ? Duration.ofMinutes(1) : early);
         } catch (RegistryRefusal e) {
             LOG.warn("policy snapshot not issued: {}", e.reason());
         } catch (DataAccessException e) {
