@@ -24,8 +24,8 @@ import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWrite
 /**
  * The gate chain (ARCHITECTURE.md §3.2 rbac): session, CSRF, role, then the masking funnel for the masked role. Reads
  * need one of the three roles; every other API method needs {@code security_admin}, so the masked role is read-only.
- * The internal chain serves only the data plane's two routes, which the connector filter confines to their ports: the
- * ingestion route (8092) and the signed policy snapshot (8091).
+ * The internal chain serves only the internal routes, which the connector filter confines to their ports: the
+ * ingestion route and the notice acknowledgement intake (8092) and the signed policy snapshot (8091).
  */
 @Configuration(proxyBeanMethods = false)
 @EnableWebSecurity
@@ -38,6 +38,8 @@ public class SecurityConfig {
             // Reachable only on the internal connector behind the namespace NetworkPolicy; mutual TLS replaces this
             // when the data plane gains its client certificate (Secure ICAP slice).
             .authorizeHttpRequests(a -> a.requestMatchers(HttpMethod.POST, "/internal/v1/verdict-events").permitAll()
+                // Notice acknowledgements (C12) from the banner, IDE first run, directory import and credential issue.
+                .requestMatchers(HttpMethod.POST, "/internal/v1/notice-acknowledgements").permitAll()
                 // The signed snapshot: public content (class actions, vendor hosts), integrity by its Ed25519 signature.
                 .requestMatchers(HttpMethod.GET, "/internal/v1/policy/snapshot").permitAll()
                 .anyRequest().denyAll())
