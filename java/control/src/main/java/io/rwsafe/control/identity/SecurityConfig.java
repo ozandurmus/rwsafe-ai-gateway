@@ -24,7 +24,8 @@ import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWrite
 /**
  * The gate chain (ARCHITECTURE.md §3.2 rbac): session, CSRF, role, then the masking funnel for the masked role. Reads
  * need one of the three roles; every other API method needs {@code security_admin}, so the masked role is read-only.
- * The internal chain serves only the data plane's ingestion route, which the connector filter confines to port 8092.
+ * The internal chain serves only the data plane's two routes, which the connector filter confines to their ports: the
+ * ingestion route (8092) and the signed policy snapshot (8091).
  */
 @Configuration(proxyBeanMethods = false)
 @EnableWebSecurity
@@ -37,6 +38,8 @@ public class SecurityConfig {
             // Reachable only on the internal connector behind the namespace NetworkPolicy; mutual TLS replaces this
             // when the data plane gains its client certificate (Secure ICAP slice).
             .authorizeHttpRequests(a -> a.requestMatchers(HttpMethod.POST, "/internal/v1/verdict-events").permitAll()
+                // The signed snapshot: public content (class actions, vendor hosts), integrity by its Ed25519 signature.
+                .requestMatchers(HttpMethod.GET, "/internal/v1/policy/snapshot").permitAll()
                 .anyRequest().denyAll())
             .csrf(c -> c.ignoringRequestMatchers("/internal/**"))
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -64,7 +67,13 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll()
                 .requestMatchers("/api/v1/auth/**").authenticated()
                 .requestMatchers(HttpMethod.GET, "/api/v1/**")
-                    .hasAnyRole(Roles.SECURITY_ADMIN, Roles.VIEWER, Roles.REPLAY_VIEWER)
+                    .hasAnyRole(Roles.SECURITY_ADMIN, Roles.PRIVACY_OFFICER, Roles.VIEWER, Roles.REPLAY_VIEWER)
+                // A policy approval: either approver role, never a masked session; the service checks that the session
+                // holds the role the approval is given in (AGENTS.md section 6).
+                .requestMatchers(HttpMethod.POST, "/api/v1/policy/rules/*/versions/*/approvals")
+                    .access((auth, context) -> new AuthorizationDecision(
+                        (hasRole(auth.get(), Roles.SECURITY_ADMIN) || hasRole(auth.get(), Roles.PRIVACY_OFFICER))
+                            && !hasRole(auth.get(), Roles.REPLAY_VIEWER)))
                 // Mutations: security_admin, and never a masked session, whatever else it holds (PR 12 review D-02).
                 .requestMatchers("/api/**").access((auth, context) -> new AuthorizationDecision(
                     hasRole(auth.get(), Roles.SECURITY_ADMIN) && !hasRole(auth.get(), Roles.REPLAY_VIEWER)))

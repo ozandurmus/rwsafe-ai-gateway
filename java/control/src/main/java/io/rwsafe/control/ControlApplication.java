@@ -4,6 +4,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Entry point of the {@code rwsafe-control} image (control-plane role, ARCHITECTURE.md §3.2). Flyway and jOOQ are driven
@@ -15,6 +16,7 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
     "org.springframework.boot.jooq.autoconfigure.JooqAutoConfiguration",
     "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration"})
 @ConfigurationPropertiesScan
+@EnableScheduling
 public class ControlApplication {
 
     public static void main(String[] args) {

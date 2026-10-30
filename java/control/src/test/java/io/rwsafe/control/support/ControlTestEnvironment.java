@@ -9,7 +9,11 @@ import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
 import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.util.Base64;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.util.HexFormat;
@@ -32,6 +36,8 @@ public final class ControlTestEnvironment {
     private static EmbeddedPostgres postgres;
     private static InMemoryDirectoryServer ldap;
     private static Path dir;
+    private static KeyPair snapshotKeys;
+    public static final String SNAPSHOT_KEY_ID = "synthetic-test-key";
 
     private ControlTestEnvironment() {
     }
@@ -47,6 +53,10 @@ public final class ControlTestEnvironment {
         r.add("spring.datasource.url", () -> "jdbc:postgresql://127.0.0.1:" + postgres.getPort() + "/" + db);
         r.add("spring.datasource.username", () -> "postgres");
         r.add("rwsafe.capture-sink.port", () -> "0");
+        r.add("rwsafe.snapshot-feed.port", () -> "0");
+        r.add("rwsafe.policy.seed-file", () -> seedFixture().toString());
+        r.add("rwsafe.policy.signing-key-file", () -> dir.resolve("snapshot-signing.key").toString());
+        r.add("rwsafe.policy.signing-key-id", () -> SNAPSHOT_KEY_ID);
         r.add("rwsafe.privacy.hmac-key-file", () -> withKey ? dir.resolve("key").toString() : dir.resolve("absent").toString());
         r.add("rwsafe.privacy.estate-dictionary-file",
             () -> withDictionary ? dir.resolve("dictionary.txt").toString() : dir.resolve("absent").toString());
@@ -60,9 +70,26 @@ public final class ControlTestEnvironment {
         r.add("rwsafe.identity.ldap.bind-password-file", () -> dir.resolve("bind-password").toString());
         r.add("rwsafe.identity.ldap.user-search-base", () -> PEOPLE);
         r.add("rwsafe.identity.ldap.user-search-filter", () -> "(uid={0})");
-        for (String role : new String[] {"security_admin", "viewer", "replay_viewer"}) {
+        for (String role : new String[] {"security_admin", "privacy_officer", "viewer", "replay_viewer"}) {
             r.add("rwsafe.identity.ldap.group-roles[cn=rwsafe-" + role + "," + GROUPS + "]", () -> role);
         }
+    }
+
+    /** The repository's committed seed fixture, found from the working directory (Gradle or the Maven smoke build). */
+    public static Path seedFixture() {
+        for (Path p = Path.of("").toAbsolutePath(); p != null; p = p.getParent()) {
+            Path candidate = p.resolve("policy").resolve("registry-seed.yaml");
+            if (Files.isRegularFile(candidate) && Files.isRegularFile(p.resolve("AGENTS.md"))) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException("policy/registry-seed.yaml not found above the working directory");
+    }
+
+    /** The public half of the snapshot signing key generated for this JVM (nothing of it is committed). */
+    public static synchronized PublicKey snapshotPublicKey() throws Exception {
+        start();
+        return snapshotKeys.getPublic();
     }
 
     public static Path breakGlassFile(int database) {
@@ -84,6 +111,8 @@ public final class ControlTestEnvironment {
         Files.writeString(dir.resolve("dictionary.txt"), "# synthetic\nsynthetic-estate\n");
         String bind = secret();
         Files.writeString(dir.resolve("bind-password"), bind + "\n");
+        snapshotKeys = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        Files.writeString(dir.resolve("snapshot-signing.key"), pem(snapshotKeys.getPrivate().getEncoded()));
         postgres = EmbeddedPostgres.builder().start();
 
         InMemoryDirectoryServerConfig config = new InMemoryDirectoryServerConfig(BASE);
@@ -96,6 +125,8 @@ public final class ControlTestEnvironment {
         ldap.add(new Entry(GROUPS, new Attribute("objectClass", "organizationalUnit")));
         ldap.add(new Entry("cn=synthetic-service," + BASE, new Attribute("userPassword", bind)));
         user("synthetic-admin", "security_admin");
+        user("synthetic-admin-two", "security_admin");
+        user("synthetic-officer", "privacy_officer");
         user("synthetic-viewer", "viewer");
         user("synthetic-aiview", "replay_viewer");
         user("synthetic-norole", null);
@@ -116,6 +147,13 @@ public final class ControlTestEnvironment {
             e.addAttribute("memberOf", "cn=unrelated-synthetic-group," + GROUPS);
         }
         ldap.add(e);
+    }
+
+    /** PKCS#8 PEM; the label is assembled so no committed line reads as a key header. */
+    public static String pem(byte[] pkcs8) {
+        String label = "PRIVATE" + " KEY";
+        return "-----BEGIN " + label + "-----\n" + Base64.getMimeEncoder(64, new byte[] {'\n'}).encodeToString(pkcs8)
+            + "\n-----END " + label + "-----\n";
     }
 
     private static String secret() {

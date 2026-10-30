@@ -116,16 +116,18 @@ class PolicyRegistryStoreTest {
     }
 
     @Test
-    void anEnforceVersionNeverAllowsOrWarnsAFailClosedClassAndTheFlowIsNeverRelaxed() {
-        for (String action : new String[] {"ALLOW", "WARN"}) {
-            RegistryConflict refused = assertThrows(RegistryConflict.class, () -> registry.draft(
-                classRule("TCKN", action, "enforce", "all", ADMIN), audit(ADMIN, "policy.draft")));
-            assertEquals("POLICY_CONSTRAINT_REFUSED", refused.reason());
+    void noVersionEverAllowsOrWarnsAFailClosedClassAndTheFlowIsNeverRelaxed() {
+        for (String mode : new String[] {"enforce", "monitor"}) {
+            for (String action : new String[] {"ALLOW", "WARN"}) {
+                RegistryConflict refused = assertThrows(RegistryConflict.class, () -> registry.draft(
+                    classRule("TCKN", action, mode, "all", ADMIN), audit(ADMIN, "policy.draft")));
+                assertEquals("POLICY_CONSTRAINT_REFUSED", refused.reason(), mode + " " + action);
+            }
         }
         assertThrows(RegistryConflict.class, () -> registry.draft(new Draft("flow.ai-category", "flow", null, null, null,
             null, null, null, false, "enforce", "all", ADMIN, "SYNTHETIC_CHANGE"), audit(ADMIN, "policy.draft")));
-        assertEquals("pending", registry.draft(classRule("TCKN", "ALLOW", "monitor", "all", ADMIN),
-            audit(ADMIN, "policy.draft")).status(), "a monitor version is simulation only");
+        assertEquals("pending", registry.draft(classRule("TCKN", "BLOCK", "monitor", "all", ADMIN),
+            audit(ADMIN, "policy.draft")).status(), "a stricter monitor version is shadow-evaluated only");
         assertThrows(RegistryConflict.class, () -> registry.draft(new Draft("platform.claude", "platform", null, null,
             "claude", List.of("192.0.2.10"), List.of(), List.of(), null, "enforce", "all", ADMIN, "SYNTHETIC_CHANGE"),
             audit(ADMIN, "policy.draft")), "an address is not a host name");

@@ -6,10 +6,12 @@ import java.util.Set;
 public final class Roles {
 
     public static final String SECURITY_ADMIN = "security_admin";
+    /** Reads every screen and gives the privacy approval of a policy version (AGENTS.md section 6, ADR-010). */
+    public static final String PRIVACY_OFFICER = "privacy_officer";
     public static final String VIEWER = "viewer";
     /** The masked role: every response passes the masking funnel. */
     public static final String REPLAY_VIEWER = "replay_viewer";
-    public static final Set<String> ALL = Set.of(SECURITY_ADMIN, VIEWER, REPLAY_VIEWER);
+    public static final Set<String> ALL = Set.of(SECURITY_ADMIN, PRIVACY_OFFICER, VIEWER, REPLAY_VIEWER);
 
     private Roles() {
     }

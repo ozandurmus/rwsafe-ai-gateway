@@ -49,10 +49,11 @@ CREATE TABLE policy_rule_version (
         ELSE rule_id = 'flow.ai-category' AND enforce_fail_closed IS NOT NULL AND data_class IS NULL AND action IS NULL
             AND platform_id IS NULL AND host_suffixes IS NULL AND api_hosts IS NULL AND login_hosts IS NULL
     END),
-    -- SR-DLP-1, ADR-010: every Tier-1 class is fail-closed, so an enforce version never allows or warns it, and the
+    -- SR-DLP-1, ADR-010, POLICY_SNAPSHOT_CONTRACT: every Tier-1 class is fail-closed, so no version, monitor or enforce,
+    -- ever allows or warns it (the data plane refuses such a snapshot whatever enforceFailClosed says), and the
     -- AI-category flow is never relaxed in enforce mode.
     CONSTRAINT policy_rule_version_fail_closed_class CHECK (
-        NOT (kind = 'class_action' AND mode = 'enforce' AND action IN ('ALLOW', 'WARN'))),
+        NOT (kind = 'class_action' AND action IN ('ALLOW', 'WARN'))),
     CONSTRAINT policy_rule_version_fail_closed_flow CHECK (
         NOT (kind = 'flow' AND mode = 'enforce' AND NOT enforce_fail_closed)),
     CONSTRAINT policy_rule_version_lifecycle CHECK ((status = 'pending') = (activated_at IS NULL)
