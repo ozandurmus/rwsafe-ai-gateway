@@ -2,8 +2,8 @@
 
 Checkpoint 2026-10-30, evening. Phase: **implementation, phase 0** (discovery and measurement; no production change).
 The design is FROZEN (`docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md`); ADR-001 to ADR-011 are ACCEPTED.
-Phase 0 movement 1 (repository and CI skeleton) is done on `feature/phase0-repo-ci-skeleton` (pull request 4); no product behaviour yet;
-nothing deployed; HOST-A, neXus and ProxySG unchanged.
+Phase 0 movement 1 (repository and CI skeleton) is done on `feature/phase0-repo-ci-skeleton` (pull request 4); no
+product behaviour yet; nothing deployed; HOST-A, neXus and ProxySG unchanged.
 
 ## Done (design phase, closed 2026-10-30)
 
