@@ -18,7 +18,8 @@ class GroupNamesTest {
         assertEquals(expected, GroupNames.normalise("İç-Denetim"));
         assertEquals(expected, GroupNames.normalise("IÇ-DENETİM"));
         assertEquals(expected, GroupNames.normalise("ıç-denetım"));
-        assertEquals(expected, GroupNames.normalise("  iç-denetim\t"));
+        assertEquals(expected, GroupNames.normalise("  iç-denetim  "));
+        assertNull(GroupNames.normalise("  iç-denetim\t"), "a control character is refused, never stripped (review N-01)");
     }
 
     @Test

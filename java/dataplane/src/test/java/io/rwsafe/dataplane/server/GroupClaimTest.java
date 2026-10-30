@@ -58,6 +58,17 @@ class GroupClaimTest {
 
     /** D-01: a single group whose letters are all in the base64 alphabet is decoded, never taken literally. */
     @Test
+    void aLeadingOrTrailingControlCharacterIsNoClaim() {
+        // PR 20 confirmation review N-01: strip() must not drop a control character before the check.
+        assertNull(GroupClaim.parse("platform-devs,\u001f", PLAIN));
+        assertNull(GroupClaim.parse("\u001ffinance", PLAIN));
+        assertNull(GroupClaim.parse(b64("platform-devs,\u001f"), BASE64));
+        assertNull(io.rwsafe.policy.GroupNames.normalise("\tfinance"));
+        assertNull(io.rwsafe.policy.GroupNames.normalise("finance\n"));
+        assertEquals("finance", io.rwsafe.policy.GroupNames.normalise("  Finance  "));
+    }
+
+    @Test
     void base64DecodesTheWholeValueAlways() {
         assertEquals(Set.of("finance"), GroupClaim.parse(b64("finance"), BASE64));
         assertEquals(Set.of("finance", "platform-devs"), GroupClaim.parse(b64("finance,platform-devs"), BASE64));

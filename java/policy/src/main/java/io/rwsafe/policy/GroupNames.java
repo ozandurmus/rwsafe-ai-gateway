@@ -35,15 +35,17 @@ public final class GroupNames {
         if (name == null) {
             return null;
         }
-        String s = name.strip();
-        if (s.isEmpty() || s.length() > MAX_LENGTH) {
-            return null;
-        }
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
+        // Control characters are refused before strip(), which would silently drop a leading or trailing one
+        // (PR 20 confirmation review N-01).
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
             if (c == ',' || c < 0x20 || c == 0x7f) {
                 return null;
             }
+        }
+        String s = name.strip();
+        if (s.isEmpty() || s.length() > MAX_LENGTH) {
+            return null;
         }
         s = Normalizer.normalize(s, Normalizer.Form.NFC);
         StringBuilder folded = new StringBuilder(s.length());

@@ -48,7 +48,8 @@ final class GroupClaim {
             || headerValue.length() > MAX_VALUE) {
             return null;
         }
-        byte[] octets = headerValue.strip().getBytes(StandardCharsets.ISO_8859_1);
+        // No strip(): HeaderBlock already trimmed OWS, and strip() would drop a control character (review N-01).
+        byte[] octets = headerValue.getBytes(StandardCharsets.ISO_8859_1);
         if (encoding == GroupClaimEncoding.BASE64) {
             octets = base64(octets);
             if (octets == null) {
