@@ -1,8 +1,9 @@
 # rwsafe-ai-gateway: current state
 
-Checkpoint 2026-10-30, afternoon. Phase: **implementation, phase 0** (discovery and measurement; no production change).
-The design is FROZEN (`docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md`); ADR-001 to ADR-011 are ACCEPTED. No
-product code yet; nothing deployed; HOST-A, neXus and ProxySG unchanged.
+Checkpoint 2026-10-30, evening. Phase: **implementation, phase 0** (discovery and measurement; no production change).
+The design is FROZEN (`docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md`); ADR-001 to ADR-011 are ACCEPTED.
+Phase 0 movement 1 (repository and CI skeleton) is done on `feature/phase0-repo-ci-skeleton`; no product behaviour yet;
+nothing deployed; HOST-A, neXus and ProxySG unchanged.
 
 ## Done (design phase, closed 2026-10-30)
 
@@ -15,11 +16,30 @@ regulatory mapping, bypass catalogue, penetration test plan; platform matrix, ou
 roadmap; Turkish end-user texts; review scripts with the content guard; corporate stack reference. Design-freeze council
 (three seats, all ACCEPT WITH CORRECTIONS) run through `tools/review/`; both correction rounds applied and answered by ID
 (`docs/reviews/COUNCIL_RESPONSE.md` section 7). PO decisions: Q-30..Q-36 (record of 2026-10-30) and the design freeze.
-Public GitHub repository with branch protection; pull request 1 merged; pull request 2 (decisions and freeze) opened.
+Public GitHub repository with branch protection; pull requests 1 and 2 (decisions and freeze) merged.
+
+## Done (phase 0, movement 1: repository and CI)
+
+- Gradle build under `java/` per ADR-011 §4 (Gradle 8.14.3 wrapper, Java 21 toolchain, `-Xlint:all -Werror`), modules
+  per ARCHITECTURE §9: `platform-core`, `detect`, `policy`, `dataplane`, `persistence`, `control`, `worker`, `cli`,
+  `architecture-tests`, `integration-tests`; all empty but compiling. Lockfiles for every configuration and
+  `gradle/verification-metadata.xml` (sha256). Entry points `unitTest` and `architectureTest` (neXus task names).
+- ArchUnit fences (`java/architecture-tests`, `Fences.java`), each proved on fixtures by `FenceSelfTest`: no
+  `java.util.regex`, `Scanner` or regex `String` shortcuts on the inline path (`dataplane`, `detect`, `policy`; RE2/J
+  only, SR-DP-1); no database API, servlet stack or control-plane module there (SR-DP-6); no blocking network or disk
+  call and no `Thread.sleep` on request threads (everything in `dataplane` and `detect` except `dataplane.boot` and
+  `dataplane.controlplane`); a class that calls a `@BodyContent` accessor never logs or prints; a `@BodyBearing` type is
+  not a record and its own `toString()` reads no content; server modules never write to the standard streams (4.14).
+- CI `.github/workflows/validation.yml` on every pull request and on `main`: privacy gate, gitleaks (tree and history,
+  checksum-verified binary), unit and ArchUnit tests; every job prints the commit it tested (the merge commit plus the
+  PR head and base); actions pinned by commit digest; read-only token; no secrets.
+- Hooks installed in this checkout (`tools/delivery/install_hooks.sh`; `core.hooksPath=.githooks` in the shared
+  repository config, so every worktree needs its own install run).
 
 ## Pending on the Product Owner
 
-Merge of pull request 2. PO-only files the harness refuses the agent: `.claude/settings.json` (rules given in chat),
+Mark the three `validation` jobs (`privacy-gate`, `gitleaks`, `java-tests`) as required status checks on `main`
+(none is required today). PO-only files the harness refuses the agent: `.claude/settings.json` (rules given in chat),
 `AGENTS.md` section 1 item 4 (`docs/reviews/` → evidence, Q-36) and section 9 (standing push/PR/merge sentence), the
 Git-authority decision record. Decisions Q-1..Q-29 (ask one at a time with the recommendation first). Lab tenant
 procurement (Q-34). Approvers and DPO identity (Q-5).
@@ -27,18 +47,18 @@ procurement (Q-34). Approvers and DPO identity (Q-5).
 ## Not done
 
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
-neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Q-29 residual-risk signature (blocks the pilot).
+neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Q-29 residual-risk signature (blocks the pilot); the
+Maven-portability smoke build that ADR-011 §4 names as the Gradle mitigation (generated `pom.xml` built in CI); Semgrep,
+Trivy and the Jazzer corpus in CI (they need code to scan; AGENTS.md section 10); `frontend/`.
 
 ## Next (ROADMAP phase 0, in this order)
 
-1. Repository and CI skeleton: build per ADR-011, ArchUnit fences for the data-plane law (AGENTS.md section 5), privacy
-   gate and unit tests in CI, empty data-plane and control modules compiling. No deploy.
-2. Measurements that need the PO or the proxy team, each recorded masked where ROADMAP phase 0 names: ProxySG access-log
+1. Measurements that need the PO or the proxy team, each recorded masked where ROADMAP phase 0 names: ProxySG access-log
    shapes for the AI category and for uncategorised domains (Q-30), ProxySG capability record (Secure ICAP, max object
    size, Preview), SSL-interception bypass audit, vendor header verification on a lab client, login-flow frame fixtures
    (synthetic bodies), per-client trust matrix, Broadcom support case (Q-20), corporate contract facts incl. the art. 9
    instrument per vendor (Q-33), directory attribute for the HR acknowledgement (Q-35).
-3. Phase 1 starts only after the PO's go and the Q-13 decision (neXus ingress PR).
+2. Phase 1 starts only after the PO's go and the Q-13 decision (neXus ingress PR).
 
 Operating model from here: the High tier (Opus) orchestrates with subagents on the lighter tiers
 (`docs/reference/MODEL_TIER_MAP.md`); the architect tier returns only for a new ADR or a decision-record amendment.

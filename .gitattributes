@@ -1,0 +1,4 @@
+# Line endings for the Gradle wrapper scripts (the stock Gradle convention); the wrapper jar is binary.
+gradlew text eol=lf
+*.bat text eol=crlf
+*.jar binary

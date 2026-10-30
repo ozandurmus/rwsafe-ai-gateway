@@ -1,0 +1,6 @@
+# This is a Gradle generated file for dependency locking.
+# Manual edits can break the build and are not advised.
+# This file is expected to be part of source control.
+com.google.re2j:re2j:1.8=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+org.junit:junit-bom:5.10.3=testCompileClasspath,testRuntimeClasspath
+empty=annotationProcessor,testAnnotationProcessor

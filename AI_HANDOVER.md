@@ -9,7 +9,8 @@ Exact next action for the implementation session (High tier, Opus; state your ro
 1. Read `AGENTS.md`, `roles/ENGINEER.md`, `CURRENT_STATE.md`, then `docs/product/ROADMAP.md` phase 0 and ADR-011.
    Run `git fetch` and confirm `origin/main` contains both decision records; if pull request 2 is still open, ask the PO to
    merge it and wait.
-2. Phase 0, movement 1 (repository and CI skeleton, no deploy): on a `feature/*` branch from `origin/main`, create the build
+2. DONE 2026-10-30 (`feature/phase0-repo-ci-skeleton`, see CURRENT_STATE.md). Phase 0, movement 1 (repository and CI
+   skeleton, no deploy): on a `feature/*` branch from `origin/main`, create the build
    per ADR-011, the module layout per `docs/architecture/ARCHITECTURE.md`, ArchUnit fences for AGENTS.md section 5 (no
    `java.util.regex` on untrusted text, no synchronous database or control-plane call on the inline path), CI that runs the
    privacy gate, gitleaks and unit tests and names the commit it tested. Push, PR, merge under AGENTS.md section 9.
