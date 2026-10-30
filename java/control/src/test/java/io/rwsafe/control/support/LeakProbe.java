@@ -1,7 +1,6 @@
 package io.rwsafe.control.support;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.text.Normalizer;
@@ -26,9 +25,9 @@ import javax.crypto.spec.SecretKeySpec;
  * combining marks dropped, so {@code İ}, a decomposed {@code ü} and {@code u} agree (PR 24 review D-02). Tokens of a
  * text: every maximal run of letters, digits, combining marks and {@code . - _ @ \ : + /}; every contiguous span of the
  * letter-and-digit parts inside such a run (so {@code x-<host>-y} still yields {@code <host>}); every maximal digit run
- * inside a run (so {@code ref<digits>} still yields the digits); every run of digits joined across single spaces,
- * hyphens or dots (a phone, card or IBAN written in groups); and the same again for the URL-decoded text when it holds a
- * percent escape. A multi-word canary is also registered word by word (words of four or more letters and digits).
+ * inside a run (so {@code ref<digits>} still yields the digits); for digits written in groups across single spaces,
+ * hyphens, dots or underscores, every contiguous span of the groups (a phone, card or IBAN written in groups, even after
+ * a prefix group); and the same again for the text with each run of valid percent escapes decoded. A multi-word canary is also registered word by word (words of four or more letters and digits).
  */
 public final class LeakProbe {
 
@@ -42,7 +41,7 @@ public final class LeakProbe {
     }
 
     private static final String SEPARATORS = ".-_@\\:+/";
-    private static final String DIGIT_JOINERS = " -.";
+    private static final String DIGIT_JOINERS = " -._";
 
     private final SecretKeySpec key;
     private final Map<String, String> classByDigest = new HashMap<>();
@@ -147,13 +146,36 @@ public final class LeakProbe {
         Set<String> out = new LinkedHashSet<>();
         collect(fold(text), out);
         if (text.indexOf('%') >= 0) {
-            try {
-                collect(fold(URLDecoder.decode(text, StandardCharsets.UTF_8)), out);
-            } catch (IllegalArgumentException notEncoded) {
-                // not a percent-encoded text; its plain tokens are already collected
-            }
+            // Each run of valid %XX escapes is decoded on its own, so a stray '%' elsewhere cannot stop it (N-03).
+            String decoded = percentDecoded(text);
+            collect(fold(decoded), out);
+            collect(fold(decoded.replace('+', ' ')), out);
         }
         return out;
+    }
+
+    /** Decodes every maximal run of {@code %XX} escapes as UTF-8; anything else stays as it is. */
+    static String percentDecoded(String text) {
+        StringBuilder out = new StringBuilder(text.length());
+        int i = 0;
+        while (i < text.length()) {
+            if (escapeAt(text, i)) {
+                java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                while (escapeAt(text, i)) {
+                    bytes.write(Integer.parseInt(text.substring(i + 1, i + 3), 16));
+                    i += 3;
+                }
+                out.append(bytes.toString(StandardCharsets.UTF_8));
+            } else {
+                out.append(text.charAt(i++));
+            }
+        }
+        return out.toString();
+    }
+
+    private static boolean escapeAt(String text, int i) {
+        return i + 2 < text.length() && text.charAt(i) == '%' && Character.digit(text.charAt(i + 1), 16) >= 0
+            && Character.digit(text.charAt(i + 2), 16) >= 0;
     }
 
     private static void collect(String s, Set<String> out) {
@@ -170,20 +192,35 @@ public final class LeakProbe {
             compound(s.substring(i, end), out);
             i = end;
         }
-        // Digit groups joined across one space, hyphen or dot: a number written in groups also yields its digit string.
+        // Digit groups joined across one space, hyphen, dot or underscore: a number written in groups yields every
+        // contiguous span of its groups, so a prefix group ("v1-" before a card) cannot hide the number (N-03).
+        List<String> groups = new ArrayList<>();
         StringBuilder digits = new StringBuilder();
         for (int k = 0; k <= s.length(); k++) {
             char c = k < s.length() ? s.charAt(k) : '\0';
             if (Character.isDigit(c)) {
                 digits.append(c);
-            } else if (DIGIT_JOINERS.indexOf(c) >= 0 && c != '\0' && digits.length() > 0 && k + 1 < s.length()
+            } else if (c != '\0' && DIGIT_JOINERS.indexOf(c) >= 0 && digits.length() > 0 && k + 1 < s.length()
                 && Character.isDigit(s.charAt(k + 1))) {
-                continue;
+                groups.add(digits.toString());
+                digits.setLength(0);
             } else {
                 if (digits.length() > 0) {
-                    out.add(digits.toString());
+                    groups.add(digits.toString());
                 }
+                spans(groups, out);
+                groups.clear();
                 digits.setLength(0);
+            }
+        }
+    }
+
+    private static void spans(List<String> groups, Set<String> out) {
+        for (int a = 0; a < groups.size(); a++) {
+            StringBuilder b = new StringBuilder();
+            for (int z = a; z < groups.size(); z++) {
+                b.append(groups.get(z));
+                out.add(b.toString());
             }
         }
     }

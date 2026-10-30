@@ -12,7 +12,8 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li>a Tier-1 detector recognises it (secret shapes, TCKN, TR IBAN, payment cards), on the value or its folded form;</li>
  *   <li>it holds {@value #MAX_DIGIT_RUN_EXCLUSIVE} or more digits in a row, even glued to letters (a TCKN, phone, card,
- *       customer or account number written as {@code ref<digits>} escapes the detectors' word boundary);</li>
+ *       customer or account number written as {@code ref<digits>} escapes the detectors' word boundary), counting
+ *       across a single space, hyphen, dot or underscore between digits (a number written in groups);</li>
  *   <li>it names an estate-dictionary term, compared on folded letters and digits only (so {@code Şube-X},
  *       {@code SUBE_X} and {@code sube.x} are one term).</li>
  * </ul>
@@ -62,19 +63,33 @@ public class IdentifierCheck {
             return false;
         }
         String nfc = Normalizer.normalize(value, Normalizer.Form.NFC);
-        return !DETECTORS.scan(nfc).isEmpty() || !DETECTORS.scan(fold(nfc).toUpperCase(Locale.ROOT)).isEmpty()
+        String folded = fold(nfc);
+        return !DETECTORS.scan(nfc).isEmpty() || !DETECTORS.scan(folded).isEmpty()
+            || !DETECTORS.scan(folded.toUpperCase(Locale.ROOT)).isEmpty()
             || longestDigitRun(nfc) >= MAX_DIGIT_RUN_EXCLUSIVE;
     }
 
+    /**
+     * The longest run of digits, joined across one space, hyphen, dot or underscore that has a digit on both sides (the
+     * same joins the leak probe makes; PR 24 confirmation review N-02).
+     */
     public static int longestDigitRun(String value) {
         int run = 0;
         int longest = 0;
         for (int i = 0; i < value.length(); i++) {
-            run = Character.isDigit(value.charAt(i)) ? run + 1 : 0;
-            longest = Math.max(longest, run);
+            char c = value.charAt(i);
+            if (Character.isDigit(c)) {
+                run++;
+                longest = Math.max(longest, run);
+            } else if (!(GROUP_SEPARATORS.indexOf(c) >= 0 && i > 0 && Character.isDigit(value.charAt(i - 1))
+                && i + 1 < value.length() && Character.isDigit(value.charAt(i + 1)))) {
+                run = 0;
+            }
         }
         return longest;
     }
+
+    private static final String GROUP_SEPARATORS = " -._";
 
     /** NFC, Turkish letters folded to ASCII, lower case, combining marks dropped. */
     public static String fold(String s) {

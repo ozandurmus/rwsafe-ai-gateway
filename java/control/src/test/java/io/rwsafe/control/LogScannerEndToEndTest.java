@@ -176,6 +176,8 @@ class LogScannerEndToEndTest {
             } finally {
                 live.stop();
             }
+            // The replay deleted the spooled batches (and the raw identity claims they held) from disk (N-03).
+            assertTrue(spoolText(spool).isEmpty(), "the replayed spool is empty");
 
             // Positive control: a marker planted in a log statement (one as a placeholder argument, one as an argument
             // without a placeholder) must be found, or the capture proves nothing.
@@ -226,7 +228,7 @@ class LogScannerEndToEndTest {
         String user = "SYNREALM\\" + token().toLowerCase(Locale.ROOT);
         identityMarkers.put("identity claim", List.of(user.toLowerCase(Locale.ROOT), user.substring(9)));
         String address = "198.51.100." + (1 + random.nextInt(254));
-        identityMarkers.put("client address", List.of(address));
+        identityMarkers.put("client address", List.of(address, address.substring(0, address.lastIndexOf('.'))));
         // The group claim (PO decision Q-39) in the configured plain encoding: estate-style and Turkish-letter names.
         String groupA = "grp-" + token().toLowerCase(Locale.ROOT);
         String tokenB = token();
@@ -301,14 +303,29 @@ class LogScannerEndToEndTest {
         send(icap, IcapClient.respmod(chatRequest(), "HTTP/1.1 200 OK\nContent-Type: text/event-stream\n",
             sse(marker("aborted stream"), tckn), identity));
         events += 2;
-        // Whole (non-streaming) JSON responses: clean, carrying an identifier, malformed (D-05).
+        // Whole (non-streaming) JSON responses: clean, carrying an identifier, malformed (D-05), carrying a secret.
         for (byte[] response : List.of(json("synthetic answer " + marker("JSON response")),
-            json("customer " + tckn + " " + marker("JSON response with an identifier")),
-            ("{\"content\":\"" + marker("malformed JSON response")).getBytes(StandardCharsets.UTF_8))) {
+            json("customer " + tckn + " " + marker("JSON response with an identifier")))) {
             send(icap, IcapClient.respmod(chatRequest(), "HTTP/1.1 200 OK\nContent-Type: application/json\n"
                 + "Content-Length: " + response.length + "\n", response, identity));
             events++;
         }
+        // A malformed response is not refused: it is relayed unchanged to its own recipient (the review's N-03 took it
+        // for an error page). Asserted as a relay, so its marker in the answer is the user's own content, not a leak.
+        String malformedMarker = marker("malformed JSON response");
+        byte[] malformed = ("{\"content\":\"" + malformedMarker).getBytes(StandardCharsets.UTF_8);
+        String relayed = send(icap, IcapClient.respmod(chatRequest(), "HTTP/1.1 200 OK\nContent-Type: application/json\n"
+            + "Content-Length: " + malformed.length + "\n", malformed, identity));
+        assertTrue(relayed.startsWith("ICAP/1.0 204") || (relayed.contains("HTTP/1.1 200 OK")
+            && !relayed.contains("rwsafe_blocked") && !relayed.contains("HTTP/1.1 403")), "the malformed response is relayed");
+        events++;
+        // A response carrying a secret is refused: its page is scanned (N-03).
+        byte[] secret = json("deploy with " + key + " " + marker("JSON response with a secret"));
+        String refused = send(icap, IcapClient.respmod(chatRequest(), "HTTP/1.1 200 OK\nContent-Type: application/json\n"
+            + "Content-Length: " + secret.length + "\n", secret, identity));
+        assertTrue(!refused.contains(key), "the secret-carrying response was not relayed");
+        errorPages.add(refused);
+        events++;
         // An ICAP header line without a colon, a chunk size that is not hex: framing errors on fresh connections.
         String text = new String(claude(json("synthetic"), identity), StandardCharsets.UTF_8);
         errorPages.add(send(icap, text.replaceFirst("Allow: 204\r\n", "Allow: 204\r\n" + marker("ICAP header line")

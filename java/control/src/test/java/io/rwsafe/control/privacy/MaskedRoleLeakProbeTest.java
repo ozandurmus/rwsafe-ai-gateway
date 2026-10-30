@@ -314,6 +314,18 @@ class MaskedRoleLeakProbeTest {
             }
         }
         assertEquals(refusedFields.size() * refusedValues.size(), refused);
+        // A finding's class is a known DLP class only (PR 24 confirmation review N-01).
+        String tckn0 = canaries.tckns.get(0);
+        for (String cls : List.of("REF" + tckn0, canaries.ibans.get(0), "TEL" + canaries.mobiles.get(0),
+            Canaries.fold(canaries.claimants.get(0).given()).toUpperCase(java.util.Locale.ROOT) + "_"
+                + Canaries.fold(canaries.claimants.get(0).family()).toUpperCase(java.util.Locale.ROOT),
+            canaries.hosts.get(0).toUpperCase(java.util.Locale.ROOT).replace('-', '_'), "UNKNOWN_CLASS")) {
+            ObjectNode e = event("claude", "REDACT", claims.get(0), canaries.addresses.get(0));
+            e.putArray("findings").addObject().put("class", cls).put("count", 1);
+            ApiClient.Response r = sink.post("/internal/v1/verdict-events", batch(e), false);
+            assertEquals(400, r.status(), "a finding class outside the DLP classes");
+            assertTrue(canaries.probe().scan("ingestion refusal", r.body()).isEmpty(), "the refusal echoed the class");
+        }
         assertEquals(stored, jdbc.queryForObject("SELECT count(*) FROM verdict_event", Integer.class),
             "a refused batch stored nothing");
 
@@ -362,7 +374,29 @@ class MaskedRoleLeakProbeTest {
             assertEquals(400, r.status(), "an identifier-shaped host label: " + r.body().path("reason").asText());
             assertTrue(canaries.probe().scan("host refusal", r.body()).isEmpty(), "the refusal echoed the host");
         }
-        for (String code : List.of("REF" + canaries.tckns.get(0), "TCKN_" + canaries.tckns.get(1))) {
+        // Numbers written in groups (N-02): a reason code, a platform id and directory group names (Q-1).
+        String mobile0 = canaries.mobiles.get(0);
+        String groupedTckn = tckn0.substring(0, 5) + "-" + tckn0.substring(5, 10) + "-" + tckn0.substring(10);
+        String underscoredMobile = "TEL_" + mobile0.substring(0, 4) + "_" + mobile0.substring(4, 7) + "_"
+            + mobile0.substring(7, 9) + "_" + mobile0.substring(9);
+        ApiClient.Response groupedPlatform = admin.post("/api/v1/policy/rules/platform.v" + groupedTckn + "/versions",
+            JSON.createObjectNode().put("mode", "monitor").put("reasonCode", "SYNTHETIC_HOST").toString(), true);
+        assertTrue(groupedPlatform.status() >= 400 && groupedPlatform.status() < 500, "a grouped TCKN as a platform id");
+        assertTrue(canaries.probe().scan("draft refusal", groupedPlatform.body()).isEmpty(), "the refusal echoed it");
+        for (List<String> groups : List.of(List.of("Ekip " + mobile0.substring(0, 4) + " " + mobile0.substring(4, 7)
+            + " " + mobile0.substring(7, 9) + " " + mobile0.substring(9)), List.of("grp-" + groupedTckn),
+            List.of("ops-" + canaries.card))) {
+            ObjectNode scopedDraft = JSON.createObjectNode().put("action", "BLOCK").put("mode", "monitor")
+                .put("reasonCode", "SYNTHETIC_SCOPE");
+            com.fasterxml.jackson.databind.node.ArrayNode names = scopedDraft.putObject("scope").put("kind", "GROUPS")
+                .putArray("groups");
+            groups.forEach(g -> names.add(g));
+            ApiClient.Response r = admin.post("/api/v1/policy/rules/class.TCKN/versions", scopedDraft.toString(), true);
+            assertEquals(400, r.status(), "an identifier-shaped group name");
+            assertEquals("INVALID_SCOPE", r.body().path("reason").asText());
+            assertTrue(canaries.probe().scan("scope refusal", r.body()).isEmpty(), "the refusal echoed the group");
+        }
+        for (String code : List.of("REF" + canaries.tckns.get(0), "TCKN_" + canaries.tckns.get(1), underscoredMobile)) {
             String body = JSON.createObjectNode().put("action", "BLOCK").put("mode", "monitor").put("reasonCode", code)
                 .toString();
             ApiClient.Response r = admin.post("/api/v1/policy/rules/class.TCKN/versions", body, true);

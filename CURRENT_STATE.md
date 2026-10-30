@@ -256,7 +256,11 @@ Both run in `:control:test`, so in `unitTest` and the CI `java-tests` job; no wo
   (PO, Q-1 and Q-2). The probe compares in NFC and Turkish-folded form with the extra digit joins, and its positive control
   covers every canary class: a test-only fixture route shows the classes no real screen holds. The log scanner also runs
   with the capture sink down (the spool is written, scanned and replayed), sends the identity headers on every request,
-  and finds two planted markers before it asserts no finding.
+  and finds two planted markers before it asserts no finding. Confirmation review
+  (`PR24_2026_10_31_ARGON_LEAK_PROBE_RECHECK.md`, MERGE WITH CORRECTIONS) answered in the same response file: finding
+  classes are known DLP classes only; the identifier check joins digit groups across a space, hyphen, dot or underscore
+  and also applies to scope group names and at activation; the probe decodes percent escapes per sequence and emits every
+  span of grouped digits.
 - Not covered: a browser-level (Playwright) walk of the screens (needs a browser download; the UI reads only the API
   client the probe enumerates); the layer 4 name dictionary and customer numbers (not implemented, so names are seeded
   only where pseudonymisation applies or where ingestion refuses them); third-party loggers below their production

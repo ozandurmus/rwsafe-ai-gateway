@@ -249,6 +249,12 @@ public class PolicyRegistryService {
                 "A group scope takes 1 to 32 short directory group names of 1 to 256 characters, without commas or "
                     + "control characters, each named once (compared after normalisation: case, Turkish i forms).");
         }
+        // Directory group names are estate names by nature (no estate check; the masked role sees GRP- pseudonyms), but
+        // never an identifier shape (PO decision on PR 24 confirmation review Q-1).
+        if (groups.stream().anyMatch(IdentifierCheck::identifierShape)) {
+            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "INVALID_SCOPE",
+                "A group name may not carry an identifier-shaped value (a number, a card, an account or a secret).");
+        }
         return new Scope(PolicyRuleVersion.SCOPE_GROUPS, groups);
     }
 
@@ -350,6 +356,11 @@ public class PolicyRegistryService {
                 "This activation would leave a registry that does not compile (" + e.reason() + "); nothing changed.");
         }
         for (PolicyRuleVersion v : active) {
+            // Every activating version's free values once more (N-02): the reason code, the platform row, the groups.
+            if (namesEstate(v.reasonCode()) || carriesIdentifier(v.reasonCode())
+                || (v.scopeGroups() != null && v.scopeGroups().stream().anyMatch(IdentifierCheck::identifierShape))) {
+                throw invalid("An active version would carry an identifier or an estate name; nothing changed.");
+            }
             if (RegistryVocabulary.KIND_PLATFORM.equals(v.kind()) && (namesEstate(v.platformId())
                 || rowNamesEstate(new PlatformRow(v.platformId(), v.hostSuffixes(), v.apiHosts(), v.loginHosts())))) {
                 throw estateRefused();

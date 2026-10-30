@@ -59,6 +59,14 @@ class LeakProbeTest {
         assertEquals(Set.of("MOBILE"), classes(probe, mobile.substring(0, 4) + "." + mobile.substring(4)), "dotted");
         assertEquals(Set.of("TCKN"), classes(probe, "q=" + URLEncoder.encode("kimlik " + tckn, StandardCharsets.UTF_8)
             .replace("+", "%20")), "percent-encoded");
+        assertEquals(Set.of("TCKN"), classes(probe, "100% sure: q=" + URLEncoder.encode("kimlik " + tckn,
+            StandardCharsets.UTF_8)), "a stray percent sign does not stop the decoding (N-03)");
+        assertEquals(Set.of("CARD"), classes(probe, "v1-" + card.substring(0, 4) + "-" + card.substring(4, 8) + "-"
+            + card.substring(8, 12) + "-" + card.substring(12)), "a prefix group before a grouped card (N-03)");
+        assertEquals(Set.of("MOBILE"), classes(probe, "1 " + mobile.substring(0, 4) + " " + mobile.substring(4, 7) + " "
+            + mobile.substring(7, 9) + " " + mobile.substring(9)), "a digit before a grouped mobile (N-03)");
+        assertEquals(Set.of("MOBILE"), classes(probe, "TEL_" + mobile.substring(0, 4) + "_" + mobile.substring(4, 7) + "_"
+            + mobile.substring(7, 9) + "_" + mobile.substring(9)), "an underscore-grouped mobile");
     }
 
     @Test

@@ -192,7 +192,8 @@ public class IngestionService {
         List<FindingCount> out = new ArrayList<>(findings.size());
         Set<String> classes = new HashSet<>();
         for (VerdictEventPayload.FindingPayload f : findings) {
-            if (f == null || f.dataClass() == null || !dataClass(f.dataClass()) || !classes.add(f.dataClass())
+            // A known DLP class only (PR 24 confirmation review N-01): a free class name could carry an identifier.
+            if (f == null || f.dataClass() == null || !knownDataClass(f.dataClass()) || !classes.add(f.dataClass())
                 || f.count() == null || f.count() < 1 || f.count() > 1_000_000) {
                 throw new InvalidEventException(i, "findings");
             }
@@ -255,18 +256,5 @@ public class IngestionService {
         } catch (IllegalArgumentException e) {
             return false;
         }
-    }
-
-    private static boolean dataClass(String s) {
-        if (s.isEmpty() || s.length() > 32 || s.charAt(0) < 'A' || s.charAt(0) > 'Z') {
-            return false;
-        }
-        for (int k = 0; k < s.length(); k++) {
-            char c = s.charAt(k);
-            if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) {
-                return false;
-            }
-        }
-        return true;
     }
 }
