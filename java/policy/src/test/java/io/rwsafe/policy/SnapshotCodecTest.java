@@ -46,10 +46,9 @@ class SnapshotCodecTest {
         assertEquals("FUTURE", reason(doc("1", ALL, true).replace("2026-10-30T17:00:00Z", "2026-10-30T19:00:00Z")));
     }
 
+    /** PR 14 review D-04: no snapshot, monitor or enforce, may weaken a fail-closed class. */
     @Test
-    void monitorSnapshotsMayRelaxFailClosedClasses() throws Exception {
-        PolicySnapshot s = SnapshotCodec.parse(doc("1", ALL.replace("\"BLOCK\"", "\"WARN\""), false)
-            .getBytes(StandardCharsets.UTF_8), NOW);
-        assertEquals(Action.WARN, s.actionFor(DataClass.SECRET));
+    void monitorSnapshotsCannotRelaxFailClosedClassesEither() {
+        assertEquals("FAIL_CLOSED_WEAKENED", reason(doc("1", ALL.replace("\"BLOCK\"", "\"WARN\""), false)));
     }
 }

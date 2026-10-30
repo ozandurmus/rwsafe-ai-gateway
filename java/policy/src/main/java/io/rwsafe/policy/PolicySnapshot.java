@@ -62,6 +62,11 @@ public final class PolicySnapshot {
         return enforceFailClosed;
     }
 
+    /** True when signed longer ago than {@link SnapshotCodec#MAX_AGE}; the built-in snapshot is never stale (D-03). */
+    public boolean isStale(Instant now) {
+        return issuedAt != null && issuedAt.isBefore(now.minus(SnapshotCodec.MAX_AGE));
+    }
+
     /** Null for the built-in development snapshot. */
     public Instant issuedAt() {
         return issuedAt;

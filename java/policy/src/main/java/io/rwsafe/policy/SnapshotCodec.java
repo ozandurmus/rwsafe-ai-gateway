@@ -12,7 +12,7 @@ import java.util.Map;
 /**
  * Reads a signed policy snapshot body (docs/architecture/POLICY_SNAPSHOT_CONTRACT.md) into a {@link PolicySnapshot}. Any
  * deviation from the contract refuses the whole snapshot: a missing or unknown class, an unknown action, a fail-closed
- * class set to ALLOW or WARN while enforcing, a stale or future issue time, an unknown format.
+ * class set to ALLOW or WARN, a stale or future issue time, an unknown format.
  */
 public final class SnapshotCodec {
 
@@ -84,7 +84,8 @@ public final class SnapshotCodec {
             } catch (IllegalArgumentException ex) {
                 throw new Rejected("UNKNOWN_CLASS_OR_ACTION");
             }
-            if (enforce && c.failClosed() && (a == Action.ALLOW || a == Action.WARN)) {
+            // ADR-010 §1, §4: fail-closed classes have no monitor-only relaxation, in any snapshot (PR 14 review D-04).
+            if (c.failClosed() && (a == Action.ALLOW || a == Action.WARN)) {
                 throw new Rejected("FAIL_CLOSED_WEAKENED");
             }
             classActions.put(c, a);

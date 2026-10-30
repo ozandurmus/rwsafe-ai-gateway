@@ -7,6 +7,7 @@ import io.rwsafe.detect.DetectorSet;
 import io.rwsafe.policy.FlowClassifier;
 import io.rwsafe.policy.PolicyEvaluator;
 import io.rwsafe.policy.PolicySnapshot;
+import java.time.Clock;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -37,6 +38,7 @@ public final class IcapEngine {
     private final Admission admission;
     private final EngineMetrics metrics = new EngineMetrics();
     private volatile long drainingSinceNanos = -1;
+    private final Clock clock;
 
     /** @param initial the starting snapshot, or null to start not ready until {@link #activate} succeeds */
     public IcapEngine(PolicySnapshot initial, DetectorSet detectors, EventSink events, EngineConfig config) {
@@ -45,6 +47,12 @@ public final class IcapEngine {
 
     public IcapEngine(PolicySnapshot initial, DetectorSet detectors, EventSink events, EngineConfig config,
                       Admission admission) {
+        this(initial, detectors, events, config, admission, Clock.systemUTC());
+    }
+
+    public IcapEngine(PolicySnapshot initial, DetectorSet detectors, EventSink events, EngineConfig config,
+                      Admission admission, Clock clock) {
+        this.clock = clock;
         if (initial != null) {
             active.set(Policy.of(initial));
         }
@@ -111,8 +119,17 @@ public final class IcapEngine {
         return draining() && System.nanoTime() - drainingSinceNanos > config.drainServeNanos();
     }
 
-    /** Ready: a policy is active, not draining, and the event path is not saturated. */
+    /**
+     * The active policy if it can still be used: an expired one (signed more than 24 hours ago and not renewed, because
+     * the control plane is unreachable or keeps answering 304) is not (SR-DP-8, PR 14 review D-03).
+     */
+    public Policy usablePolicy() {
+        Policy p = active.get();
+        return p == null || p.snapshot().isStale(clock.instant()) ? null : p;
+    }
+
+    /** Ready: a usable policy, not draining, and the event path is not saturated. */
     public boolean available() {
-        return active.get() != null && !draining() && !events.saturated();
+        return usablePolicy() != null && !draining() && !events.saturated();
     }
 }

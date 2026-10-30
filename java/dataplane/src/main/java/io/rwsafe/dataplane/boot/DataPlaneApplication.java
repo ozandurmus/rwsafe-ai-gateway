@@ -41,7 +41,9 @@ public final class DataPlaneApplication {
 
     public static void main(String[] args) throws Exception {
         String bind = env("RWSAFE_ICAP_BIND", "0.0.0.0");
-        int port = Integer.parseInt(env("RWSAFE_ICAP_PORT", "1344"));
+        String cert = System.getenv("RWSAFE_TLS_CERT");
+        // With Secure ICAP configured, plain ICAP (H-2) runs only when RWSAFE_ICAP_PORT asks for it (D-09).
+        int port = Integer.parseInt(env("RWSAFE_ICAP_PORT", blank(cert) ? "1344" : "0"));
         EngineConfig config = EngineConfig.defaults()
             .withAdmission(1000, 32, 256, list(env("RWSAFE_SHARED_ADDRESS_PREFIXES", "")));
 
@@ -50,7 +52,8 @@ public final class DataPlaneApplication {
         String spool = System.getenv("RWSAFE_SPOOL_DIR");
         EventShipper shipper = new EventShipper(queue, blank(events) ? null : URI.create(events),
             blank(spool) ? null : Path.of(spool), 256L * 1024 * 1024, Duration.ofSeconds(1));
-        daemon(shipper, "rwsafe-event-shipper");
+        Thread shipperThread = new Thread(shipper, "rwsafe-event-shipper");
+        shipperThread.start();
 
         String snapshotUrl = System.getenv("RWSAFE_SNAPSHOT_URL");
         IcapEngine engine = new IcapEngine(blank(snapshotUrl) ? Snapshots.builtinDevelopment() : null,
@@ -75,7 +78,6 @@ public final class DataPlaneApplication {
         if (port > 0) {
             server.start(bind, port);
         }
-        String cert = System.getenv("RWSAFE_TLS_CERT");
         if (!blank(cert)) {
             server.startSecure(bind, Integer.parseInt(env("RWSAFE_ICAPS_PORT", "11344")), new File(cert),
                 new File(System.getenv("RWSAFE_TLS_KEY")), new File(System.getenv("RWSAFE_TLS_CLIENT_CA")));
@@ -87,6 +89,12 @@ public final class DataPlaneApplication {
             server.close();
             metrics.close();
             shipper.stop();
+            try {
+                // D-01: the queued events of the drain reach the control plane or the spool before the JVM exits.
+                shipperThread.join(15_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             if (pollerRef != null) {
                 pollerRef.stop();
             }

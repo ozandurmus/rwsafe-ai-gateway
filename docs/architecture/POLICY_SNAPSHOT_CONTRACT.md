@@ -31,7 +31,8 @@ unchanged.
   one it runs (a replayed older snapshot never loads).
 - `classActions`: an object mapping class to action, one entry per DLP class the data plane knows (`SECRET`, `TCKN`, `TR_IBAN`, `PAYMENT_CARD`); values
   `ALLOW`, `WARN`, `REDACT`, `BLOCK`. A missing class, an unknown class or an unknown value refuses the whole snapshot.
-  Fail-closed classes never take `ALLOW` or `WARN` in an enforce snapshot (SR-DLP-1); the data plane refuses such a snapshot.
+  Fail-closed classes never take `ALLOW` or `WARN` in any snapshot, monitor or enforce (SR-DLP-1, ADR-010 §4); the data
+  plane refuses such a snapshot.
   The built-in development values, as a table:
 
   | Class | Action |
@@ -60,7 +61,8 @@ committed; tests generate keys at runtime.
 ## Data plane behaviour
 
 - `RWSAFE_SNAPSHOT_URL` set: the engine starts **not ready** (OPTIONS 503) until the first valid snapshot, then polls every
-  30 s with `If-None-Match`. A refused snapshot keeps the active one and counts `snapshot_refused_total{reason}`.
+  30 s with `If-None-Match`. A snapshot older than 24 hours stops being served (OPTIONS and transactions 503) until a newer one
+  arrives. A refused snapshot keeps the active one and counts `snapshot_refused_total{reason}`.
 - The last good snapshot (body and signature) is written to the emptyDir path in `RWSAFE_SNAPSHOT_CACHE`; on restart it is
   verified again and used until the control plane answers (staleness still applies).
 - `RWSAFE_SNAPSHOT_URL` unset: the built-in development snapshot (local runs and tests only).
@@ -71,3 +73,7 @@ committed; tests generate keys at runtime.
 Compiles the snapshot from the policy registry's approved entries (two approvals, AGENTS.md section 6), assigns the next
 version, signs the exact bytes it serves, and keeps every issued snapshot (version, id, body digest, approvers) in the
 audit ledger.
+
+Re-issue: the control plane issues the active policy again, with the next version and a fresh `issuedAt`, at least every
+6 hours even when no rule changed. The data plane stops serving a snapshot older than 24 hours (SR-DP-8) and activates
+only a strictly higher version, so without the re-issue a quiet registry would take every engine out of service.

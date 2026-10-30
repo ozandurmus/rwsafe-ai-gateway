@@ -27,7 +27,7 @@ public final class Admission {
 
     private final EngineConfig config;
     private final AtomicInteger inflight = new AtomicInteger();
-    private final ConcurrentHashMap<String, AtomicInteger> perIdentity = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Integer> perIdentity = new ConcurrentHashMap<>();
     private final AtomicLong bodyBytes = new AtomicLong();
     private final LongAdder identityCapped = new LongAdder();
     private final LongAdder engineFull = new LongAdder();
@@ -44,21 +44,32 @@ public final class Admission {
             engineFull.increment();
             return Refusal.ENGINE_FULL;
         }
+        // Claims are attacker-influenced: bounded before they become a key (PR 14 review D-05).
+        String user = bounded(userClaim, 256);
+        String address = bounded(clientAddress, 64);
         String key;
         int limit;
-        if (userClaim != null && !userClaim.isBlank()) {
-            key = "u:" + userClaim;
+        if (user != null && !user.isBlank()) {
+            key = "u:" + user;
             limit = config.perIdentityInflight();
-        } else if (clientAddress != null && shared(clientAddress)) {
-            key = "s:" + clientAddress;
+        } else if (address != null && shared(address)) {
+            key = "s:" + address;
             limit = config.perSharedAddress();
         } else {
-            key = "a:" + (clientAddress == null ? "" : clientAddress);
+            key = "a:" + (address == null ? "" : address);
             limit = config.perIdentityInflight();
         }
-        AtomicInteger n = perIdentity.computeIfAbsent(key, k -> new AtomicInteger());
-        if (n.incrementAndGet() > limit) {
-            n.decrementAndGet();
+        boolean[] admitted = new boolean[1];
+        // Check and increment in one atomic step per key, so a concurrent exit cannot orphan a counter (D-05).
+        perIdentity.compute(key, (k, n) -> {
+            int current = n == null ? 0 : n;
+            if (current >= limit) {
+                return n;
+            }
+            admitted[0] = true;
+            return current + 1;
+        });
+        if (!admitted[0]) {
             inflight.decrementAndGet();
             identityCapped.increment();
             return Refusal.IDENTITY_LIMIT;
@@ -73,10 +84,7 @@ public final class Admission {
         }
         t.released = true;
         inflight.decrementAndGet();
-        AtomicInteger n = perIdentity.get(t.key);
-        if (n != null && n.decrementAndGet() <= 0) {
-            perIdentity.remove(t.key, n);
-        }
+        perIdentity.computeIfPresent(t.key, (k, n) -> n <= 1 ? null : n - 1);
     }
 
     /** Reserves body bytes against the pod-wide budget; false means the transaction gets 503 (PLAT-F1). */
@@ -94,6 +102,10 @@ public final class Admission {
         if (bytes > 0) {
             bodyBytes.addAndGet(-bytes);
         }
+    }
+
+    private static String bounded(String v, int max) {
+        return v == null || v.length() <= max ? v : v.substring(0, max);
     }
 
     private boolean shared(String address) {

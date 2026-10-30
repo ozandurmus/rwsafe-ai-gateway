@@ -26,9 +26,9 @@ import java.util.concurrent.atomic.LongAdder;
  */
 public final class SnapshotPoller implements Runnable {
 
-    private static final String BODY = "snapshot.json";
-    private static final String SIGNATURE = "snapshot.sig";
-    private static final String KEY_ID = "snapshot.kid";
+    /** One file holding key id, signature and body, replaced atomically, so they can never disagree (D-08). */
+    private static final String ENVELOPE = "snapshot.envelope";
+    private static final int MAX_BODY = 1024 * 1024;
 
     private final IcapEngine engine;
     private final URI url;
@@ -57,13 +57,20 @@ public final class SnapshotPoller implements Runnable {
             return;
         }
         try {
-            Path body = cacheDir.resolve(BODY);
-            if (!Files.exists(body)) {
+            Path envelope = cacheDir.resolve(ENVELOPE);
+            if (!Files.exists(envelope) || Files.size(envelope) > 2L * MAX_BODY) {
                 return;
             }
-            offer(Files.readAllBytes(body), Files.readString(cacheDir.resolve(KEY_ID)).strip(),
-                Files.readString(cacheDir.resolve(SIGNATURE)).strip(), false);
-        } catch (IOException e) {
+            String text = Files.readString(envelope, StandardCharsets.US_ASCII);
+            int a = text.indexOf('\n');
+            int b = a < 0 ? -1 : text.indexOf('\n', a + 1);
+            if (b < 0) {
+                count("CACHE_UNREADABLE");
+                return;
+            }
+            byte[] body = java.util.Base64.getDecoder().decode(text.substring(b + 1).strip());
+            offer(body, text.substring(0, a), text.substring(a + 1, b), false);
+        } catch (IOException | IllegalArgumentException e) {
             count("CACHE_UNREADABLE");
         }
     }
@@ -89,7 +96,12 @@ public final class SnapshotPoller implements Runnable {
             b.header("If-None-Match", "\"" + active.snapshot().version() + "\"");
         }
         try {
-            HttpResponse<byte[]> r = client.send(b.build(), HttpResponse.BodyHandlers.ofByteArray());
+            HttpResponse<java.io.InputStream> r = client.send(b.build(), HttpResponse.BodyHandlers.ofInputStream());
+            byte[] body;
+            try (java.io.InputStream in = r.body()) {
+                // Never buffer more than the contract allows (D-08).
+                body = in.readNBytes(MAX_BODY + 1);
+            }
             if (r.statusCode() == 304) {
                 return;
             }
@@ -97,7 +109,11 @@ public final class SnapshotPoller implements Runnable {
                 count("HTTP_" + r.statusCode());
                 return;
             }
-            offer(r.body(), r.headers().firstValue("X-RWSAFE-Key-Id").orElse(null),
+            if (body.length > MAX_BODY) {
+                count("TOO_LARGE");
+                return;
+            }
+            offer(body, r.headers().firstValue("X-RWSAFE-Key-Id").orElse(null),
                 r.headers().firstValue("X-RWSAFE-Signature").orElse(null), true);
         } catch (IOException e) {
             count("UNREACHABLE");
@@ -121,9 +137,8 @@ public final class SnapshotPoller implements Runnable {
         }
         if (persist && cacheDir != null) {
             try {
-                write(BODY, body);
-                write(KEY_ID, keyId.getBytes(StandardCharsets.US_ASCII));
-                write(SIGNATURE, signature.getBytes(StandardCharsets.US_ASCII));
+                write(ENVELOPE, (keyId + "\n" + signature + "\n" + java.util.Base64.getEncoder().encodeToString(body))
+                    .getBytes(StandardCharsets.US_ASCII));
             } catch (IOException e) {
                 count("CACHE_UNWRITABLE");
             }

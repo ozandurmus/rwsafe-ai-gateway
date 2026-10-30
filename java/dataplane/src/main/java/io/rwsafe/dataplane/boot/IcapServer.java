@@ -47,6 +47,12 @@ public final class IcapServer implements AutoCloseable {
     /** Secure ICAP: TLS 1.2/1.3 with a client certificate chained to {@code clientCa} required (ICAP spec §2). */
     public int startSecure(String host, int port, File certChain, File privateKey, File clientCa)
         throws InterruptedException, SSLException {
+        // Netty would fall back to the JVM trust store without a client CA: refuse instead (PR 14 review D-09).
+        for (File f : new File[] {certChain, privateKey, clientCa}) {
+            if (f == null || !f.isFile()) {
+                throw new IllegalArgumentException("Secure ICAP needs the certificate chain, its key and the client CA");
+            }
+        }
         SslContext tls = SslContextBuilder.forServer(certChain, privateKey)
             .trustManager(clientCa)
             .clientAuth(ClientAuth.REQUIRE)
@@ -90,9 +96,10 @@ public final class IcapServer implements AutoCloseable {
         for (Channel ch : channels) {
             ch.close().awaitUninterruptibly(5, TimeUnit.SECONDS);
         }
-        boss.shutdownGracefully(0, 2, TimeUnit.SECONDS);
-        workers.shutdownGracefully(0, 5, TimeUnit.SECONDS);
-        inspection.shutdownGracefully(0, 5, TimeUnit.SECONDS);
+        // Wait for the loops to stop, so every verdict event of the drain is queued before the shipper drains (D-01).
+        inspection.shutdownGracefully(0, 5, TimeUnit.SECONDS).awaitUninterruptibly(6, TimeUnit.SECONDS);
+        workers.shutdownGracefully(0, 5, TimeUnit.SECONDS).awaitUninterruptibly(6, TimeUnit.SECONDS);
+        boss.shutdownGracefully(0, 2, TimeUnit.SECONDS).awaitUninterruptibly(3, TimeUnit.SECONDS);
     }
 
     private static void sleepUntil(long startNanos, long millis) {

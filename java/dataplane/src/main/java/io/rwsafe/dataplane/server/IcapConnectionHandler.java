@@ -177,6 +177,10 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
 
     private void process(ChannelHandlerContext ctx) {
         while (state != State.CLOSED) {
+            // Every transaction, pipelined ones included, runs under a deadline from its first byte (D-06).
+            if (state == State.HEAD && txnTimer == null && cum.isReadable()) {
+                armTimer(ctx, engine.config().bodyTimeoutMillis());
+            }
             switch (state) {
                 case HEAD -> {
                     if (!readHead(ctx)) {
@@ -222,7 +226,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         byte[] head = new byte[end - cum.readerIndex()];
         cum.readBytes(head);
         req = IcapRequest.parse(head, 0, head.length);
-        policy = engine.policy();
+        policy = engine.usablePolicy();
         startNanos = System.nanoTime();
         correlation = UUID.randomUUID().toString();
         IcapRequest.Method serviceMethod = serviceMethod(req.servicePath());
@@ -230,7 +234,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             throw new IcapProtocolException(404, "unknown service");
         }
         if (req.method() == IcapRequest.Method.OPTIONS) {
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(
+            ctx.writeAndFlush(msg(
                 IcapResponses.options(serviceMethod, isTag(), engine.available())));
             resetTransaction();
             return true;
@@ -427,7 +431,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         HeaderBlock http = request ? reqHttp : resHttp;
         byte[] original = nullBody ? null : Arrays.copyOf(body.bytes(), body.length());
         byte[] head = nullBody ? (request ? reqHttpRaw : resHttpRaw) : withLength(http, original.length);
-        ctx.writeAndFlush(Unpooled.wrappedBuffer(
+        ctx.writeAndFlush(msg(
             IcapResponses.modified(isTag(), request ? "req-hdr" : "res-hdr", head, original, false)));
         return true;
     }
@@ -505,7 +509,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             "Content-Encoding"), List.of(new HeaderBlock.Field("Content-Length", Integer.toString(replacement.length)),
             new HeaderBlock.Field("Content-Type", "text/plain; charset=utf-8")));
         emit(Verdict.STREAM_ABORTED, reason, findings);
-        ctx.writeAndFlush(Unpooled.wrappedBuffer(
+        ctx.writeAndFlush(msg(
             IcapResponses.modified(isTag(), "res-hdr", head.toBytes(), replacement, false)));
         resetTransaction();
     }
@@ -690,6 +694,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         }
         state = State.CLOSED;
         cancelTimer();
+        releaseAdmission();
         ctx.writeAndFlush(msg(answer)).addListener(ChannelFutureListener.CLOSE);
     }
 
@@ -704,6 +709,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     private void fail(ChannelHandlerContext ctx, int status, String phrase) {
         state = State.CLOSED;
         cancelTimer();
+        releaseAdmission();
         ctx.writeAndFlush(msg(IcapResponses.error(status, phrase, isTag(), true)))
             .addListener(ChannelFutureListener.CLOSE);
     }
