@@ -89,6 +89,22 @@ public final class IcapResponses {
         return out;
     }
 
+    /** The same ICAP message with {@code Connection: close} after its status line, for a draining engine (ICAP spec §7). */
+    public static byte[] closing(byte[] message) {
+        String head = new String(message, 0, Math.min(message.length, 4096), StandardCharsets.ISO_8859_1);
+        int eol = head.indexOf("\r\n");
+        int end = head.indexOf("\r\n\r\n");
+        if (eol < 0 || (end >= 0 && head.substring(0, end).contains("\r\nConnection: close"))) {
+            return message;
+        }
+        byte[] add = "Connection: close\r\n".getBytes(StandardCharsets.US_ASCII);
+        byte[] out = new byte[message.length + add.length];
+        System.arraycopy(message, 0, out, 0, eol + 2);
+        System.arraycopy(add, 0, out, eol + 2, add.length);
+        System.arraycopy(message, eol + 2, out, eol + 2 + add.length, message.length - eol - 2);
+        return out;
+    }
+
     public static byte[] lastChunk() {
         return LAST_CHUNK.clone();
     }

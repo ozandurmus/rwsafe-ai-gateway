@@ -18,6 +18,14 @@ card numbers are redacted; the AI-category flow is fail-closed). Environment var
 | `RWSAFE_ICAP_BIND` | `127.0.0.1` for `runIcap`, `0.0.0.0` in the image | listen address |
 | `RWSAFE_ICAP_PORT` | `1344` | listen port (plain ICAP, exception H-2) |
 | `RWSAFE_CONTROL_EVENTS_URL` | unset | control-plane verdict-event endpoint (`POST /internal/v1/verdict-events`); unset counts and discards events |
+| `RWSAFE_SPOOL_DIR` | unset | directory for the verdict spool (emptyDir in the pod); unset, an outage holds events in the queue and fail-closed flows block when it fills |
+| `RWSAFE_ICAPS_PORT` | `11344` | Secure ICAP listener, opened only when the three TLS variables below are set |
+| `RWSAFE_TLS_CERT`, `RWSAFE_TLS_KEY`, `RWSAFE_TLS_CLIENT_CA` | unset | server certificate chain, its PKCS#8 key and the CA that issued the proxy's client certificate (PEM files; never committed) |
+| `RWSAFE_SNAPSHOT_URL` | unset | the control plane's signed snapshot endpoint (`docs/architecture/POLICY_SNAPSHOT_CONTRACT.md`); set, the engine is not ready until the first valid snapshot |
+| `RWSAFE_SNAPSHOT_PUBLIC_KEYS` | unset | comma-separated `<key id>.pem` public keys that verify snapshots |
+| `RWSAFE_SNAPSHOT_CACHE` | unset | directory for the last good snapshot, verified again at start |
+| `RWSAFE_METRICS_PORT` | `9090` | `GET /metrics` (Prometheus text, fixed labels only) and `GET /ready` |
+| `RWSAFE_SHARED_ADDRESS_PREFIXES` | unset | client-address prefixes shared by many users (VDI, terminal servers): 256 transactions in flight instead of 32 |
 
 In a second terminal, replay the synthetic sample traffic:
 
@@ -135,7 +143,6 @@ without the dictionary the masked role gets 503.
 
 ## What the engine does not do yet
 
-Secure ICAP (11344, mutual TLS), the signed policy snapshot pulled from the control plane, per-identity in-flight caps
-and the pod-wide body semaphore, the drain window with `Connection: close`, the verdict spool, decompression and base64
-layer decoding, the file pipeline, login-step tenant rules, shape fingerprints per flow, and metrics. Each is a row of
-ICAP spec §2 to §8 that a later slice implements.
+Decompression and base64 layer decoding, the file pipeline, login-step tenant rules, shape fingerprints per flow, and
+group claims selecting policy on Secure ICAP connections. Each is a row of ICAP spec §2 to §5 that a later slice
+implements.

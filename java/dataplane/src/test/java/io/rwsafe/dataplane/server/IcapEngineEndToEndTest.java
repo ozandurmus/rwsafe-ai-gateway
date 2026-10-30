@@ -33,8 +33,9 @@ class IcapEngineEndToEndTest {
     @BeforeAll
     static void start() throws InterruptedException {
         EventSink sink = EVENTS::add;
-        EngineConfig config = new EngineConfig(64 * 1024, 128 * 1024, 1024, 128, 400, 3_000, 30, 300);
-        server = new IcapServer(new IcapEngine(Snapshots.builtinDevelopment(), DetectorSet.standard(), sink, config));
+        EngineConfig config = EngineConfig.defaults().withBodyLimits(64 * 1024, 256L * 1024 * 1024).withWindow(1024, 128)
+            .withTimeouts(400, 3_000);
+        server = new IcapServer(new IcapEngine(Snapshots.builtinDevelopment(), DetectorSet.standard(), sink, config), 0);
         port = server.start("127.0.0.1", 0);
     }
 

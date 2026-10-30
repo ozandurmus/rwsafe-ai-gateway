@@ -8,6 +8,7 @@ dependencies {
     implementation(libs.netty.handler)
 
     testImplementation(libs.jazzer.junit)
+    testImplementation(libs.bcpkix)
 }
 
 // Local run of the ICAP engine with the built-in development snapshot (docs/operations/LOCAL_RUN.md):
