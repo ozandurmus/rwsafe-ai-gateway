@@ -1,4 +1,4 @@
-import type { Verdict } from './api';
+import type { PolicyAction, PolicyMode, RolloutStage, Verdict, VersionStatus } from './api';
 import type { I18n } from './i18n';
 
 // Vocabulary shown on screen. Verdicts fold into five groups that carry the reserved status colours; every coloured
@@ -67,6 +67,22 @@ export function dataClassLabel(i: I18n, c: string): string {
  */
 export function reasonLabel(i: I18n, code: string): string {
   return i.label(`reason.code_${code}`, code);
+}
+
+export function actionLabel(i: I18n, a: PolicyAction): string {
+  return i.t(`action.${a}`);
+}
+
+export function modeLabel(i: I18n, m: PolicyMode): string {
+  return i.t(`mode.${m}`);
+}
+
+export function stageLabel(i: I18n, s: RolloutStage): string {
+  return i.t(`stage.${s}`);
+}
+
+export function statusLabel(i: I18n, s: VersionStatus): string {
+  return i.t(`status.${s}`);
 }
 
 export function roleLabel(i: I18n, role: string): string {
