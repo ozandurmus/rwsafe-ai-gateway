@@ -22,16 +22,24 @@ public final class Database {
         this.dsl = DSL.using(dataSource, SQLDialect.POSTGRES, new Settings().withExecuteLogging(false));
     }
 
-    /** Applies the pending migrations from {@code db/migration}, then opens the query context. */
+    /** Applies the pending migrations from {@code db/migration}, then opens the query context, on one data source. */
     public static Database migrateAndOpen(DataSource dataSource) {
+        return migrateAndOpen(dataSource, dataSource);
+    }
+
+    /**
+     * ADR-002 §1-§2: applies the pending migrations as the migrate role ({@code migrate}, the schema owner), then opens
+     * the query context on the application's DML role ({@code application}).
+     */
+    public static Database migrateAndOpen(DataSource migrate, DataSource application) {
         Flyway.configure()
-            .dataSource(dataSource)
+            .dataSource(migrate)
             .locations("classpath:db/migration")
             .cleanDisabled(true)
             .validateMigrationNaming(true)
             .load()
             .migrate();
-        return new Database(dataSource);
+        return new Database(application);
     }
 
     DSLContext dsl() {

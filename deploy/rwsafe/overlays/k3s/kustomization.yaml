@@ -6,5 +6,18 @@ resources:
   - 01-priorityclasses.yaml
   - 02-quota-and-limits.yaml
   - 03-icap-service-lb.yaml
+  - 04-networkpolicies-k3s.yaml
   # Ingress objects for rwsafe.<corp-domain> and ai-api.<corp-domain> are added with the control-plane and gateway
   # workloads in the implementation phase (ADR-003); host names come from the uncommitted estate ConfigMap at render time.
+patches:
+  - path: 10-workload-priority.yaml
+# rwsafe images live in the in-cluster registry (PORTS_AND_RESOURCES §5) and are always pulled by digest. The committed
+# digest is an all-zero placeholder that cannot pull: the deploy sets the candidate's digest in memory before
+# `kubectl diff`/`apply` (DEPLOY_AND_SHARED_HOST_RUNBOOK §2). tools/deploy/manifest_check.py --release refuses it.
+images:
+  - name: rwsafe-dataplane
+    newName: registry.kube-system.svc.cluster.local/rwsafe-dataplane
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  - name: rwsafe-control
+    newName: registry.kube-system.svc.cluster.local/rwsafe-control
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

@@ -24,7 +24,7 @@ card numbers are redacted; the AI-category flow is fail-closed). Environment var
 | `RWSAFE_SNAPSHOT_URL` | unset | the control plane's signed snapshot endpoint (`docs/architecture/POLICY_SNAPSHOT_CONTRACT.md`); set, the engine is not ready until the first valid snapshot |
 | `RWSAFE_SNAPSHOT_PUBLIC_KEYS` | unset | comma-separated `<key id>.pem` public keys that verify snapshots |
 | `RWSAFE_SNAPSHOT_CACHE` | unset | directory for the last good snapshot, verified again at start |
-| `RWSAFE_METRICS_PORT` | `9090` | `GET /metrics` (Prometheus text, fixed labels only) and `GET /ready` |
+| `RWSAFE_METRICS_PORT` | `9401` | `GET /metrics` (Prometheus text, fixed labels only), `GET /ready` and the preStop drain `GET`/`POST /admin/drain` (starts the drain, answers after the 15 s serve window) |
 | `RWSAFE_SHARED_ADDRESS_PREFIXES` | unset | client-address prefixes shared by many users (VDI, terminal servers): 256 transactions in flight instead of 32 |
 | `RWSAFE_GROUP_CLAIM_ENCODING` | unset (disabled) | how the proxy encodes `X-Authenticated-Groups`: exactly `plain` or `base64` (below); unset or any other value disables group claims, so every transaction takes the strictest policy |
 
@@ -217,5 +217,8 @@ without the dictionary the masked role gets 503.
 
 ## What the engine does not do yet
 
-Decompression and base64 layer decoding, the file pipeline, login-step tenant rules and shape fingerprints per flow.
-Each is a row of ICAP spec §2 to §5 that a later slice implements.
+The file pipeline (multipart, documents, archives, and files found inside a base64 layer, which are
+`UNINSPECTABLE(EMBEDDED_FILE)` for now), hex and other non-base64 layers, gzip inside base64 (BY-ENC-9), decompression on
+the streamed RESPMOD path, login-step tenant rules, shape fingerprints per flow. Each is a row of ICAP spec §2 to §5 that a later slice implements. A single declared gzip or
+deflate `Content-Encoding` and base64 layers to depth 3 are decoded and scanned (a fourth layer is `UNINSPECTABLE(UNDECODABLE_BLOB)`); `br`, stacked codings and undeclared
+compressed bodies stay `UNINSPECTABLE`.
