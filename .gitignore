@@ -31,3 +31,6 @@ __pycache__/
 .claude/scheduled_tasks.lock
 .claude/*.local.json
 .claude/worktrees/
+
+# Jazzer fuzzing-mode working corpus (the committed regression corpus lives in src/test/resources).
+.cifuzz-corpus/

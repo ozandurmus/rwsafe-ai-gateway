@@ -41,12 +41,41 @@ Public GitHub repository with branch protection; pull requests 1, 2 (decisions a
 - Hooks installed in this checkout (`tools/delivery/install_hooks.sh`; `core.hooksPath=.githooks` in the shared
   repository config, so every worktree needs its own install run).
 
+## Done (phase 0: CI hardening, pull requests 6 and 7)
+
+- Privacy gate hardened (PR 4 review D-01, D-02; pull request 6, second review Argon
+  `docs/reviews/PR6_2026_10_30_ARGON_PRIVACY_GATE.md`, answered by ID in `PR6_2026_10_30_RESPONSE.md`): no fixture
+  exemption; candidates from `git ls-files` and build/cache content reported; extensionless files and the gate's own
+  source scanned; value-level exemptions; IPv6, serial and account-name literals, LDAP DNs and domain accounts; owned,
+  dated, anchored `.gitleaks.toml` allowlists with the defaults extended exactly. `tools/privacy/test_repository_privacy_check.py`
+  (22 tests) runs in CI; CI also gates every commit a pull request adds (and its message) against the pull request's
+  own allowlist, and a gitleaks self-test requires one planted canary per rwsafe rule to be reported.
+- `security-scans` job: Trivy (filesystem, Gradle lockfiles, configuration; SR-SC-2; checksum-verified binary) and
+  Semgrep (Java rules from `semgrep/semgrep-rules` pinned by commit, digest-pinned image, no network), judged by
+  `tools/security/baseline_gate.py` against `security/baseline.yaml` (still empty): Trivy HIGH/CRITICAL and Semgrep
+  ERROR/WARNING fail unless an exact, owned, unexpired acceptance names them; the gate has its own self-test.
+- Jazzer harness (SR-DP-4): `jazzer-junit` in `dataplane` tests, a placeholder `@FuzzTest` with its committed synthetic
+  corpus under `src/test/resources/.../PlaceholderParserFuzzTestInputs/`; `unitTest` replays the corpus and CI fuzzes
+  for 60 s per target (`fuzzTest`, one JVM per target class, 5 s per input). The ICAP and HTTP decoder targets replace the placeholder when the decoders land.
+- Maven-portability smoke build (ADR-011 §4): `generateMavenSmokeBuild` writes `java/build/maven-smoke/pom.xml` and one
+  pom per product module (the module's standard source directories, the same dependency edges, every version pinned to
+  the Gradle lock); the `maven-portability` job builds and tests the product with plain Maven.
+- ArchUnit module-graph fence (PR 4 review D-06): each module depends only on the modules ARCHITECTURE §9 lists (the
+  data plane never on persistence, control, worker or CLI; nothing on the data plane) and every class belongs to a
+  module; proved on fixtures by `FenceSelfTest.moduleGraphFence`. The fences import every class the product modules
+  compile, and a class must declare a package under its own module's root (`classesLiveUnderTheirModuleRoot`).
+- Second independent review of pull request 7 (Argon, `docs/reviews/PR7_2026_10_30_ARGON_CI_HARDENING.md`) answered by
+  ID in `PR7_2026_10_30_RESPONSE.md`: fail-closed severities and a policy floor, empty-scan refusal and a real-scanner
+  canary step, per-resource misconfiguration acceptances with a 90-day cap, one JVM per fuzz class with a per-input
+  timeout, and a Maven generator that refuses what it cannot translate. The privacy gate gains `LOCAL_HOME_PATH`, and
+  the review scripts mask the workspace and home paths in their output.
+
 ## Pending on the Product Owner
 
-Mark the three `validation` jobs (`privacy-gate`, `gitleaks`, `java-tests`) as required status checks on `main`
-(none is required today). Every open question is decided except the information requests Q-17, Q-23, Q-25
-(`docs/design/PO_DECISION_RECORD_2026_10_30_*`). The PO is the proxy administrator and runs the ProxySG and Broadcom steps
-with a guide from the session (Q-20, Q-21). Lab tenant
+Mark the five `validation` jobs (`privacy-gate`, `gitleaks`, `java-tests`, `maven-portability`, `security-scans`) as
+required status checks on `main` (none is required today). Every open question is decided except the information
+requests Q-17, Q-23, Q-25 (`docs/design/PO_DECISION_RECORD_2026_10_30_*`). The PO is the proxy administrator and runs the
+ProxySG and Broadcom steps with a guide from the session (Q-20, Q-21). Lab tenant
 procurement (Q-34). Approvers and DPO identity (Q-5). Governance is settled: pull request 2 merged;
 `.claude/settings.json` committed; AGENTS.md section 1 (reviews as evidence) and section 9 (standing push/PR/merge
 authorisation) amended; the Git-authority decision record RATIFIED; `main` requires a pull request and zero approving
@@ -55,11 +84,9 @@ reviews.
 ## Not done
 
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
-neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); the
-Maven-portability smoke build that ADR-011 §4 names as the Gradle mitigation (generated `pom.xml` built in CI); Semgrep,
-Trivy (lockfile and config scan, SR-SC-2) and the Jazzer corpus in CI; `frontend/`; privacy-gate hardening from the PR 4
-review (D-01, D-02: no private-range exemption for fixtures, `.gitleaks.toml` allowlist dates, extensionless files, a
-gate self-test in CI); an ArchUnit module-graph rule (D-06).
+neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); `frontend/` (and with it Semgrep TypeScript); the
+real Jazzer targets for the ICAP and HTTP decoders (they arrive with the decoders); Trivy image scanning and SBOM (with
+the first image, ship pipeline).
 
 ## Next (ROADMAP phase 0, in this order)
 

@@ -146,6 +146,9 @@ class ContentRules(GateTestCase):
             ("SERIAL_OR_ACCOUNT_LITERAL", "  " + "sAMAccountName" + ": " + "jdoe01"),
             ("SERIAL_OR_ACCOUNT_LITERAL", "- " + "serial" + ": " + "ABC" + _alnum(8)),
             ("SERIAL_OR_ACCOUNT_LITERAL", '"' + "userPrincipalName" + '": "' + "jdoe01" + '"'),
+            ("LOCAL_HOME_PATH", "see file://" + "/Users/" + "jdoe01" + "/Codo/x/AGENTS.md"),
+            ("LOCAL_HOME_PATH", "cd " + "/home/" + "jdoe01" + "/src"),
+            ("LOCAL_HOME_PATH", "C:" + BS + "Users" + BS + "jdoe01" + BS + "x"),
         ]
         for rule, line in cases:
             with self.subTest(rule=rule, line=line[:12]):
@@ -212,6 +215,7 @@ class ContentRules(GateTestCase):
             "  " + "serial" + ": " + "FW-EDGE-01",
             "  " + "username" + ": " + "${RWSAFE_USER}",
             "String serialNumber = device.serial();",
+            "paths /home/" + "runner/work, /Users/" + "<masked-user>/x, <workspace-root>/AGENTS.md, api/users/list",
             "CN=" + "<masked>" + ",OU=" + "<masked>" + " and DOMAIN" + BS + "user",
             f"invalid checksums {_broken_checksum(_tckn())} {_broken_checksum(_tr_iban())}",
         ]))

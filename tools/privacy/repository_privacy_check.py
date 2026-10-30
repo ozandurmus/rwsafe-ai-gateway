@@ -85,6 +85,10 @@ _LDAP_DN_RE = re.compile(r"(?i)(?<![A-Za-z0-9])(?:CN|OU|DC|UID)=[^,=\s]+\s*,\s*(
 _DOMAIN_ACCOUNT_RE = re.compile(r"(?<![\w\\])([A-Z][A-Z0-9-]{1,14})\\([A-Za-z][A-Za-z0-9._-]{2,63})(?![\w\\])")
 _DOMAIN_ACCOUNT_ESCAPED_RE = re.compile(r"(?<![\w\\])([A-Z][A-Z0-9-]{1,14})\\\\([A-Za-z][A-Za-z0-9._-]{2,63})(?![\w\\])")
 CODE_SUFFIXES = {".java", ".kt", ".kts", ".py", ".js", ".ts", ".tsx", ".mjs", ".sh", ".json", ".toml"}
+# A home directory names a local account: /Users/<name>, /home/<name>, C:\Users\<name> (PR 7: an external review's
+# output carried the reviewer's absolute workspace path).
+_HOME_PATH_RE = re.compile(r"(?i)(?:(?<![\w.])/(?:Users|home)/|\b[A-Z]:\\{1,2}Users\\{1,2})([A-Za-z0-9._-]+)")
+_SAFE_HOME_NAMES = {"runner", "user", "username", "me", "shared", "example", "ubuntu", "root"}
 _PLACEHOLDER_WORDS = ("synthetic", "example", "masked", "redacted", "placeholder", "domain", "<")
 _ANTHROPIC_KEY_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")
 _OPENAI_KEY_RE = re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}")
@@ -284,6 +288,9 @@ def _scan_line(line: str, hit, *, code: bool = False, mermaid: bool = False) -> 
     accounts = _DOMAIN_ACCOUNT_ESCAPED_RE if code else None if mermaid else _DOMAIN_ACCOUNT_RE
     if accounts is not None and any(not _is_placeholder(m.group(0)) for m in accounts.finditer(line)):
         hit("DOMAIN_ACCOUNT")
+    if any(m.group(1).lower() not in _SAFE_HOME_NAMES and not _is_placeholder(m.group(1))
+           for m in _HOME_PATH_RE.finditer(line)):
+        hit("LOCAL_HOME_PATH")
     if any(iban_valid(m.group(0)) for m in _TR_IBAN_RE.finditer(line)):
         hit("TR_IBAN")
     if any(tckn_valid(m.group(0)) for m in _TCKN_RE.finditer(line)):

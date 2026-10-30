@@ -1,6 +1,7 @@
 package io.rwsafe.architecture;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.tngtech.archunit.core.importer.ClassFileImporter;
@@ -34,6 +35,15 @@ import io.rwsafe.architecture.fixtures.inline.StringMatchesInspector;
 import io.rwsafe.architecture.fixtures.inline.StringMatchesReferenceInspector;
 import io.rwsafe.architecture.fixtures.inline.StringSplitInspector;
 import io.rwsafe.architecture.fixtures.inline.controlplane.SnapshotClient;
+import io.rwsafe.architecture.fixtures.modules.control.ControlService;
+import io.rwsafe.architecture.fixtures.modules.core.CoreCallingInline;
+import io.rwsafe.architecture.fixtures.modules.core.CoreVocabulary;
+import io.rwsafe.architecture.fixtures.modules.inline.InlineCallingControl;
+import io.rwsafe.architecture.fixtures.modules.inline.InlineInspector;
+import io.rwsafe.architecture.fixtures.modules.stray.StrayClass;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /** Proves every fence catches its violation and lets the compliant shape through, so a passing fence means something. */
@@ -55,6 +65,47 @@ class FenceSelfTest {
         assertTrue(violates(rule, StringMatchesReferenceInspector.class));
         assertTrue(violates(rule, StringSplitInspector.class));
         assertFalse(violates(rule, Re2jInspector.class));
+    }
+
+    @Test
+    void moduleGraphFence() {
+        String root = "io.rwsafe.architecture.fixtures.modules.";
+        ArchRule rule = Fences.moduleGraph(
+            Map.of("core", root + "core..", "inline", root + "inline..", "control", root + "control.."),
+            Map.of("core", Set.of(), "inline", Set.of("core"), "control", Set.of("core")));
+        Class<?>[] compliant = {CoreVocabulary.class, InlineInspector.class, ControlService.class};
+        assertFalse(violates(rule, compliant));
+        assertTrue(violates(rule, with(compliant, InlineCallingControl.class)));
+        assertTrue(violates(rule, with(compliant, CoreCallingInline.class)));
+        assertTrue(violates(rule, with(compliant, StrayClass.class)));
+    }
+
+    @Test
+    void moduleGraphRejectsCyclesAndUnknownModules() {
+        Map<String, String> packages = Map.of("a", "x.a..", "b", "x.b..", "c", "x.c..");
+        assertThrows(IllegalArgumentException.class, () -> Fences.moduleGraph(packages,
+            Map.of("a", Set.of("b"), "b", Set.of("c"), "c", Set.of("a"))));
+        assertThrows(IllegalArgumentException.class, () -> Fences.moduleGraph(packages, Map.of("a", Set.of("a"))));
+        assertThrows(IllegalArgumentException.class, () -> Fences.moduleGraph(packages, Map.of("a", Set.of("z"))));
+        assertThrows(IllegalArgumentException.class, () -> Fences.moduleGraph(packages, Map.of("z", Set.of())));
+    }
+
+    @Test
+    void moduleRootFence() throws Exception {
+        String output = CoreVocabulary.class.getProtectionDomain().getCodeSource().getLocation().toURI().getRawPath();
+        ArchRule rule = Fences.classesLiveUnderTheirModuleRoot(Map.of("fixtures", output),
+            Map.of("fixtures", "io.rwsafe.architecture.fixtures.modules.core"));
+        assertFalse(violates(rule, CoreVocabulary.class, CoreCallingInline.class));
+        assertTrue(violates(rule, InlineInspector.class));
+        ArchRule elsewhere = Fences.classesLiveUnderTheirModuleRoot(Map.of("fixtures", "/no/such/module/build/"),
+            Map.of("fixtures", "io.rwsafe.architecture.fixtures.modules.core"));
+        assertTrue(violates(elsewhere, CoreVocabulary.class));
+    }
+
+    private static Class<?>[] with(Class<?>[] classes, Class<?> extra) {
+        Class<?>[] all = Arrays.copyOf(classes, classes.length + 1);
+        all[classes.length] = extra;
+        return all;
     }
 
     @Test
