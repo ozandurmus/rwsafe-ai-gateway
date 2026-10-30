@@ -1,5 +1,8 @@
 # Versions match the neXus ui2 build where both products use the same library (ADR-011: one engine, two products).
 [versions]
+# JUnit for the modules outside the Spring Boot platform (platform-core, detect, policy, dataplane with its Jazzer
+# harness, cli). Modules on the Spring Boot BOM (persistence, control, worker, architecture-tests) resolve the JUnit 6.0.3
+# it manages; moving the rest follows a Jazzer release that supports JUnit 6 (PR 12 Spring Boot 4 review M-01).
 junit = "5.10.3"
 archunit = "1.3.0"
 re2j = "1.8"

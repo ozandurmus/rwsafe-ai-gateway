@@ -19,7 +19,7 @@ dependencies {
     implementation(libs.spring.boot.starter.jdbc)
     implementation(libs.unboundid.ldapsdk)
     constraints {
-        // The neXus security floor above the BOM's managed Tomcat (critical CVEs fixed in 10.1.58).
+        // Security floors above the BOM: Tomcat 11.0.27 (the neXus floor over Boot's 11.0.24) and the PostgreSQL driver.
         implementation(libs.tomcat.embed.core)
         implementation(libs.tomcat.embed.el)
         implementation(libs.tomcat.embed.websocket)
