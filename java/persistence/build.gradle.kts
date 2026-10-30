@@ -4,8 +4,9 @@
 dependencies {
     api(project(":platform-core"))
     api(platform(libs.spring.boot.bom))
-    // The neXus Jackson floor (Flyway reads its configuration with Jackson) for every module on this one.
+    // The Jackson 2 and Jackson 3 floors (Flyway reads its configuration with Jackson) for every module on this one.
     api(platform(libs.jackson.bom))
+    api(platform(libs.jackson3.bom))
     api(libs.jooq)
     implementation(libs.flyway.core)
     implementation(libs.flyway.database.postgresql)

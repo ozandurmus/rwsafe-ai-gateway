@@ -116,7 +116,7 @@ public class IngestionService {
         }
         long snapshotVersion = nonNegative(i, "snapshotVersion", e.snapshotVersion());
         String correlationId = require(i, "correlationId", e.correlationId());
-        if (!token(correlationId, 64)) {
+        if (!canonicalUuid(correlationId) && !token(correlationId, 64)) {
             throw new InvalidEventException(i, "correlationId");
         }
         return new StoredVerdictEvent(eventId, receivedAt, service, platform, surface, step, verdict, reason, findings,
@@ -197,6 +197,21 @@ public class IngestionService {
             }
         }
         return DETECTORS.scan(s).isEmpty();
+    }
+
+    /**
+     * The data plane's correlation id is a lower-case canonical UUID: random hex, so its digit groups can look like a
+     * Luhn-valid card number by chance; it is accepted as a UUID without the detector pass (it can carry no value).
+     */
+    public static boolean canonicalUuid(String s) {
+        if (s.length() != 36) {
+            return false;
+        }
+        try {
+            return UUID.fromString(s).toString().equals(s);
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
     private static boolean dataClass(String s) {

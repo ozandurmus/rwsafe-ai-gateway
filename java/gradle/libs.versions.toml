@@ -19,6 +19,9 @@ springboot = "4.1.1"
 # (2026-10-12).
 tomcat = "11.0.27"
 jackson = "2.21.7"
+# Jackson 3 arrives with Spring Boot 4 (its unused HTTP starter) and Flyway 12. Floor above the 3.1.5 that Boot 4.1.1
+# manages (HIGH advisories, fixed with 2.21.7 on 2026-09-21); 3.1.8 is newer than two weeks.
+jackson3 = "3.1.7"
 postgresql = "42.7.13"
 # Local and CI PostgreSQL 16 without a container runtime (tests and the development runner only, never an image).
 embedded-postgres = "2.2.2"
@@ -40,6 +43,7 @@ netty-handler = { module = "io.netty:netty-handler", version.ref = "netty" }
 # Control plane and persistence (Q-16: jOOQ and Flyway on PostgreSQL; Q-9: LDAP/AD bind first).
 spring-boot-bom = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "springboot" }
 jackson-bom = { module = "com.fasterxml.jackson:jackson-bom", version.ref = "jackson" }
+jackson3-bom = { module = "tools.jackson:jackson-bom", version.ref = "jackson3" }
 # Spring Boot 4 renamed spring-boot-starter-web to spring-boot-starter-webmvc.
 spring-boot-starter-webmvc = { module = "org.springframework.boot:spring-boot-starter-webmvc" }
 # Jackson 2 for Spring MVC message conversion (Boot 4 defaults to Jackson 3); see control/build.gradle.kts.

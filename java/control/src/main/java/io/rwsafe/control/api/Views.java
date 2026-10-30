@@ -1,5 +1,6 @@
 package io.rwsafe.control.api;
 
+import io.rwsafe.control.ingest.IngestionService;
 import io.rwsafe.control.privacy.MaskedView;
 import io.rwsafe.control.privacy.TextMasker;
 import io.rwsafe.persistence.FindingCount;
@@ -78,7 +79,8 @@ public final class Views {
         public EventView masked(TextMasker m) {
             return new EventView(eventId, receivedAt, m.mask(service), m.mask(platform), m.mask(surface), m.mask(step),
                 verdict, m.mask(reason), findings, bodyBytes, decisionMicros, user, clientSubnet,
-                m.mask(transport), snapshotVersion, m.mask(correlationId), pseudonymKeyId);
+                m.mask(transport), snapshotVersion,
+                IngestionService.canonicalUuid(correlationId) ? correlationId : m.mask(correlationId), pseudonymKeyId);
         }
     }
 

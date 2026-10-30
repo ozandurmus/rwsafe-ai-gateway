@@ -278,5 +278,10 @@ class ControlPlaneIntegrationTest {
         ApiClient.Response r = internalClient().post("/internal/v1/verdict-events", batch(tckn), false);
         assertEquals(400, r.status());
         assertTrue(r.body().get("message").asText().contains("correlationId"));
+        // A UUID whose digit groups happen to form a Luhn-valid card number is still a UUID (the data plane's ids).
+        String cardLike = "41111111-1111-1111-1111-111111111111";
+        assertTrue(IngestionService.canonicalUuid(cardLike));
+        ObjectNode uuid = event("claude", "ALLOW", null, null).put("correlationId", cardLike);
+        assertEquals(202, internalClient().post("/internal/v1/verdict-events", batch(uuid), false).status());
     }
 }
