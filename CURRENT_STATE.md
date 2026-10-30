@@ -240,6 +240,13 @@ Both run in `:control:test`, so in `unitTest` and the CI `java-tests` job; no wo
   digits in a row is refused for every role, and a draft's `reasonCode` takes the platform-id identifier check. The log
   scanner runs the data plane with plain group claims (`X-Authenticated-Groups`, one well-formed and one repeated) and
   finds no group name in any log, metric, error page, stored row or the spool.
+- After the merge of PR 22 (end-user notices): the probe configures the notice's runtime values as canaries
+  (controller name, contact, policy link), seeds acknowledgements with the claimants' identity claims through the
+  internal intake on the capture-sink port (and asserts the intake answers 404 on the admin port, signed in or not, and
+  on the snapshot feed), and walks `GET /api/v1/notice` and `GET /api/v1/notice/acknowledgements` for every pseudonym
+  the traffic screen shows. The masked notice carries no sections and no configured value; acknowledgements show
+  `USR-` pseudonyms only; the viewer's positive control sees the configured values; the acknowledgements' user filter
+  refuses every raw guess. No leak found.
 - Not covered: a browser-level (Playwright) walk of the screens (needs a browser download; the UI reads only the API
   client the probe enumerates); the layer 4 name dictionary and customer numbers (not implemented, so names are seeded
   only where pseudonymisation applies or where ingestion refuses them); third-party loggers below their production

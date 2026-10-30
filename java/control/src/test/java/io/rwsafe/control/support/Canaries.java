@@ -27,6 +27,8 @@ public final class Canaries {
     public static final String HOST_NAME = "HOST_NAME";
     public static final String GROUP_NAME = "GROUP_NAME";
     public static final String IPV4 = "IPV4_ADDRESS";
+    /** The end-user notice's configured runtime values (controller name, contact, policy link; PR 22). */
+    public static final String NOTICE_VALUE = "NOTICE_VALUE";
 
     // Public name lists (MASKING_AND_PRIVACY B2 layer 4 plans a committed dictionary of the same kind); no estate data.
     private static final String[] GIVEN = {"Şükrü", "Gülşen", "Çağla", "Öykü", "Ferhunde", "Müjgan", "Tuğrul", "Nurşen"};
@@ -59,6 +61,10 @@ public final class Canaries {
     public final List<String> groups = new ArrayList<>();
     public final List<String> addresses = new ArrayList<>();
     public final String signingKeyId;
+    public final String noticeController;
+    public final String noticeContact;
+    public final String noticePolicyLink;
+    private final List<String> noticeTokens = new ArrayList<>();
     private final LeakProbe probe = new LeakProbe();
 
     public Canaries() {
@@ -95,6 +101,12 @@ public final class Canaries {
         addresses.add("198.51.100." + (1 + r.nextInt(254)));
         addresses.add("203.0.113." + (1 + r.nextInt(254)));
         signingKeyId = hosts.get(1) + "-signing";
+        for (int i = 0; i < 3; i++) {
+            noticeTokens.add(letters(r, 7));
+        }
+        noticeController = "Karaağaç " + capitalised(noticeTokens.get(0)) + " Bankası A.Ş.";
+        noticeContact = "kvkk-" + noticeTokens.get(1) + "@" + mailDomain;
+        noticePolicyLink = "https://intranet." + mailDomain + "/politika/" + noticeTokens.get(2);
 
         tckns.forEach(v -> probe.canary(TCKN, v));
         for (String iban : ibans) {
@@ -134,6 +146,10 @@ public final class Canaries {
             probe.canary(IPV4, a.substring(0, a.lastIndexOf('.')));
         }
         probe.canary(HOST_NAME, mailDomain);
+        for (String v : List.of(noticeController, noticeContact, noticePolicyLink)) {
+            probe.canary(NOTICE_VALUE, v);
+        }
+        noticeTokens.forEach(t -> probe.canary(NOTICE_VALUE, t));
     }
 
     public LeakProbe probe() {
@@ -159,6 +175,10 @@ public final class Canaries {
         }
         groups.forEach(g -> b.append(g).append('\n'));
         return b.append(mailDomain).append('\n').toString();
+    }
+
+    private static String capitalised(String s) {
+        return Character.toUpperCase(s.charAt(0)) + s.substring(1);
     }
 
     /** A Turkish mobile number in the national form: 0, 5, then nine digits. */

@@ -61,6 +61,13 @@ class MaskedRoleLeakProbeTest {
             ? Path.of(System.getProperty("java.io.tmpdir")) : ControlTestEnvironment.dir(), "probe-estate", ".txt");
         Files.writeString(dictionary, canaries.estateDictionary());
         ControlTestEnvironment.register(r, true, dictionary, canaries.signingKeyId);
+        // The end-user notice's runtime values (PR 22): complete, so the notice renders with them.
+        r.add("RWSAFE_ENDUSER_CONTROLLER_NAME", () -> canaries.noticeController);
+        r.add("RWSAFE_ENDUSER_DPO_CONTACT", () -> canaries.noticeContact);
+        r.add("RWSAFE_ENDUSER_POLICY_LINK", () -> canaries.noticePolicyLink);
+        r.add("RWSAFE_ENDUSER_RETENTION_METADATA", () -> "400");
+        r.add("RWSAFE_ENDUSER_RETENTION_REDACTED", () -> "90");
+        r.add("RWSAFE_ENDUSER_RETENTION_RAW", () -> "30");
         ControlTestEnvironment.addUser(canaries.admin.login(), "security_admin");
         ControlTestEnvironment.addUser(canaries.adminTwo.login(), "security_admin");
         ControlTestEnvironment.addUser(canaries.officer.login(), "privacy_officer");
@@ -123,6 +130,18 @@ class MaskedRoleLeakProbeTest {
         long withheld = masked.stream().filter(p -> p.endpoint().equals("GET /api/v1/policy/rules"))
             .map(p -> p.response().raw().body()).filter(b -> b.contains(PolicyViews.FREE_TEXT_WITHHELD)).count();
         assertTrue(withheld > 0, "the masked registry page shows no withheld reason");
+        // The notice: the masked projection leaves out the rendered sections that carry the configured values; the
+        // acknowledgements it reads are pseudonyms with records.
+        for (Probed p : masked) {
+            if (p.endpoint().equals("GET /api/v1/notice")) {
+                assertTrue(p.response().body().get("sections").isNull(), "the masked notice carries no sections");
+                assertTrue(p.response().body().get("complete").asBoolean(), "the probe's notice is complete");
+            }
+        }
+        long acknowledged = masked.stream().filter(p -> p.endpoint().equals("GET /api/v1/notice/acknowledgements")
+            && p.response().status() == 200 && p.response().body().get("records").size() > 0).peek(p ->
+                assertTrue(p.response().body().get("user").asText().matches("USR-[0-9a-f]{10}"))).count();
+        assertTrue(acknowledged > 0, "the masked walk read no acknowledgement records");
         assertTrue(hits.isEmpty(), "the masked role saw seeded tokens (location class <- canary class): " + hits);
         assertTrue(masked.size() >= 40, "the walk made " + masked.size() + " requests");
 
@@ -135,7 +154,7 @@ class MaskedRoleLeakProbeTest {
             seenByViewer.add(hit.substring(hit.lastIndexOf(' ') + 1));
         }
         for (String cls : List.of(Canaries.HOST_NAME, Canaries.DIRECTORY_LOGIN, Canaries.TURKISH_NAME,
-            Canaries.GROUP_NAME)) {
+            Canaries.GROUP_NAME, Canaries.NOTICE_VALUE)) {
             assertTrue(seenByViewer.contains(cls), "the positive control did not see " + cls + ": " + seenByViewer);
         }
         for (String cls : List.of(Canaries.TCKN, Canaries.TR_IBAN, Canaries.TR_MOBILE, Canaries.PAYMENT_CARD,
@@ -178,6 +197,13 @@ class MaskedRoleLeakProbeTest {
                 }
                 probe.scan("GET /api/v1/traffic?" + filter, r.body()).forEach(h -> echoed.add(h.toString()));
             }
+        }
+        for (String guess : guesses) {
+            ApiClient.Response r = masked.get("/api/v1/notice/acknowledgements?user=" + enc(guess));
+            if (r.status() != 400) {
+                accepted.add("notice user answered " + r.status());
+            }
+            probe.scan("GET /api/v1/notice/acknowledgements?user", r.body()).forEach(h -> echoed.add(h.toString()));
         }
         assertTrue(accepted.isEmpty(), "a raw value was accepted as a filter: " + accepted);
         assertTrue(echoed.isEmpty(), "a refusal echoed the guess: " + echoed);
@@ -251,6 +277,27 @@ class MaskedRoleLeakProbeTest {
             "a refused batch stored nothing");
 
         ApiClient admin = signedIn(canaries.admin);
+
+        // Notice acknowledgements (PR 22) through the internal intake on the capture-sink port, with the claimants'
+        // identity claims; the intake answers on no other port.
+        JsonNode notice = admin.get("/api/v1/notice").body();
+        assertTrue(notice.get("complete").asBoolean(), "the notice is complete: " + notice.get("missingParameters")
+            + notice.get("rejectedParameters"));
+        String version = notice.get("currentVersion").asText();
+        com.fasterxml.jackson.databind.node.ArrayNode acks = JSON.createArrayNode();
+        String[] sources = {"banner", "directory_attribute", "ide_first_run"};
+        for (int i = 0; i < claims.size(); i++) {
+            acks.addObject().put("userClaim", claims.get(i)).put("noticeVersion", version)
+                .put("acknowledgedAt", Instant.now().minusSeconds(60).toString()).put("source", sources[i % 3]);
+        }
+        String intake = io.rwsafe.control.notice.NoticeIntakeController.PATH;
+        ApiClient.Response recorded = sink.post(intake, acks.toString(), false);
+        assertEquals(202, recorded.status(), String.valueOf(recorded.body()));
+        assertEquals(404, new ApiClient(port).post(intake, acks.toString(), false).status(), "not on the admin port");
+        assertEquals(404, admin.post(intake, acks.toString(), true).status(), "not on the admin port, signed in");
+        assertEquals(404, new ApiClient(internal.snapshotPort()).post(intake, acks.toString(), false).status(),
+            "not on the snapshot feed");
+
         // The registry's platform id is the one free value that becomes ingestion vocabulary: an identifier-shaped or
         // estate-naming id is refused at the draft.
         String platformDraft = JSON.createObjectNode().put("mode", "monitor").put("rolloutStage", "pilot")
@@ -370,6 +417,11 @@ class MaskedRoleLeakProbeTest {
         out.add(get(c, "GET /api/v1/traffic/{}", "/api/v1/traffic/" + java.util.UUID.randomUUID()));
 
         out.add(get(c, "GET /api/v1/health", "/api/v1/health"));
+        out.add(get(c, "GET /api/v1/notice", "/api/v1/notice"));
+        for (String user : users) {
+            out.add(get(c, "GET /api/v1/notice/acknowledgements", "/api/v1/notice/acknowledgements?user=" + enc(user)));
+        }
+        out.add(get(c, "GET /api/v1/notice/acknowledgements", "/api/v1/notice/acknowledgements?user=USR-0000000000"));
         Probed rules = get(c, "GET /api/v1/policy/rules", "/api/v1/policy/rules");
         out.add(rules);
         JsonNode actions = rules.response().body().get("actions");
