@@ -1,0 +1,36 @@
+{
+  "name": "@rwsafe/admin-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "rwsafe admin SPA (ARCHITECTURE.md §3.4): React + TypeScript + MUI, served by the control plane. Not a Gradle project.",
+  "type": "module",
+  "engines": {
+    "node": "^22.12.0 || >=24.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build"
+  },
+  "dependencies": {
+    "@emotion/react": "11.13.3",
+    "@emotion/styled": "11.13.0",
+    "@mui/material": "5.16.7",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "7.18.4"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "6.5.0",
+    "@testing-library/react": "16.0.1",
+    "@testing-library/user-event": "14.5.2",
+    "@types/react": "18.3.5",
+    "@types/react-dom": "18.3.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "jsdom": "25.0.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.7",
+    "vitest": "5.0.5"
+  }
+}

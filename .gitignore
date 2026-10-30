@@ -34,3 +34,6 @@ __pycache__/
 
 # Jazzer fuzzing-mode working corpus (the committed regression corpus lives in src/test/resources).
 .cifuzz-corpus/
+
+# Frontend build output (the image build produces it; never committed).
+frontend/dist/

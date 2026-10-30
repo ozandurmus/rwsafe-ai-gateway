@@ -2,8 +2,8 @@
 # Runs on every pull request and on main: the repository privacy gate (its self-test, the tree, and on a pull request every
 # commit the pull request adds), gitleaks over the tree and the history with a planted-key self-test, the Java unit and
 # ArchUnit tests with the Jazzer regression corpus and a bounded fuzzing run, the Maven-portability smoke build
-# (ADR-011 §4), and Trivy (filesystem, lockfiles, configuration; SR-SC-2) and Semgrep (Java) judged against
-# security/baseline.yaml. Every job prints the commit it tested. No secrets, no deploy, nothing reaches HOST-A.
+# (ADR-011 §4), Trivy (filesystem, lockfiles, configuration; SR-SC-2) and Semgrep (Java) judged against
+# security/baseline.yaml, and the admin SPA's type check, Vitest tests and production build. Every job prints the commit it tested. No secrets, no deploy, nothing reaches HOST-A.
 # Actions are pinned by commit digest; the tag in the trailing comment is for humans only.
 name: validation
 
@@ -155,6 +155,34 @@ jobs:
       # SR-DP-4: each @FuzzTest fuzzes for the duration it declares; a crash or timeout fails the job.
       - name: Fuzz the parsers (Jazzer fuzzing mode)
         run: ./java/gradlew -p java --no-daemon --stacktrace --dependency-verification strict fuzzTest
+
+  # The admin SPA (ARCHITECTURE.md §3.4, AGENTS.md section 10: frontend tests and tsc before every ship). The lockfile is
+  # installed exactly and without install scripts; the build proves the bundle compiles.
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Commit under test
+        run: *print-commit
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install from the lockfile (no install scripts)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Type check (tsc)
+        run: npm run typecheck
+      - name: Unit tests (Vitest)
+        run: npm test
+      - name: Production build
+        run: npm run build
 
   maven-portability:
     runs-on: ubuntu-24.04
