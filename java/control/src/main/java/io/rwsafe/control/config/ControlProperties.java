@@ -11,7 +11,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties(prefix = "rwsafe")
 public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFeed, Privacy privacy, Identity identity,
-                                Policy policy, Sample sample) {
+                                Policy policy, Sample sample, Siem siem) {
 
     public ControlProperties {
         captureSink = captureSink == null ? new CaptureSink(8092, "127.0.0.1") : captureSink;
@@ -20,6 +20,79 @@ public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFe
         identity = identity == null ? new Identity(null, null, false) : identity;
         policy = policy == null ? new Policy(null, null, null, null, null) : policy;
         sample = sample == null ? new Sample(0, 1) : sample;
+        siem = siem == null ? new Siem(false, null, null, 0, 0, 0, null, null, null, null) : siem;
+    }
+
+    /**
+     * SIEM export (ADR-009 C8, SR-SIEM-*; LOCAL_RUN.md "SIEM export"). Off unless {@code enabled}; each destination is on
+     * when its address is set. Real destinations and the CA bundle come from the uncommitted ConfigMap
+     * {@code rwsafe-siem-destination}, the HEC token from the Secret {@code rwsafe-siem-credentials} as a file
+     * ({@code deploy/rwsafe/contracts/runtime-contracts.json}).
+     *
+     * @param startFrom {@code earliest} (default: everything stored reaches the SIEM) or {@code latest} (a destination
+     *                  without a watermark skips the stored verdict events; audit-ledger rows always export from the
+     *                  first one, PO decision Q-SIEM-1)
+     */
+    public record Siem(boolean enabled, String startFrom, Duration pollInterval, int queueCapacity,
+                       int pageSize, int batchSize, Duration backoffInitial, Duration backoffMax, Syslog syslog,
+                       Hec hec) {
+
+        public Siem {
+            startFrom = startFrom == null || startFrom.isBlank() ? "earliest" : startFrom.strip();
+            pollInterval = pollInterval == null ? Duration.ofSeconds(2) : pollInterval;
+            queueCapacity = queueCapacity == 0 ? 10_000 : queueCapacity;
+            pageSize = pageSize == 0 ? 500 : pageSize;
+            batchSize = batchSize == 0 ? 200 : batchSize;
+            backoffInitial = backoffInitial == null ? Duration.ofSeconds(1) : backoffInitial;
+            backoffMax = backoffMax == null ? Duration.ofMinutes(2) : backoffMax;
+            syslog = syslog == null ? new Syslog(null, 0, null, null, null, 0, null, null) : syslog;
+            hec = hec == null ? new Hec(null, null, null, null, null) : hec;
+            if (!startFrom.equals("earliest") && !startFrom.equals("latest")) {
+                throw new IllegalArgumentException("rwsafe.siem.start-from is earliest or latest");
+            }
+        }
+    }
+
+    /**
+     * Syslog over TLS (RFC 5425) to {@code host:port}, payload CEF or LEEF. There is no UDP or plain-TCP setting
+     * (SR-SIEM-3: UDP only by a recorded PO acceptance, and none exists).
+     *
+     * @param hostname the RFC 5424 HOSTNAME this exporter writes (a fixed product name, not the pod's)
+     * @param facility RFC 5424 facility, default 13 (log audit)
+     */
+    public record Syslog(String host, int port, String format, Path caFile, String hostname, int facility,
+                         Duration connectTimeout, Duration writeTimeout) {
+
+        public Syslog {
+            port = port == 0 ? 6514 : port;
+            format = format == null || format.isBlank() ? "cef" : format.strip().toLowerCase(java.util.Locale.ROOT);
+            hostname = hostname == null || hostname.isBlank() ? "rwsafe-control" : hostname.strip();
+            facility = facility == 0 ? 13 : facility;
+            connectTimeout = connectTimeout == null ? Duration.ofSeconds(5) : connectTimeout;
+            writeTimeout = writeTimeout == null ? Duration.ofSeconds(10) : writeTimeout;
+        }
+
+        public boolean configured() {
+            return host != null && !host.isBlank();
+        }
+    }
+
+    /**
+     * Splunk HTTP Event Collector over HTTPS.
+     *
+     * @param url       {@code https://host:port} (the event endpoint path is added) or the full endpoint URL
+     * @param tokenFile the HEC token, a mounted Secret file
+     * @param index     the target index; blank for the token's default
+     */
+    public record Hec(String url, Path tokenFile, Path caFile, String index, Duration timeout) {
+
+        public Hec {
+            timeout = timeout == null ? Duration.ofSeconds(10) : timeout;
+        }
+
+        public boolean configured() {
+            return url != null && !url.isBlank();
+        }
     }
 
     /** The internal connector (PORTS_AND_RESOURCES: 8092 capture sink): ingestion only, ClusterIP only. */

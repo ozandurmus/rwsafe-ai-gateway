@@ -61,6 +61,13 @@ class TwoRoleMigrationTest {
                     ddl + ": " + e.getMessage());
             }
         }
+        // PR 23 D-11 / Q-SIEM-3: an application session idle inside a transaction is aborted after 60 s, so it cannot
+        // hold the SIEM export's visibility barrier for longer.
+        for (DataSource role : List.of(app, migrate)) {
+            try (Connection c = role.getConnection(); Statement s = c.createStatement()) {
+                assertEquals("1min", one(s, "SHOW idle_in_transaction_session_timeout"));
+            }
+        }
     }
 
     private static String one(Statement s, String sql) throws SQLException {
