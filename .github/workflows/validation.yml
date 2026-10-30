@@ -1,6 +1,7 @@
 # Validation workflow (ROADMAP phase 0 "Repository and CI"; AGENTS.md sections 4.15, 10 and 14).
-# Runs on every pull request and on main: the repository privacy gate, gitleaks over the tree and the history, and the
-# Java unit and ArchUnit tests. Every job prints the commit it tested. No secrets, no deploy, nothing reaches HOST-A.
+# Runs on every pull request and on main: the repository privacy gate (its self-test, the tree, and on a pull request every
+# commit the pull request adds), gitleaks over the tree and the history with a planted-key self-test, and the Java unit
+# and ArchUnit tests. Every job prints the commit it tested. No secrets, no deploy, nothing reaches HOST-A.
 # Actions are pinned by commit digest; the tag in the trailing comment is for humans only.
 name: validation
 
@@ -28,6 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Commit under test
         run: &print-commit |
@@ -36,8 +38,25 @@ jobs:
           if [ -n "${PR_HEAD_SHA}" ]; then line="${line} (merge of PR head ${PR_HEAD_SHA} onto base ${PR_BASE_SHA})"; fi
           echo "${line}"
           echo "${GITHUB_JOB}: ${line}" >> "${GITHUB_STEP_SUMMARY}"
+      - name: Privacy gate self-test (planted synthetic findings must fail, SR-PRIV-13)
+        run: python3 -B tools/privacy/test_repository_privacy_check.py
       - name: Repository privacy gate
-        run: python3 tools/privacy/repository_privacy_check.py .
+        run: python3 -B tools/privacy/repository_privacy_check.py .
+      # The repository is public and a pull request merges with its history: an identifier added in one commit and
+      # removed in a later one would still be published, so every commit the pull request adds passes the gate too.
+      - name: Repository privacy gate on every commit of the pull request
+        if: github.event_name == 'pull_request'
+        run: |
+          status=0
+          for commit in $(git rev-list --reverse "${PR_BASE_SHA}..${PR_HEAD_SHA}"); do
+            dir="${RUNNER_TEMP}/commit-${commit}"
+            mkdir -p "${dir}"
+            git archive "${commit}" | tar -x -C "${dir}"
+            echo "commit ${commit}"
+            python3 -B tools/privacy/repository_privacy_check.py "${dir}" || status=1
+            rm -rf "${dir}"
+          done
+          exit "${status}"
 
   gitleaks:
     runs-on: ubuntu-24.04
@@ -62,6 +81,17 @@ jobs:
           echo "${GITLEAKS_SHA256}  ${dir}/${archive}" | sha256sum --check --strict
           tar -xzf "${dir}/${archive}" -C "${dir}" gitleaks
           echo "${dir}" >> "${GITHUB_PATH}"
+      - name: gitleaks self-test (a planted synthetic key must be found)
+        run: |
+          dir="${RUNNER_TEMP}/gitleaks-self-test"
+          mkdir -p "${dir}"
+          # Built at runtime (AGENTS.md 4.5): no secret-shaped literal exists in the repository.
+          python3 -c 'import secrets, string; a = string.ascii_letters + string.digits; print("sk-" + "ant-" + "".join(secrets.choice(a) for _ in range(40)))' > "${dir}/planted.txt"
+          rc=0
+          gitleaks dir "${dir}" --config .gitleaks.toml --redact --no-banner --exit-code 3 > /dev/null 2>&1 || rc=$?
+          rm -rf "${dir}"
+          if [ "${rc}" -ne 3 ]; then echo "gitleaks self-test FAIL (exit ${rc}): the planted key was not reported"; exit 1; fi
+          echo "gitleaks self-test PASS"
       - name: gitleaks on the tree
         run: gitleaks dir . --config .gitleaks.toml --redact --no-banner --exit-code 1
       - name: gitleaks on the history

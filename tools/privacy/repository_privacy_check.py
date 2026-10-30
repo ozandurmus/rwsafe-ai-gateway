@@ -4,7 +4,13 @@
 Reports only rule and file location; a matched value is never printed. Scans the repository candidate, never runtime
 data, with no network access. Modelled on neXus tools/privacy/repository_privacy.py; the rwsafe additions are Turkish
 identifiers (TCKN with checksum, TR IBAN, TR phone numbers), AI-platform credential shapes, prompt-body fixtures, and the
-allowlist contract (owner + review date on every entry, expired entries fail).
+allowlist contract (owner + review date on every entry, expired entries fail) for this gate's own allowlist and for every
+allowlist in `.gitleaks.toml`.
+
+Test fixtures get no exemption: they use the RFC 5737 documentation ranges, the masker's 240.0.0.0/4 space and masked
+`5xx` phone shapes like every other file (PR 4 review D-01). Every file is scanned: known text suffixes must decode as
+UTF-8; any other file, extensionless ones included, is scanned unless it is binary (a NUL byte in its first 8 KiB). The
+gate scans its own source too. `test_repository_privacy_check.py` plants synthetic findings and proves each rule fires.
 
 Usage: python3 tools/privacy/repository_privacy_check.py [repo-root]    exit 0 PASS, 1 FAIL, 2 scanner error
 """
@@ -15,10 +21,16 @@ import ipaddress
 import json
 import re
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 ALLOWLIST_FILE = "tools/privacy/privacy_allowlist.json"
+GITLEAKS_CONFIG = ".gitleaks.toml"
+# A gitleaks allowlist names its owner and review date in its description, e.g. "owner: architect; review: 2027-01-31; ...".
+_GITLEAKS_OWNER_RE = re.compile(r"\bowner:\s*([^;]+?)\s*(?:;|$)")
+_GITLEAKS_REVIEW_RE = re.compile(r"\breview:\s*(\d{4}-\d{2}-\d{2})\b")
+BINARY_SNIFF_BYTES = 8192
 FORBIDDEN_ROOT_DIRS = {"data", "output", "logs", "runtime", "state", "cas", "captures", "support_bundles", "vault"}
 FORBIDDEN_DIRS_ANYWHERE = {"__pycache__", ".pytest_cache", ".gradle", "node_modules", ".venv", "venv", "build", ".idea", ".cache"}
 FORBIDDEN_SUFFIXES = {
@@ -32,7 +44,8 @@ FORBIDDEN_SUFFIXES = {
 FORBIDDEN_NAMES = {".env": "LOCAL_CONFIGURATION", "known_hosts": "LOCAL_TRUST_MATERIAL", ".ds_store": "GENERATED_OR_OS_ARTIFACT",
                    "thumbs.db": "GENERATED_OR_OS_ARTIFACT"}
 TEXT_SUFFIXES = {".py", ".sh", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".html", ".css",
-                 ".js", ".ts", ".tsx", ".mjs", ".java", ".kt", ".kts", ".sql", ".xml", ".csv", ".properties", ".gitignore", ".nft"}
+                 ".js", ".ts", ".tsx", ".mjs", ".java", ".kt", ".kts", ".sql", ".xml", ".csv", ".properties", ".gitignore", ".nft",
+                 ".gitattributes", ".bat", ".lockfile"}
 
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")
 _EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
@@ -83,7 +96,7 @@ class Finding:
     rule: str
 
 
-def _is_repository_safe_ip(value: str, *, test_fixture: bool) -> bool:
+def _is_repository_safe_ip(value: str) -> bool:
     try:
         ip = ipaddress.ip_address(value)
     except ValueError:
@@ -95,14 +108,12 @@ def _is_repository_safe_ip(value: str, *, test_fixture: bool) -> bool:
         return True
     if ip in ipaddress.ip_network("240.0.0.0/4"):   # the subnet-preserving masker's synthetic space
         return True
-    if test_fixture and (ip.is_private or ip.is_link_local):
-        return True
     return not (ip.is_private or ip.is_link_local or ip.is_global)
 
 
 def _load_allowlist(root: Path) -> tuple[dict[str, set[str]], list[Finding]]:
-    """{rule: {path-or-value-regex}} plus findings for malformed or expired entries."""
-    findings: list[Finding] = []
+    """{rule: {path-or-value-regex}} plus findings for malformed or expired entries, here and in .gitleaks.toml."""
+    findings: list[Finding] = _check_gitleaks_allowlists(root)
     allow: dict[str, set[str]] = {}
     p = root / ALLOWLIST_FILE
     if not p.exists():
@@ -125,6 +136,54 @@ def _load_allowlist(root: Path) -> tuple[dict[str, set[str]], list[Finding]]:
             continue
         allow.setdefault(e["rule"], set()).add(e["path"])
     return allow, findings
+
+
+def _check_gitleaks_allowlists(root: Path) -> list[Finding]:
+    """Every gitleaks allowlist (global or per rule, old or new syntax) names an owner and an unexpired review date."""
+    p = root / GITLEAKS_CONFIG
+    if not p.exists():
+        return []
+    try:
+        config = tomllib.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [Finding(GITLEAKS_CONFIG, 0, "GITLEAKS_CONFIG_MALFORMED")]
+    blocks: list[object] = []
+    for holder in [config, *config.get("rules", [])]:
+        if not isinstance(holder, dict):
+            continue
+        single = holder.get("allowlist")
+        blocks.extend([single] if single is not None else [])
+        blocks.extend(holder.get("allowlists", []))
+    findings: list[Finding] = []
+    today = dt.date.today()
+    for i, block in enumerate(blocks, 1):
+        description = block.get("description", "") if isinstance(block, dict) else ""
+        owner = _GITLEAKS_OWNER_RE.search(description) if isinstance(description, str) else None
+        review = _GITLEAKS_REVIEW_RE.search(description) if isinstance(description, str) else None
+        try:
+            review_date = dt.date.fromisoformat(review.group(1)) if review else None
+        except ValueError:
+            review_date = None
+        if owner is None or review_date is None:
+            findings.append(Finding(GITLEAKS_CONFIG, i, "GITLEAKS_ALLOWLIST_INCOMPLETE"))
+        elif review_date < today:
+            findings.append(Finding(GITLEAKS_CONFIG, i, "GITLEAKS_ALLOWLIST_EXPIRED"))
+    return findings
+
+
+def _read_candidate(path: Path) -> tuple[str | None, bool]:
+    """(text, unreadable): text for a file to scan, None for a binary file; unreadable for text that does not decode."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None, True
+    known_text = path.suffix.lower() in TEXT_SUFFIXES or path.name.lower() in TEXT_SUFFIXES
+    if not known_text and b"\x00" in data[:BINARY_SNIFF_BYTES]:
+        return None, False
+    try:
+        return data.decode("utf-8"), False
+    except UnicodeDecodeError:
+        return None, True
 
 
 def scan(root: Path) -> tuple[int, list[Finding]]:
@@ -151,17 +210,14 @@ def scan(root: Path) -> tuple[int, list[Finding]]:
         if path.suffix.lower() in FORBIDDEN_SUFFIXES:
             findings.append(Finding(relp, 0, FORBIDDEN_SUFFIXES[path.suffix.lower()]))
             continue
-        if not (path.suffix.lower() in TEXT_SUFFIXES or path.name == ".gitignore"):
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        text, unreadable = _read_candidate(path)
+        if unreadable:
             findings.append(Finding(relp, 0, "UNREADABLE_TEXT_CANDIDATE"))
+        if text is None:
             continue
         scanned += 1
         test_fixture = "/test/" in "/" + relp or relp.startswith("tests/") or "/tests/" in "/" + relp or "/fixtures/" in "/" + relp
         synthetic_file = any(m in text for m in _SYNTHETIC_MARKERS)
-        self_scan = relp == "tools/privacy/repository_privacy_check.py"
 
         def hit(rule: str, line_no: int) -> None:
             if relp in allow.get(rule, set()):
@@ -171,18 +227,17 @@ def scan(root: Path) -> tuple[int, list[Finding]]:
         if _PROMPT_FIXTURE_HINT_RE.search(text) and test_fixture and not synthetic_file:
             hit("PROMPT_FIXTURE_NOT_MARKED_SYNTHETIC", 0)
         for n, line in enumerate(text.splitlines(), 1):
-            if self_scan:
-                break
             if _PRIVATE_KEY_RE.search(line):
                 hit("PRIVATE_KEY_MATERIAL", n)
             if _EMAIL_RE.search(line) and "example.invalid" not in line and "noreply@anthropic.com" not in line:
                 hit("EMAIL_ADDRESS", n)
             for m in _IPV4_RE.finditer(line):
-                if not _is_repository_safe_ip(m.group(0), test_fixture=test_fixture):
+                if not _is_repository_safe_ip(m.group(0)):
                     hit("NON_DOCUMENTATION_IPV4", n)
                     break
             for m in _INTERNAL_HOST_RE.finditer(line):
-                if not m.group(0).lower().endswith(_SAFE_HOST_SUFFIXES) and "<" not in m.group(0):
+                # The leading dot makes a bare safe zone ("nexus.local") as safe as its subdomains.
+                if not ("." + m.group(0).lower()).endswith(_SAFE_HOST_SUFFIXES) and "<" not in m.group(0):
                     hit("INTERNAL_HOST_NAME", n)
                     break
             for rx, rule in ((_ANTHROPIC_KEY_RE, "ANTHROPIC_KEY_SHAPE"), (_OPENAI_KEY_RE, "OPENAI_KEY_SHAPE"),
@@ -199,7 +254,7 @@ def scan(root: Path) -> tuple[int, list[Finding]]:
             for m in _TCKN_RE.finditer(line):
                 if tckn_valid(m.group(0)):
                     hit("TCKN_WITH_VALID_CHECKSUM", n)
-            if _TR_PHONE_RE.search(line) and not test_fixture and "5xx" not in line:
+            if _TR_PHONE_RE.search(line) and "5xx" not in line:
                 hit("TR_MOBILE_NUMBER", n)
     return scanned, findings
 

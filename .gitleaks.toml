@@ -1,7 +1,8 @@
 title = "rwsafe-ai-gateway security baseline (2026-10-30)"
 
-# Rules: gitleaks defaults plus the rwsafe additions below. Allowlists are exact (path or value), owned and dated; an
-# allowlist entry without a review date is a privacy-gate failure (tools/privacy/repository_privacy_check.py checks it).
+# Rules: gitleaks defaults plus the rwsafe additions below. Allowlists are exact (path or value), owned and dated: every
+# allowlist description starts "owner: <owner>; review: <YYYY-MM-DD>;" and the privacy gate
+# (tools/privacy/repository_privacy_check.py) fails an allowlist without an owner or review date, or one past its date.
 # Secret-shaped test values are built at runtime (AGENTS.md 4.5); this file should rarely need a new entry.
 
 [extend]
@@ -38,9 +39,9 @@ description = "A literal that looks like an ICAP or gateway shared secret assign
 regex = '''(?i)(icap|gateway|client)[_-]?(secret|token|key)\s*[:=]\s*["'][A-Za-z0-9+/=_-]{16,}["']'''
 keywords = ["icap_secret", "gateway_secret", "client_secret", "icap-secret"]
 
-# Synthetic values the tests may contain. Each entry: owner and review date in the description.
+# Synthetic values the tests may contain.
 [[allowlists]]
-description = "Exact synthetic fixtures, architect 2026-10-30; review 2027-01-31"
+description = "owner: architect; review: 2027-01-31; exact synthetic fixtures (added 2026-10-30)"
 targetRules = ["generic-api-key", "rwsafe-anthropic-api-key", "rwsafe-openai-api-key"]
 regexTarget = "secret"
 regexes = [
