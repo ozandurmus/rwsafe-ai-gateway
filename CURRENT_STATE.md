@@ -160,10 +160,32 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
 - Local run: `docs/operations/LOCAL_RUN.md` "Control plane and admin UI" (dev signing key and its public key for a local
   data plane, the snapshot feed with curl, the two-approval walk-through).
 
+## Done (scoped rules, data plane: branch `feature/scoped-policy-dataplane`, not yet merged)
+
+- Snapshot format 2 (POLICY_SNAPSHOT_CONTRACT.md, PO decision Q-39) in `java/policy`: `SnapshotCodec` reads formats 1
+  and 2 and refuses a scoped rule outside the contract (`SCOPE_FIELD`, `SCOPE_DUPLICATE_ID`, `SCOPE_GROUPS`,
+  `SCOPE_MODE`, `SCOPE_TOO_MANY`, and `FAIL_CLOSED_WEAKENED` in any scope and mode); `PolicyEvaluator.resolve` applies the
+  four evaluation steps (ANY baseline; trusted claim: matching enforce rules replace ANY, strictest wins; no trusted
+  claim: strictest of ANY and every enforce rule; monitor rules reported, never applied).
+- Data plane: `X-Authenticated-Groups` parsed per transaction (encoding configured as plain or base64, format
+  UNVERIFIED; anything unreadable is no claim) and trusted only on the mutual-TLS listener; verdict events carry
+  `appliedRuleIds` and
+  `monitorRuleIds` (rule ids only, at most 16 each, written only when non-empty). Synthetic end-to-end tests cover plain
+  and Secure ICAP; `docs/operations/LOCAL_RUN.md` "Scoped rules".
+- Second review (Argon, `docs/reviews/PR20_2026_10_30_ARGON_SCOPED_POLICY_DATAPLANE.md`) answered in
+  `docs/reviews/PR20_2026_10_30_RESPONSE.md`: the header encoding is configured, never guessed; one group-name
+  normalisation (`GroupNames`, Turkish I folded) on both sides; exact snapshot field sets and strict UTF-8.
+- ConfigMap contract for the deploy owner (not edited here): the data plane reads `RWSAFE_GROUP_CLAIM_ENCODING`, value
+  `plain` or `base64`; absent or any other value disables group claims (strictest policy for everyone). It belongs in the
+  data plane's uncommitted runtime ConfigMap once the proxy's format is verified with the PO.
+- Open: the control plane's ingestion must accept the two new event fields before a scoped rule takes part in a verdict
+  (it refuses unknown fields today); the control compiler must emit exactly the contract's fields, a non-empty class map
+  per scoped rule, and group names without commas.
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
-fingerprints, group claims on Secure ICAP (`docs/operations/LOCAL_RUN.md` lists them). Slice 2 of the data plane (pull
+fingerprints (`docs/operations/LOCAL_RUN.md` lists them). Slice 2 of the data plane (pull
 request 14) added the signed snapshot pull, Secure ICAP with a required client certificate, per-identity and pod-wide
 admission, the body budget, the drain window, the verdict spool with backpressure and fixed-label metrics.
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the

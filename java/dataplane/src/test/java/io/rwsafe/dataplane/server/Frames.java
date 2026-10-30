@@ -52,6 +52,13 @@ final class Frames {
             -1, true, "X-Authenticated-User: " + user + "\r\nX-Client-IP: " + clientIp + "\r\n");
     }
 
+    /** A REQMOD frame with the proxy's group claim; {@code groups} null sends no {@code X-Authenticated-Groups}. */
+    static byte[] reqmodWithGroups(Http http, String groups) {
+        return frame("REQMOD", "/reqmod-ai", "req-hdr=0, req-body=" + http.head().length, http.head(), http.body(),
+            -1, true, "X-Authenticated-User: synthetic-user\r\n"
+                + (groups == null ? "" : "X-Authenticated-Groups: " + groups + "\r\n"));
+    }
+
     static byte[] respmod(Http request, String responseHead, byte[] responseBody, int preview) {
         byte[] resHead = (responseHead.replace("\n", "\r\n") + "\r\n").getBytes(StandardCharsets.ISO_8859_1);
         byte[] heads = new byte[request.head().length + resHead.length];
