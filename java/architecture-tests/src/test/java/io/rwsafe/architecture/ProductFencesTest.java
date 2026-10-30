@@ -5,17 +5,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
-import io.rwsafe.cli.RwsafeCli;
-import io.rwsafe.control.ControlApplication;
-import io.rwsafe.dataplane.boot.DataPlaneApplication;
-import io.rwsafe.worker.WorkerApplication;
 import org.junit.jupiter.api.Test;
 
 /** Applies {@link Fences} to the product modules (production classes only). */
 class ProductFencesTest {
 
-    static final String[] INLINE = {"io.rwsafe.dataplane..", "io.rwsafe.detect..", "io.rwsafe.policy.."};
-    static final String[] REQUEST_THREAD = {"io.rwsafe.dataplane..", "io.rwsafe.detect.."};
+    /** One root package per product module; the build emits package-info classes so an empty module still imports. */
+    static final String[] MODULE_ROOTS = {
+        "io.rwsafe.platform", "io.rwsafe.detect", "io.rwsafe.policy", "io.rwsafe.dataplane", "io.rwsafe.persistence",
+        "io.rwsafe.control", "io.rwsafe.worker", "io.rwsafe.cli",
+    };
+    static final String[] INLINE = {
+        "io.rwsafe.platform..", "io.rwsafe.dataplane..", "io.rwsafe.detect..", "io.rwsafe.policy..",
+    };
+    static final String[] REQUEST_THREAD = INLINE;
     static final String[] REQUEST_THREAD_EXEMPT = {"io.rwsafe.dataplane.boot..", "io.rwsafe.dataplane.controlplane.."};
     static final String[] CONTROL_PLANE_MODULES = {
         "io.rwsafe.persistence..", "io.rwsafe.control..", "io.rwsafe.worker..", "io.rwsafe.cli..",
@@ -31,10 +34,10 @@ class ProductFencesTest {
         .importPackages("io.rwsafe");
 
     @Test
-    void importSeesEveryEntryPoint() {
-        for (Class<?> entry : new Class<?>[] {
-            DataPlaneApplication.class, ControlApplication.class, WorkerApplication.class, RwsafeCli.class}) {
-            assertTrue(PRODUCT_CLASSES.contain(entry), entry.getName() + " missing from the imported product classes");
+    void importSeesEveryModule() {
+        for (String root : MODULE_ROOTS) {
+            assertTrue(PRODUCT_CLASSES.stream().anyMatch(c -> c.getPackageName().startsWith(root)),
+                root + " has no class in the imported product classes, so no fence would see it");
         }
     }
 
@@ -54,8 +57,13 @@ class ProductFencesTest {
     }
 
     @Test
-    void contentReadersDoNotLog() {
-        Fences.contentReadersDoNotLog(PRODUCT).check(PRODUCT_CLASSES);
+    void contentHoldersAndReadersDoNotLog() {
+        Fences.contentHoldersAndReadersDoNotLog(PRODUCT).check(PRODUCT_CLASSES);
+    }
+
+    @Test
+    void bodyContentAccessorsLiveOnBodyBearingTypes() {
+        Fences.bodyContentAccessorsLiveOnBodyBearingTypes(PRODUCT).check(PRODUCT_CLASSES);
     }
 
     @Test

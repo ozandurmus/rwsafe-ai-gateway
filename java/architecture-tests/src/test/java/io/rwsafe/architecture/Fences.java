@@ -1,12 +1,16 @@
 package io.rwsafe.architecture;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.methods;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.library.GeneralCodingRules.ACCESS_STANDARD_STREAMS;
 
 import com.tngtech.archunit.base.DescribedPredicate;
+import com.tngtech.archunit.core.domain.AccessTarget;
+import com.tngtech.archunit.core.domain.JavaAccess;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaCodeUnit;
+import com.tngtech.archunit.core.domain.JavaField;
 import com.tngtech.archunit.core.domain.JavaMethod;
 import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
@@ -14,13 +18,17 @@ import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
 import io.rwsafe.platform.content.BodyBearing;
 import io.rwsafe.platform.content.BodyContent;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
+import java.io.InputStream;
 import java.io.RandomAccessFile;
+import java.io.Reader;
 import java.net.DatagramSocket;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URL;
@@ -28,15 +36,28 @@ import java.net.URLConnection;
 import java.net.http.HttpClient;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.channels.SocketChannel;
 import java.nio.file.Files;
+import java.util.List;
 import java.util.Optional;
 import java.util.Scanner;
+import java.util.Set;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
  * The fences for AGENTS.md section 5 (data-plane law) and 4.14 (no body in a log). Each rule is a factory over package
  * patterns so {@code FenceSelfTest} can prove it on fixtures and {@code ProductFencesTest} applies it to the product.
- * Loosening a rule needs an ADR; tightening it needs only a reviewed PR.
+ * Calls and method references count alike. Loosening a rule needs an ADR; tightening it needs only a reviewed PR.
  */
 final class Fences {
 
@@ -46,9 +67,17 @@ final class Fences {
         "jakarta.persistence..", "javax.persistence..", "org.hibernate..",
     };
     static final String[] SERVLET_AND_SPRING_MVC = {"org.springframework.web..", "jakarta.servlet..", "javax.servlet.."};
-    static final String[] LOGGING_APIS = {
+    /** Logging, metrics and tracing: none of them may carry a body (AGENTS.md 4.14). */
+    static final String[] TELEMETRY_APIS = {
         "org.slf4j..", "java.util.logging..", "org.apache.logging..", "org.apache.commons.logging..", "ch.qos.logback..",
+        "io.micrometer..", "io.opentelemetry..", "io.prometheus..",
     };
+
+    /** Buffer and stream types whose read inside {@code toString()} would print content whatever the field holds. */
+    private static final List<String> CONTENT_CONTAINER_TYPES = List.of(
+        byte[].class.getName(), char[].class.getName(), ByteBuffer.class.getName(), InputStream.class.getName(),
+        Reader.class.getName(), "io.netty.buffer.ByteBuf", "io.netty.buffer.ByteBufHolder",
+        "java.lang.foreign.MemorySegment");
 
     private Fences() {
     }
@@ -58,12 +87,9 @@ final class Fences {
         return noClasses().that().resideInAnyPackage(inlinePackages)
             .should().dependOnClassesThat().resideInAnyPackage("java.util.regex..")
             .orShould().dependOnClassesThat().belongToAnyOf(Scanner.class)
-            .orShould().callMethod(String.class, "matches", String.class)
-            .orShould().callMethod(String.class, "replaceAll", String.class, String.class)
-            .orShould().callMethod(String.class, "replaceFirst", String.class, String.class)
-            .orShould().callMethod(String.class, "split", String.class)
-            .orShould().callMethod(String.class, "split", String.class, int.class)
-            .orShould().callMethod(String.class, "splitWithDelimiters", String.class, int.class)
+            .orShould().accessTargetWhere(target("call a regex shortcut of String",
+                t -> t.getOwner().isEquivalentTo(String.class)
+                    && Set.of("matches", "replaceAll", "replaceFirst", "split", "splitWithDelimiters").contains(t.getName())))
             .because("the inline path decides on untrusted text in linear time: RE2/J only (AGENTS.md section 5, SR-DP-1)");
     }
 
@@ -77,31 +103,39 @@ final class Fences {
     }
 
     /**
-     * AGENTS.md section 5: request-thread code makes no blocking network or disk call and does not reach the control-plane
-     * client, which runs on its own threads behind bounded queues. Process wiring and that client are exempt.
+     * AGENTS.md section 5: request-thread code makes no blocking network, DNS or disk call, never parks or waits, and does
+     * not reach the control-plane client, which runs on its own threads behind bounded queues (offer, never put). Process
+     * wiring and that client are exempt.
      */
     static ArchRule noBlockingIoOnRequestThreads(String[] requestThreadPackages, String... exemptPackages) {
         return noClasses().that().resideInAnyPackage(requestThreadPackages).and().resideOutsideOfPackages(exemptPackages)
             .should().dependOnClassesThat().belongToAnyOf(
-                Socket.class, ServerSocket.class, DatagramSocket.class, URLConnection.class, HttpURLConnection.class,
-                HttpClient.class, Files.class, FileChannel.class, FileInputStream.class, FileOutputStream.class,
-                FileReader.class, FileWriter.class, RandomAccessFile.class)
-            .orShould().callMethod(URL.class, "openConnection")
-            .orShould().callMethod(URL.class, "openStream")
-            .orShould().callMethod(Thread.class, "sleep", long.class)
+                Socket.class, ServerSocket.class, DatagramSocket.class, SocketChannel.class, URLConnection.class,
+                HttpURLConnection.class, HttpClient.class, File.class, Files.class, FileChannel.class,
+                FileInputStream.class, FileOutputStream.class, FileReader.class, FileWriter.class, RandomAccessFile.class)
+            .orShould().accessTargetWhere(target("block the calling thread", Fences::blocks))
             .orShould().dependOnClassesThat().resideInAnyPackage(exemptPackages)
-            .because("a request thread never waits on I/O or on the control plane (AGENTS.md section 5)")
+            .because("a request thread never waits on I/O, a lock or the control plane (AGENTS.md section 5)")
             // The skeleton has no request-thread class yet; remove allowEmptyShould with the first one (MVP data plane).
             .allowEmptyShould(true);
     }
 
-    /** AGENTS.md 4.14: a class that reads raw content neither logs nor prints. */
-    static ArchRule contentReadersDoNotLog(String... productPackages) {
-        return noClasses().that().resideInAnyPackage(productPackages).and(callABodyContentAccessor())
-            .should().dependOnClassesThat().resideInAnyPackage(LOGGING_APIS)
+    /** AGENTS.md 4.14: a class that reads raw content, or holds it, neither logs, meters, traces nor prints. */
+    static ArchRule contentHoldersAndReadersDoNotLog(String... productPackages) {
+        return noClasses().that().resideInAnyPackage(productPackages).and(holdOrReadContent())
+            .should().dependOnClassesThat().resideInAnyPackage(TELEMETRY_APIS)
             .orShould().dependOnClassesThat().belongToAnyOf(System.Logger.class)
             .orShould(ACCESS_STANDARD_STREAMS)
-            .because("request and response bodies never reach a log (AGENTS.md 4.14)")
+            .because("request and response bodies never reach a log, a metric or a trace (AGENTS.md 4.14)")
+            .allowEmptyShould(true);
+    }
+
+    /** AGENTS.md 4.14: a content accessor lives on a {@link BodyBearing} type, so the other content fences see it. */
+    static ArchRule bodyContentAccessorsLiveOnBodyBearingTypes(String... productPackages) {
+        return methods().that().areDeclaredInClassesThat().resideInAnyPackage(productPackages)
+            .and().areAnnotatedWith(BodyContent.class)
+            .should().beDeclaredInClassesThat().areAnnotatedWith(BodyBearing.class)
+            .because("the content fences find content through @BodyBearing types (AGENTS.md 4.14)")
             .allowEmptyShould(true);
     }
 
@@ -119,20 +153,51 @@ final class Fences {
             .because("console output bypasses the structured, body-free log (AGENTS.md 4.14)");
     }
 
-    private static DescribedPredicate<JavaClass> callABodyContentAccessor() {
-        return DescribedPredicate.describe("call a @BodyContent accessor",
-            javaClass -> javaClass.getCodeUnits().stream().anyMatch(Fences::callsBodyContent));
+    private static DescribedPredicate<JavaAccess<?>> target(String description, Predicate<AccessTarget> test) {
+        return DescribedPredicate.describe(description, access -> test.test(access.getTarget()));
     }
 
-    private static boolean callsBodyContent(JavaCodeUnit codeUnit) {
-        return codeUnit.getMethodCallsFromSelf().stream()
-            .map(call -> call.getTarget().resolveMember())
+    private static boolean blocks(AccessTarget t) {
+        JavaClass owner = t.getOwner();
+        String name = t.getName();
+        return (owner.isEquivalentTo(Thread.class) && name.equals("sleep"))
+            || (owner.isEquivalentTo(TimeUnit.class) && name.equals("sleep"))
+            || (name.equals("wait") && isObjectMember(t))
+            || (owner.isEquivalentTo(LockSupport.class) && name.startsWith("park"))
+            || (owner.isAssignableTo(Future.class) && name.equals("get"))
+            || (owner.isAssignableTo(CompletableFuture.class) && name.equals("join"))
+            || (owner.isAssignableTo(CountDownLatch.class) && name.equals("await"))
+            || (owner.isAssignableTo(CyclicBarrier.class) && name.equals("await"))
+            || (owner.isAssignableTo(Semaphore.class) && name.startsWith("acquire"))
+            || (owner.isAssignableTo(BlockingQueue.class) && Set.of("put", "take").contains(name))
+            || (owner.isAssignableTo(Process.class) && name.equals("waitFor"))
+            || (owner.isEquivalentTo(URL.class) && Set.of("openConnection", "openStream", "getContent").contains(name))
+            || (owner.isAssignableTo(InetAddress.class) && Set.of("getByName", "getAllByName", "getLocalHost",
+                "getHostName", "getCanonicalHostName").contains(name));
+    }
+
+    private static boolean isObjectMember(AccessTarget t) {
+        return t.resolveMember().map(m -> m.getOwner().isEquivalentTo(Object.class)).orElse(false);
+    }
+
+    private static DescribedPredicate<JavaClass> holdOrReadContent() {
+        return DescribedPredicate.describe("hold or read content (are @BodyBearing or use a @BodyContent accessor)",
+            javaClass -> javaClass.isAnnotatedWith(BodyBearing.class)
+                || javaClass.getCodeUnits().stream().anyMatch(Fences::usesBodyContent));
+    }
+
+    /** True when the code unit calls or references a {@link BodyContent} accessor. */
+    private static boolean usesBodyContent(JavaCodeUnit codeUnit) {
+        return codeUnit.getAccessesFromSelf().stream()
+            .map(JavaAccess::getTarget)
+            .filter(AccessTarget.CodeUnitAccessTarget.class::isInstance)
+            .map(t -> ((AccessTarget.CodeUnitAccessTarget) t).resolveMember())
             .flatMap(Optional::stream)
             .anyMatch(target -> target.isAnnotatedWith(BodyContent.class));
     }
 
     private static ArchCondition<JavaClass> printNoContent() {
-        return new ArchCondition<>("be a class whose own toString() reads no content") {
+        return new ArchCondition<>("be a class with a @BodyContent accessor whose own toString() reads no content") {
             @Override
             public void check(JavaClass javaClass, ConditionEvents events) {
                 String name = javaClass.getName();
@@ -141,28 +206,35 @@ final class Fences {
                         name + " is a record: its generated toString() prints every component"));
                     return;
                 }
+                Set<JavaMethod> accessors = javaClass.getMethods().stream()
+                    .filter(m -> m.isAnnotatedWith(BodyContent.class)).collect(Collectors.toSet());
+                if (accessors.isEmpty()) {
+                    events.add(SimpleConditionEvent.violated(javaClass,
+                        name + " declares no @BodyContent accessor, so its content fields are unknown"));
+                }
                 Optional<JavaMethod> toString = javaClass.tryGetMethod("toString");
                 if (toString.isEmpty()) {
                     events.add(SimpleConditionEvent.violated(javaClass, name + " does not declare toString()"));
                     return;
                 }
-                if (callsBodyContent(toString.get())) {
+                if (usesBodyContent(toString.get())) {
                     events.add(SimpleConditionEvent.violated(javaClass,
-                        name + ".toString() calls a @BodyContent accessor"));
+                        name + ".toString() uses a @BodyContent accessor"));
                 }
-                boolean readsContentField = toString.get().getFieldAccesses().stream()
-                    .map(access -> access.getTarget().getRawType())
-                    .anyMatch(Fences::isContentShaped);
-                if (readsContentField) {
-                    events.add(SimpleConditionEvent.violated(javaClass,
-                        name + ".toString() reads a text or byte field; print a derived count or digest instead"));
-                }
+                Set<String> contentFields = accessors.stream()
+                    .flatMap(m -> m.getFieldAccesses().stream())
+                    .map(access -> access.getTarget().getFullName())
+                    .collect(Collectors.toSet());
+                toString.get().getFieldAccesses().stream()
+                    .map(access -> access.getTarget())
+                    .filter(field -> contentFields.contains(field.getFullName())
+                        || CONTENT_CONTAINER_TYPES.contains(field.getRawType().getName()))
+                    .map(field -> field.resolveMember().map(JavaField::getName).orElse(field.getName()))
+                    .distinct()
+                    .forEach(field -> events.add(SimpleConditionEvent.violated(javaClass,
+                        name + ".toString() reads the content field " + field
+                            + "; print a derived count or digest instead")));
             }
         };
-    }
-
-    private static boolean isContentShaped(JavaClass type) {
-        return type.isAssignableTo(CharSequence.class) || type.isAssignableTo(ByteBuffer.class)
-            || type.isEquivalentTo(byte[].class) || type.isEquivalentTo(char[].class);
     }
 }

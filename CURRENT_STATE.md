@@ -24,12 +24,17 @@ Public GitHub repository with branch protection; pull requests 1, 2 (decisions a
   per ARCHITECTURE §9: `platform-core`, `detect`, `policy`, `dataplane`, `persistence`, `control`, `worker`, `cli`,
   `architecture-tests`, `integration-tests`; all empty but compiling. Lockfiles for every configuration and
   `gradle/verification-metadata.xml` (sha256). Entry points `unitTest` and `architectureTest` (neXus task names).
-- ArchUnit fences (`java/architecture-tests`, `Fences.java`), each proved on fixtures by `FenceSelfTest`: no
-  `java.util.regex`, `Scanner` or regex `String` shortcuts on the inline path (`dataplane`, `detect`, `policy`; RE2/J
-  only, SR-DP-1); no database API, servlet stack or control-plane module there (SR-DP-6); no blocking network or disk
-  call and no `Thread.sleep` on request threads (everything in `dataplane` and `detect` except `dataplane.boot` and
-  `dataplane.controlplane`); a class that calls a `@BodyContent` accessor never logs or prints; a `@BodyBearing` type is
-  not a record and its own `toString()` reads no content; server modules never write to the standard streams (4.14).
+- ArchUnit fences (`java/architecture-tests`, `Fences.java`), each proved on fixtures by `FenceSelfTest`; calls and
+  method references count alike: no `java.util.regex`, `Scanner` or regex `String` shortcuts on the inline path
+  (`platform`, `dataplane`, `detect`, `policy`; RE2/J only, SR-DP-1); no database API, servlet stack or control-plane
+  module there (SR-DP-6); on request threads (the same packages except `dataplane.boot` and `dataplane.controlplane`) no
+  blocking network, DNS or disk call and no sleep, wait, park, `Future.get` or `BlockingQueue.put/take`; a class that
+  holds or reads content (`@BodyBearing`, `@BodyContent`) never logs, meters, traces or prints; a `@BodyContent` accessor
+  lives on a `@BodyBearing` class, which is not a record and whose own `toString()` reads no content field; server
+  modules never write to the standard streams (4.14). Every module emits a class (`-Xpkginfo:always`) and the product
+  test fails if a module is invisible to the fences.
+- Second independent review (AGENTS.md section 9): Argon, `docs/reviews/PR4_2026_10_30_ARGON_PHASE0_SKELETON.md`, MERGE
+  WITH CORRECTIONS; answered by ID in `docs/reviews/PR4_2026_10_30_RESPONSE.md` (D-03..D-05 fixed, D-06/D-07 partly).
 - CI `.github/workflows/validation.yml` on every pull request and on `main`: privacy gate, gitleaks (tree and history,
   checksum-verified binary), unit and ArchUnit tests; every job prints the commit it tested (the merge commit plus the
   PR head and base); actions pinned by commit digest; read-only token; no secrets.
@@ -50,7 +55,9 @@ reviews.
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
 neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Q-29 residual-risk signature (blocks the pilot); the
 Maven-portability smoke build that ADR-011 §4 names as the Gradle mitigation (generated `pom.xml` built in CI); Semgrep,
-Trivy and the Jazzer corpus in CI (they need code to scan; AGENTS.md section 10); `frontend/`.
+Trivy (lockfile and config scan, SR-SC-2) and the Jazzer corpus in CI; `frontend/`; privacy-gate hardening from the PR 4
+review (D-01, D-02: no private-range exemption for fixtures, `.gitleaks.toml` allowlist dates, extensionless files, a
+gate self-test in CI); an ArchUnit module-graph rule (D-06).
 
 ## Next (ROADMAP phase 0, in this order)
 

@@ -10,8 +10,6 @@ dependencies {
     testImplementation(project(":worker"))
     testImplementation(project(":cli"))
 
-    testImplementation(libs.junit.jupiter)
     testImplementation(libs.archunit.junit5)
     testImplementation(libs.slf4j.api)
-    testRuntimeOnly(libs.junit.platform.launcher)
 }

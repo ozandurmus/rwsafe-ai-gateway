@@ -90,4 +90,4 @@ jobs:
             java/gradle/verification-metadata.xml
             java/gradle/wrapper/gradle-wrapper.properties
       - name: Unit and architecture tests
-        run: ./java/gradlew -p java --no-daemon --stacktrace unitTest architectureTest
+        run: ./java/gradlew -p java --no-daemon --stacktrace --dependency-verification strict unitTest architectureTest

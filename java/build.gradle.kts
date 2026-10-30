@@ -19,14 +19,17 @@ subprojects {
         }
     }
 
+    val libs = rootProject.extensions.getByType<VersionCatalogsExtension>().named("libs")
     dependencies {
-        "testImplementation"(platform(rootProject.extensions.getByType<VersionCatalogsExtension>().named("libs")
-            .findLibrary("junit-bom").get()))
+        "testImplementation"(platform(libs.findLibrary("junit-bom").get()))
+        "testImplementation"(libs.findLibrary("junit-jupiter").get())
+        "testRuntimeOnly"(libs.findLibrary("junit-platform-launcher").get())
     }
 
     tasks.withType<JavaCompile>().configureEach {
         options.encoding = "UTF-8"
-        options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
+        // -Xpkginfo:always: a module that holds only package-info.java still emits a class, so the fences see it.
+        options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror", "-Xpkginfo:always"))
     }
 
     tasks.withType<Test>().configureEach {
