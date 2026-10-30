@@ -162,6 +162,37 @@ bases, UID 185 group 0, read-only root); kustomize base for `rwsafe-icap` (the `
 `manifests` runs `tools/deploy/manifest_check.py` (AGENTS.md section 8 rules, quota fit) and its fixture self-test.
 Nothing applied; build and apply commands in `DEPLOY_AND_SHARED_HOST_RUNBOOK.md` §7 (apply is the PO's step).
 
+## Done (leak probe and log scanner, branch `feature/leak-probe`)
+
+Both run in `:control:test`, so in `unitTest` and the CI `java-tests` job; no workflow change.
+
+- Masked-role leak probe, API level (AGENTS.md 4.11, SR-PRIV-2, AC-5): `MaskedRoleLeakProbeTest` seeds the control plane
+  through its real paths with a synthetic estate built at runtime (`support/Canaries`: TCKN and TR IBAN with valid
+  checksums, TR mobile numbers, a Luhn card, a secret shape, Turkish names, directory logins, e-mail addresses, domain
+  accounts, host and group names in the estate dictionary, RFC 5737 addresses, an operator signing key id naming an
+  estate host): verdict events through the capture sink, Turkish-name directory users who sign in, draft and approve a
+  policy version. The masked user walks every endpoint of `frontend/src/api.ts` and every `/api` route the server maps
+  (all pages, filters, event details, simulations, refused mutations); the test fails when either side gains an endpoint
+  the walk does not cover (`support/ApiInventory`). Response bodies and headers are compared token by token as HMAC
+  digests under a per-run key (`support/LeakProbe`); a hit names the endpoint template, JSON path class and canary class,
+  never the value. Every masked page must carry `X-RWSAFE-Masked` and the rule-set header. The same walk as a viewer is
+  the positive control (it must see the classes a viewer sees in clear, and still no identity claim or address). No
+  export exists yet; the inventory check fails as soon as one appears unprobed. Result: zero hits, no leak found.
+- Fail closed (AGENTS.md 4.10, SR-PRIV-7): `FailClosedDictionaryMissingProbeTest` and `FailClosedKeyMissingProbeTest`
+  refuse the masked sign-in (503) and answer every read of the inventory with 503 `MASKING_UNAVAILABLE` and every
+  mutation with 403 for a request that already carries the masked role.
+- Log scanner (AGENTS.md 4.14, SR-PRIV-6): `LogScannerEndToEndTest` runs the real data plane (ICAP engine, event
+  shipper with its spool, metrics endpoint) against the control plane's capture sink in one JVM; synthetic bodies with
+  random markers and identifier values pass allow, redact, block (JSON and page), malformed JSON, oversize, encoded,
+  streamed relay and abort, a marked request URL and two ICAP framing errors, plus seven refused ingestion batches that
+  carry markers. Logback (rwsafe loggers at TRACE, Netty at DEBUG), `java.util.logging`, uncaught exceptions, the
+  console, the Prometheus text, block and error pages, control-plane answers and every stored row hold no marker, body
+  fragment, identity claim or client address (the spool is checked for bodies only: its wire format carries the claim by
+  design). The data plane runs on its own Netty line there (strict test constraint in `control/build.gradle.kts`).
+- Not covered: a browser-level (Playwright) walk of the screens (needs a browser download; the UI reads only the API
+  client the probe enumerates); the layer 4 name dictionary and customer numbers (not implemented, so names are seeded
+  only where pseudonymisation applies); third-party loggers below their production levels.
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
@@ -173,7 +204,7 @@ neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeSc
 later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules and group targeting of
 staged versions (both need a snapshot format with groups), a server-side user settings store for the UI language, the
 ratified decision record that mirrors the seed fixture, C3 capture store, the Incidents, Identities and roles and
-Administration screens, Playwright masked-role leak probe, the cluster PostgreSQL Job); the
+Administration screens, a browser-level (Playwright) masked-role leak probe on top of the API-level one, the cluster PostgreSQL Job); the
 Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with them); Trivy image scanning and SBOM (with
 the first image, ship pipeline).
 
