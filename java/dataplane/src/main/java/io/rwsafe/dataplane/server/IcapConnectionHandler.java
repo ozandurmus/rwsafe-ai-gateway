@@ -402,7 +402,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         if (action == Action.REDACT && result != null && result.redactedBody() != null) {
             byte[] redacted = result.redactedBody();
             ctx.writeAndFlush(msg(IcapResponses.modified(isTag(), "req-hdr",
-                withLength(reqHttp, redacted.length), redacted, false)));
+                identityWithLength(reqHttp, redacted.length), redacted, false)));
         } else if (action == Action.BLOCK || action == Action.REDACT) {
             ctx.writeAndFlush(msg(blockResponse(decision.reason())));
         } else if (!answerUnchanged(ctx, true)) {
@@ -438,6 +438,12 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
 
     private static byte[] withLength(HeaderBlock http, int length) {
         return http.rewrite(List.of("Content-Length", "Transfer-Encoding"),
+            List.of(new HeaderBlock.Field("Content-Length", Integer.toString(length)))).toBytes();
+    }
+
+    /** A rewritten body is identity-encoded: the inspector decoded any gzip or deflate layer before rewriting it. */
+    private static byte[] identityWithLength(HeaderBlock http, int length) {
+        return http.rewrite(List.of("Content-Length", "Transfer-Encoding", "Content-Encoding"),
             List.of(new HeaderBlock.Field("Content-Length", Integer.toString(length)))).toBytes();
     }
 
@@ -496,7 +502,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             byte[] replacement = result.redactedBody();
             emit(Verdict.REDACT, decision.reason(), result.findings());
             ctx.writeAndFlush(msg(IcapResponses.modified(isTag(), "res-hdr",
-                withLength(resHttp, replacement.length), replacement, false)));
+                identityWithLength(resHttp, replacement.length), replacement, false)));
             resetTransaction();
             return;
         }

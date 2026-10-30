@@ -19,13 +19,18 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Inspects a captured body (ICAP spec §4.3). JSON: every string and number leaf is normalised and scanned and can be
- * rewritten. Form-encoded bodies are percent-decoded and text bodies decoded as strict UTF-8, then scanned; they are not
- * rewritable. Everything the engine cannot read yet is a non-verdict, never an allow (PR 11 review D-01, D-02):
- * declared encodings, compressed or binary payloads (by magic bytes or invalid UTF-8), multipart and any other media
- * type, bodies above the cap, scans that reach the finding limit and normalisation that expands beyond a bound.
+ * Inspects a captured body (ICAP spec §4.3). A declared single gzip or deflate {@code Content-Encoding} is decoded first
+ * within 8x the input and the body cap ({@link ContentDecoding}); a rewrite of a decoded body is identity-encoded. JSON:
+ * every string and number leaf is normalised and scanned and can be rewritten. Form-encoded bodies are percent-decoded
+ * and text bodies decoded as strict UTF-8, then scanned; they are not rewritable. Every string leaf and every text body
+ * also has its base64 layers decoded and scanned ({@link Base64Layers}); a finding inside a decoded layer replaces the
+ * whole field with the class token. Everything the engine cannot read is a non-verdict, never an allow (PR 11 review
+ * D-01, D-02): other or stacked encodings, compressed or binary payloads (by magic bytes or invalid UTF-8), multipart and
+ * any other media type, bodies above the cap, embedded files and undecodable blobs, scans that reach the finding limit
+ * and normalisation that expands beyond a bound.
  *
- * <p>Not yet in this slice: decompression (BY-PROTO-7), base64 layer decoding (OFF2-3) and the file pipeline (BY-FILE-*).
+ * <p>Not yet in this slice: the file pipeline (BY-FILE-*), hex and other non-base64 layers, gzip inside base64 (BY-ENC-9:
+ * {@code EMBEDDED_FILE} for now).
  */
 public final class BodyInspector {
 
@@ -47,10 +52,19 @@ public final class BodyInspector {
         if (body.oversize()) {
             return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "OVERSIZE");
         }
-        if (encoded(http.first("Content-Encoding"))) {
-            return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "ENCODED");
+        byte[] bytes = body.bytes();
+        int len = body.length();
+        String contentEncoding = http.first("Content-Encoding");
+        if (encoded(contentEncoding)) {
+            byte[] decoded = ContentDecoding.decode(contentEncoding, bytes, len,
+                (int) Math.min((long) ContentDecoding.MAX_RATIO * len, body.cap()));
+            if (decoded == null || ContentDecoding.compressed(decoded, decoded.length)) {
+                return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "ENCODED");
+            }
+            bytes = decoded;
+            len = decoded.length;
         }
-        if (body.length() == 0) {
+        if (len == 0) {
             return InspectionResult.inspected(List.of(), true, null);
         }
         // N-03: the detectors read UTF-8; another declared charset (UTF-16 interleaves NUL bytes) is not readable yet.
@@ -58,8 +72,6 @@ public final class BodyInspector {
             return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "UNSUPPORTED_CHARSET");
         }
         String mediaType = http.mediaType();
-        byte[] bytes = body.bytes();
-        int len = body.length();
         if (binaryMagic(bytes, len)) {
             return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "BINARY");
         }
@@ -101,6 +113,17 @@ public final class BodyInspector {
         if (DetectorSet.overLimit(found)) {
             return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "FINDING_LIMIT");
         }
+        Base64Layers.Outcome layers = Base64Layers.inspect(normalised, detectors);
+        if (layers.reason() != null) {
+            return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, layers.reason());
+        }
+        if (!layers.findings().isEmpty()) {
+            found = new ArrayList<>(found);
+            found.addAll(layers.findings());
+            if (DetectorSet.overLimit(found)) {
+                return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "FINDING_LIMIT");
+            }
+        }
         return InspectionResult.inspected(found, false, null);
     }
 
@@ -122,10 +145,16 @@ public final class BodyInspector {
                 return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "NORMALISATION");
             }
             List<Finding> found = detectors.scan(normalised);
-            if (found.isEmpty()) {
+            Base64Layers.Outcome layers = leaf.number() ? Base64Layers.Outcome.NONE
+                : Base64Layers.inspect(normalised, detectors);
+            if (layers.reason() != null) {
+                return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, layers.reason());
+            }
+            if (found.isEmpty() && layers.findings().isEmpty()) {
                 continue;
             }
             all.addAll(found);
+            all.addAll(layers.findings());
             if (DetectorSet.overLimit(all)) {
                 return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "FINDING_LIMIT");
             }
@@ -133,7 +162,10 @@ public final class BodyInspector {
                 rewritten = new ByteArrayOutputStream(len);
             }
             rewritten.write(bytes, cursor, leaf.rawStart() - cursor);
-            rewritten.writeBytes(JsonLeafScanner.encode(Redactor.redact(normalised, found)));
+            // OFF2-3: a finding inside a decoded layer replaces the whole field, never a partial rewrite of encoded text.
+            String replacement = layers.findings().isEmpty() ? Redactor.redact(normalised, found)
+                : layers.findings().get(0).dataClass().redactionToken();
+            rewritten.writeBytes(JsonLeafScanner.encode(replacement));
             cursor = leaf.rawEnd();
         }
         if (rewritten == null) {

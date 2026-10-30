@@ -143,6 +143,9 @@ without the dictionary the masked role gets 503.
 
 ## What the engine does not do yet
 
-Decompression and base64 layer decoding, the file pipeline, login-step tenant rules, shape fingerprints per flow, and
-group claims selecting policy on Secure ICAP connections. Each is a row of ICAP spec §2 to §5 that a later slice
-implements.
+The file pipeline (multipart, documents, archives, and files found inside a base64 layer, which are
+`UNINSPECTABLE(EMBEDDED_FILE)` for now), hex and other non-base64 layers, gzip inside base64 (BY-ENC-9), decompression on
+the streamed RESPMOD path, login-step tenant rules, shape fingerprints per flow, and group claims selecting policy on
+Secure ICAP connections. Each is a row of ICAP spec §2 to §5 that a later slice implements. A single declared gzip or
+deflate `Content-Encoding` and base64 layers to depth 2 are decoded and inspected; `br`, stacked codings and undeclared
+compressed bodies stay `UNINSPECTABLE`.

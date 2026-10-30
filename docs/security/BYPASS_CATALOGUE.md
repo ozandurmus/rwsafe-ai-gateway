@@ -86,3 +86,14 @@ captured content). Pilot acceptance requires every MVP row green. Columns: Phase
 Per class and per technique: fixtures run, expected vs actual, FN and FP counts against SR-DET targets, the list of
 documented limitations (BY-ENC-7, BY-ENC-8, BY-FILE-3, BY-TEN-6) with the compensating control, and the date. Generated
 by the test suite, committed under `docs/reviews/DETECTION_EVALUATION_<date>.md`.
+
+## 8. Implementation status (record; the rows above are unchanged)
+
+This section records which rows the engine meets and by which test; it amends no expected result.
+
+| Id | Status | Test | Note |
+|---|---|---|---|
+| BY-ENC-1 | met (REQMOD body, JSON leaves and text bodies) | `BodyDecodingTest`, `DecodingEndToEndTest` | a finding inside a decoded layer replaces the whole field with the class token; runs from 12 characters, so a bare base64 TCKN is found |
+| BY-ENC-2 | met for base64 of base64; hex of base64 open | `BodyDecodingTest.doubleBase64IsFound`, `thirdLayerIsAResidualBlob` | a third layer above 256 characters with entropy over 4.5 bits per character is `UNINSPECTABLE(UNDECODABLE_BLOB)`; hex decoding is a later slice |
+| BY-ENC-8 | met for base64-alphabet blobs | `BodyDecodingTest.randomBlobAbove256BytesIsUndecodable` | residual = a run that does not decode, decodes to binary or is a third layer; ROT13 and substitutions of spaced text keep low entropy and stay a documented limitation |
+| BY-PROTO-7 | met: declared single gzip or deflate is decoded (8x and body cap); undeclared raw gzip is `UNINSPECTABLE(BINARY)` | `BodyDecodingTest`, `DecodingEndToEndTest`, `IcapEngineEndToEndTest.unreadableBodiesAreUninspectable` | `br`, stacked or nested codings and over-cap output stay `UNINSPECTABLE(ENCODED)`; a redacted rewrite is sent identity-encoded with `Content-Length` recomputed |
