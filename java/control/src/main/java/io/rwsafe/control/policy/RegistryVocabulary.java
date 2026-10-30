@@ -17,7 +17,11 @@ public final class RegistryVocabulary {
     public static final String FLOW_RULE = "flow.ai-category";
     public static final List<String> ACTIONS = List.of("ALLOW", "WARN", "REDACT", "BLOCK");
     public static final List<String> MODES = List.of("monitor", "enforce");
+    /** The rollout stages old rows may carry; a new version is {@code all} (PO decision Q-39 retired the others). */
     public static final List<String> STAGES = List.of("pilot", "pct25", "pct50", "all");
+    public static final String STAGE_ALL = "all";
+    /** The source scopes of a version (Q-39): everyone, or the members of named directory groups. */
+    public static final List<String> SCOPE_KINDS = List.of("ANY", "GROUPS");
     /** The relaxing actions a fail-closed class never takes, in any version or snapshot (SR-DLP-1). */
     public static final Set<String> RELAXING_ACTIONS = Set.of("ALLOW", "WARN");
     public static final int MAX_HOSTS = 32;

@@ -49,7 +49,25 @@ public final class VerdictEventJson {
         field(s, "transport", e.transport()).append(',');
         s.append("\"snapshotVersion\":").append(e.snapshotVersion()).append(',');
         field(s, "correlationId", e.correlationId());
+        // Snapshot format 2: written only when a scoped rule took part, so an event without one keeps the exact field
+        // set the ingestion endpoint accepts today (it refuses unknown fields).
+        ids(s, "appliedRuleIds", e.appliedRuleIds());
+        ids(s, "monitorRuleIds", e.monitorRuleIds());
         s.append('}');
+    }
+
+    private static void ids(StringBuilder s, String name, List<String> ids) {
+        if (ids.isEmpty()) {
+            return;
+        }
+        s.append(",\"").append(name).append("\":[");
+        for (int i = 0; i < ids.size(); i++) {
+            if (i > 0) {
+                s.append(',');
+            }
+            string(s, ids.get(i));
+        }
+        s.append(']');
     }
 
     private static StringBuilder field(StringBuilder s, String name, String value) {
@@ -57,6 +75,10 @@ public final class VerdictEventJson {
         if (value == null) {
             return s.append("null");
         }
+        return string(s, value);
+    }
+
+    private static StringBuilder string(StringBuilder s, String value) {
         s.append('"');
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i);

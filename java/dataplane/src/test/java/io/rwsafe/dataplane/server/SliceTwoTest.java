@@ -18,11 +18,8 @@ import io.rwsafe.detect.DetectorSet;
 import io.rwsafe.platform.verdict.Verdict;
 import io.rwsafe.policy.SnapshotVerifier;
 import io.rwsafe.policy.Snapshots;
-import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.io.Writer;
-import java.math.BigInteger;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URI;
@@ -31,38 +28,21 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.security.KeyStore;
-import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
-import java.security.cert.Certificate;
-import java.security.cert.X509Certificate;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import javax.net.ssl.KeyManagerFactory;
-import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
-import javax.net.ssl.TrustManagerFactory;
-import org.bouncycastle.asn1.x500.X500Name;
-import org.bouncycastle.asn1.x509.BasicConstraints;
-import org.bouncycastle.asn1.x509.Extension;
-import org.bouncycastle.cert.X509v3CertificateBuilder;
-import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
-import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
-import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
-import org.bouncycastle.openssl.jcajce.JcaPKCS8Generator;
-import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -353,7 +333,7 @@ class SliceTwoTest {
 
     private static VerdictEvent event(String correlation) {
         return new VerdictEvent(UUID.randomUUID(), Instant.now(), "reqmod", "claude", "api", "chat", Verdict.ALLOW, null,
-            Map.of(), 10, 5, null, null, "plain_allowlisted", 1, correlation);
+            Map.of(), 10, 5, null, null, "plain_allowlisted", 1, correlation, List.of(), List.of());
     }
 
     // ---- metrics (ICAP spec §8) ----
@@ -381,99 +361,24 @@ class SliceTwoTest {
 
     // ---- Secure ICAP (ICAP spec §2) ----
 
-    private record Pki(X509Certificate ca, KeyPair caKeys) {
-    }
-
-    private static Pki ca() throws Exception {
-        KeyPair keys = ec();
-        X500Name name = new X500Name("CN=synthetic test CA");
-        X509v3CertificateBuilder b = new JcaX509v3CertificateBuilder(name, BigInteger.ONE, notBefore(), notAfter(),
-            name, keys.getPublic());
-        b.addExtension(Extension.basicConstraints, true, new BasicConstraints(true));
-        return new Pki(new JcaX509CertificateConverter().getCertificate(
-            b.build(new JcaContentSignerBuilder("SHA256withECDSA").build(keys.getPrivate()))), keys);
-    }
-
-    private static X509Certificate issue(Pki ca, String cn, PublicKey key, long serial) throws Exception {
-        X509v3CertificateBuilder b = new JcaX509v3CertificateBuilder(new X500Name("CN=synthetic test CA"),
-            BigInteger.valueOf(serial), notBefore(), notAfter(), new X500Name("CN=" + cn), key);
-        b.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
-        return new JcaX509CertificateConverter().getCertificate(
-            b.build(new JcaContentSignerBuilder("SHA256withECDSA").build(ca.caKeys().getPrivate())));
-    }
-
-    private static KeyPair ec() throws Exception {
-        KeyPairGenerator g = KeyPairGenerator.getInstance("EC");
-        g.initialize(256);
-        return g.generateKeyPair();
-    }
-
-    private static Date notBefore() {
-        return Date.from(Instant.now().minusSeconds(60));
-    }
-
-    private static Date notAfter() {
-        return Date.from(Instant.now().plusSeconds(3600));
-    }
-
-    private static File writePem(Path dir, String name, Object... objects) throws Exception {
-        File f = dir.resolve(name).toFile();
-        try (Writer w = Files.newBufferedWriter(f.toPath()); JcaPEMWriter pem = new JcaPEMWriter(w)) {
-            for (Object o : objects) {
-                pem.writeObject(o instanceof PrivateKey k ? new JcaPKCS8Generator(k, null) : o);
-            }
-        }
-        return f;
-    }
-
-    private static SSLContext clientContext(Pki ca, X509Certificate cert, KeyPair keys) throws Exception {
-        KeyStore trust = KeyStore.getInstance("PKCS12");
-        trust.load(null, null);
-        trust.setCertificateEntry("ca", ca.ca());
-        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        tmf.init(trust);
-        KeyManagerFactory kmf = null;
-        if (cert != null) {
-            char[] pw = "synthetic".toCharArray();
-            KeyStore ks = KeyStore.getInstance("PKCS12");
-            ks.load(null, null);
-            ks.setKeyEntry("client", keys.getPrivate(), pw, new Certificate[] {cert, ca.ca()});
-            kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-            kmf.init(ks, pw);
-        }
-        SSLContext ctx = SSLContext.getInstance("TLS");
-        ctx.init(kmf == null ? null : kmf.getKeyManagers(), tmf.getTrustManagers(), null);
-        return ctx;
-    }
-
     @Test
     void secureIcapRequiresTheProxyCertificateAndMarksTheTransport() throws Exception {
-        Pki ca = ca();
-        KeyPair serverKeys = ec();
-        X509Certificate serverCert = issue(ca, "rwsafe-icap", serverKeys.getPublic(), 2);
-        KeyPair proxyKeys = ec();
-        X509Certificate proxyCert = issue(ca, "synthetic-proxy", proxyKeys.getPublic(), 3);
-        File chain = writePem(tmp, "server.pem", serverCert, ca.ca());
-        File key = writePem(tmp, "server.key", serverKeys.getPrivate());
-        File caFile = writePem(tmp, "ca.pem", ca.ca());
+        TestPki pki = new TestPki(tmp);
 
         ConcurrentLinkedQueue<VerdictEvent> events = new ConcurrentLinkedQueue<>();
         IcapEngine engine = new IcapEngine(Snapshots.builtinDevelopment(), DetectorSet.standard(), events::add, BASE);
         try (IcapServer server = new IcapServer(engine, 0)) {
-            int port = server.startSecure("127.0.0.1", 0, chain, key, caFile);
+            int port = server.startSecure("127.0.0.1", 0, pki.serverFiles.chain(), pki.serverFiles.key(),
+                pki.serverFiles.caFile());
 
-            SSLSocket withCert = (SSLSocket) clientContext(ca, proxyCert, proxyKeys).getSocketFactory()
-                .createSocket("127.0.0.1", port);
-            withCert.startHandshake();
-            try (IcapTestClient c = new IcapTestClient(withCert)) {
+            try (IcapTestClient c = new IcapTestClient(pki.proxySocket(port))) {
                 c.write(Frames.reqmod(Frames.fixture("openai/web/chat.http", "synthetic hi"), -1, true));
                 assertEquals(204, c.read().status());
             }
             Thread.sleep(100);
             assertEquals("mtls_verified", events.peek().transport());
 
-            SSLSocket noCert = (SSLSocket) clientContext(ca, null, null).getSocketFactory()
-                .createSocket("127.0.0.1", port);
+            SSLSocket noCert = pki.anonymousSocket(port);
             assertThrows(IOException.class, () -> {
                 noCert.startHandshake();
                 try (IcapTestClient c = new IcapTestClient(noCert)) {

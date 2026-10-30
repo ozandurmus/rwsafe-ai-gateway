@@ -66,21 +66,24 @@ public final class Views {
     public record EventView(String eventId, Instant receivedAt, String service, String platform, String surface,
                             String step, Verdict verdict, String reason, List<FindingView> findings, long bodyBytes,
                             long decisionMicros, String user, String clientSubnet, String transport,
-                            long snapshotVersion, String correlationId, String pseudonymKeyId) implements MaskedView {
+                            long snapshotVersion, String correlationId, String pseudonymKeyId,
+                            List<String> appliedRuleIds, List<String> monitorRuleIds) implements MaskedView {
 
         static EventView of(StoredVerdictEvent e) {
             return new EventView(e.eventId().toString(), e.receivedAt(), e.service(), e.platform(), e.surface(),
                 e.step(), e.verdict(), e.reason(), e.findings().stream().map(Views::finding).toList(), e.bodyBytes(),
                 e.decisionMicros(), e.userPseudonym(), e.clientSubnet(), e.transport(), e.snapshotVersion(),
-                e.correlationId(), e.pseudonymKeyId());
+                e.correlationId(), e.pseudonymKeyId(), e.appliedRuleIds(), e.monitorRuleIds());
         }
 
+        /** The scoped-rule ids are vocabulary (`class.<CLASS>@<version>`, checked on ingestion): unchanged when masked. */
         @Override
         public EventView masked(TextMasker m) {
             return new EventView(eventId, receivedAt, m.mask(service), m.mask(platform), m.mask(surface), m.mask(step),
                 verdict, m.mask(reason), findings, bodyBytes, decisionMicros, user, clientSubnet,
                 m.mask(transport), snapshotVersion,
-                IngestionService.canonicalUuid(correlationId) ? correlationId : m.mask(correlationId), pseudonymKeyId);
+                IngestionService.canonicalUuid(correlationId) ? correlationId : m.mask(correlationId), pseudonymKeyId,
+                appliedRuleIds, monitorRuleIds);
         }
     }
 

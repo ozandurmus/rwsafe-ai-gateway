@@ -6,19 +6,35 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Reads a signed policy snapshot body (docs/architecture/POLICY_SNAPSHOT_CONTRACT.md) into a {@link PolicySnapshot}. Any
  * deviation from the contract refuses the whole snapshot: a missing or unknown class, an unknown action, a fail-closed
- * class set to ALLOW or WARN, a stale or future issue time, an unknown format.
+ * class set to ALLOW or WARN in any scope, a stale or future issue time, an unknown format, an unknown or missing field on
+ * the document or a platform row, bytes that are not UTF-8, and for format 2 a scoped rule with an unknown or missing
+ * field, a duplicate id, an empty or oversized group list, an invalid group name ({@link GroupNames}), an empty class map
+ * or an unknown mode.
  */
 public final class SnapshotCodec {
 
     public static final Duration MAX_AGE = Duration.ofHours(24);
     private static final Duration CLOCK_SKEW = Duration.ofMinutes(5);
     private static final int MAX_BODY = 1024 * 1024;
+    /** Format 2 bounds (POLICY_SNAPSHOT_CONTRACT.md); the rule id bound is this codec's, see {@link #MAX_RULE_ID}. */
+    private static final int MAX_SCOPED_RULES = 256;
+    private static final int MAX_GROUPS_PER_RULE = 32;
+    /** Rule ids travel on every verdict event; the contract names no bound, so this codec sets one. */
+    public static final int MAX_RULE_ID = 128;
+    private static final Set<String> SCOPED_RULE_FIELDS = Set.of("id", "groups", "mode", "classActions");
+    private static final Set<String> ROOT_FIELDS_1 =
+        Set.of("format", "version", "id", "issuedAt", "enforceFailClosed", "classActions", "platforms");
+    private static final Set<String> ROOT_FIELDS_2 =
+        Set.of("format", "version", "id", "issuedAt", "enforceFailClosed", "classActions", "platforms", "scopedRules");
+    private static final Set<String> PLATFORM_FIELDS = Set.of("platform", "hostSuffixes", "apiHosts", "loginHosts");
 
     /** Why a snapshot was refused; the reason is a short fixed token for metrics and events. */
     public static final class Rejected extends Exception {
@@ -50,8 +66,18 @@ public final class SnapshotCodec {
             throw new Rejected("MALFORMED");
         }
         Map<String, Object> m = object(root);
-        if (!Long.valueOf(1).equals(m.get("format"))) {
+        Object format = m.get("format");
+        boolean scoped = Long.valueOf(2).equals(format);
+        if (!scoped && !Long.valueOf(1).equals(format)) {
             throw new Rejected("FORMAT");
+        }
+        // Format 1 is format 2 without scoped rules; the field belongs to format 2 only, where it is required.
+        if (scoped != m.containsKey("scopedRules")) {
+            throw new Rejected(scoped ? "SCOPE_FIELD" : "FORMAT");
+        }
+        // PR 20 review D-05: exactly the contract's fields, nothing unknown.
+        if (!(scoped ? ROOT_FIELDS_2 : ROOT_FIELDS_1).equals(m.keySet())) {
+            throw new Rejected("FIELDS");
         }
         long version = number(m.get("version"));
         if (version < 1) {
@@ -73,9 +99,30 @@ public final class SnapshotCodec {
         if (!(m.get("enforceFailClosed") instanceof Boolean enforce)) {
             throw new Rejected("MALFORMED");
         }
-        Map<String, Object> actions = object(m.get("classActions"));
-        Map<DataClass, Action> classActions = new EnumMap<>(DataClass.class);
-        for (Map.Entry<String, Object> e : actions.entrySet()) {
+        Map<DataClass, Action> classActions = classActions(m.get("classActions"));
+        if (classActions.size() != DataClass.values().length) {
+            throw new Rejected("MISSING_CLASS");
+        }
+        List<PlatformRule> platforms = new ArrayList<>();
+        for (Object o : list(m.get("platforms"))) {
+            Map<String, Object> p = object(o);
+            if (!PLATFORM_FIELDS.equals(p.keySet())) {
+                throw new Rejected("FIELDS");
+            }
+            platforms.add(new PlatformRule(text(p.get("platform")), texts(p.get("hostSuffixes")),
+                texts(p.get("apiHosts")), texts(p.get("loginHosts"))));
+        }
+        List<ScopedRule> scopedRules = scoped ? scopedRules(m.get("scopedRules")) : List.of();
+        return new PolicySnapshot(version, id, classActions, enforce, platforms, issuedAt, scopedRules);
+    }
+
+    /**
+     * A class-to-action map, complete (the {@code ANY} scope) or partial (a scoped rule). Fail-closed classes never take
+     * ALLOW or WARN, in any scope and any mode (ADR-010 §1, §4, PR 14 review D-04, PO decision Q-39 item 4).
+     */
+    private static Map<DataClass, Action> classActions(Object o) throws Rejected {
+        Map<DataClass, Action> out = new EnumMap<>(DataClass.class);
+        for (Map.Entry<String, Object> e : object(o).entrySet()) {
             DataClass c;
             Action a;
             try {
@@ -84,22 +131,59 @@ public final class SnapshotCodec {
             } catch (IllegalArgumentException ex) {
                 throw new Rejected("UNKNOWN_CLASS_OR_ACTION");
             }
-            // ADR-010 §1, §4: fail-closed classes have no monitor-only relaxation, in any snapshot (PR 14 review D-04).
             if (c.failClosed() && (a == Action.ALLOW || a == Action.WARN)) {
                 throw new Rejected("FAIL_CLOSED_WEAKENED");
             }
-            classActions.put(c, a);
+            out.put(c, a);
         }
-        if (classActions.size() != DataClass.values().length) {
-            throw new Rejected("MISSING_CLASS");
+        return out;
+    }
+
+    /** Format 2 {@code scopedRules} (POLICY_SNAPSHOT_CONTRACT.md "Format 2: scoped rules"). */
+    private static List<ScopedRule> scopedRules(Object o) throws Rejected {
+        List<Object> entries = list(o);
+        if (entries.size() > MAX_SCOPED_RULES) {
+            throw new Rejected("SCOPE_TOO_MANY");
         }
-        List<PlatformRule> platforms = new ArrayList<>();
-        for (Object o : list(m.get("platforms"))) {
-            Map<String, Object> p = object(o);
-            platforms.add(new PlatformRule(text(p.get("platform")), texts(p.get("hostSuffixes")),
-                texts(p.get("apiHosts")), texts(p.get("loginHosts"))));
+        List<ScopedRule> out = new ArrayList<>(entries.size());
+        Set<String> ids = new HashSet<>();
+        for (Object entry : entries) {
+            Map<String, Object> r = object(entry);
+            if (!SCOPED_RULE_FIELDS.equals(r.keySet())) {
+                throw new Rejected("SCOPE_FIELD");
+            }
+            String id = text(r.get("id"));
+            if (id.length() > MAX_RULE_ID) {
+                throw new Rejected("SCOPE_FIELD");
+            }
+            if (!ids.add(id)) {
+                throw new Rejected("SCOPE_DUPLICATE_ID");
+            }
+            List<Object> rawGroups = list(r.get("groups"));
+            if (rawGroups.isEmpty() || rawGroups.size() > MAX_GROUPS_PER_RULE) {
+                throw new Rejected("SCOPE_GROUPS");
+            }
+            Set<String> groups = new HashSet<>();
+            for (Object g : rawGroups) {
+                // Length 1..256 after strip, no comma (PR 20 review Q-2), no control character (D-05).
+                String name = g instanceof String str ? GroupNames.normalise(str) : null;
+                if (name == null) {
+                    throw new Rejected("SCOPE_GROUPS");
+                }
+                groups.add(name);
+            }
+            ScopedRule.Mode mode = switch (text(r.get("mode"))) {
+                case "enforce" -> ScopedRule.Mode.ENFORCE;
+                case "monitor" -> ScopedRule.Mode.MONITOR;
+                default -> throw new Rejected("SCOPE_MODE");
+            };
+            Map<DataClass, Action> actions = classActions(r.get("classActions"));
+            if (actions.isEmpty()) {
+                throw new Rejected("SCOPE_CLASS_ACTIONS");
+            }
+            out.add(new ScopedRule(id, groups, mode, actions));
         }
-        return new PolicySnapshot(version, id, classActions, enforce, platforms, issuedAt);
+        return out;
     }
 
     @SuppressWarnings("unchecked")
