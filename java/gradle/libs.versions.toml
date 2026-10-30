@@ -5,6 +5,7 @@ archunit = "1.3.0"
 re2j = "1.8"
 slf4j = "2.0.18"
 jazzer = "0.24.0"
+netty = "4.1.118.Final"
 
 [libraries]
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
@@ -17,3 +18,5 @@ re2j = { module = "com.google.re2j:re2j", version.ref = "re2j" }
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 # Coverage-guided fuzzing of the ICAP and HTTP parsers (SR-DP-4): JUnit @FuzzTest, regression corpus in src/test/resources.
 jazzer-junit = { module = "com.code-intelligence:jazzer-junit", version.ref = "jazzer" }
+# ICAP transport of the data plane (ARCHITECTURE.md §3.1): event loops, pooled buffers, TLS for Secure ICAP later.
+netty-handler = { module = "io.netty:netty-handler", version.ref = "netty" }

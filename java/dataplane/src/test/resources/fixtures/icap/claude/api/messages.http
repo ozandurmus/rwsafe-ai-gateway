@@ -1,0 +1,8 @@
+POST /v1/messages HTTP/1.1
+Host: api.anthropic.com
+Content-Type: application/json
+Accept: application/json
+User-Agent: python-httpx/0.27 (synthetic fixture)
+Content-Length: {{LEN}}
+
+{"model":"claude-synthetic","max_tokens":256,"messages":[{"role":"user","content":"{{PROMPT}}"}],"metadata":{"synthetic":true}}

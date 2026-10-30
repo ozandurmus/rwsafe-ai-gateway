@@ -1,0 +1,6 @@
+REQMOD icap://icap.example.invalid/reqmod-ai ICAP/1.0
+Host: icap.example.invalid
+Encapsulated: req-hdr=0, req-body=60
+Preview: 4096
+Allow: 204
+

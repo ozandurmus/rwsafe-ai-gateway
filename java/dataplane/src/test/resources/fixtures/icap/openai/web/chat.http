@@ -1,0 +1,8 @@
+POST /backend-api/conversation HTTP/1.1
+Host: chatgpt.com
+Content-Type: application/json
+Accept: text/event-stream
+User-Agent: Mozilla/5.0 (synthetic fixture)
+Content-Length: {{LEN}}
+
+{"action":"next","messages":[{"id":"synthetic-1","author":{"role":"user"},"content":{"content_type":"text","parts":["{{PROMPT}}"]}}],"model":"auto","synthetic":true}
