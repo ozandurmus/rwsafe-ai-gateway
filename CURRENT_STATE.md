@@ -245,6 +245,39 @@ Both run in `:control:test`, so in `unitTest` and the CI `java-tests` job; no wo
   only where pseudonymisation applies or where ingestion refuses them); third-party loggers below their production
   levels.
 
+## Done (end-user notices, branch `feature/end-user-notices`)
+
+- Turkish end-user catalogue (AGENTS.md section 3, council PRIV-2): first-use notice (aydınlatma metni: what is
+  inspected, why, legal basis art. 5/2-ç and 5/2-f with explicit consent excluded (Q-32), transfers and the art. 9
+  instrument (Q-33), retention, rights, personal accounts (Q-6), acknowledgement), the block page per reason kind
+  (fail-closed class, uninspectable content, inspection unavailable, platform not allowed, personal account, other),
+  the coaching (WARN) page, the stream-termination message and the class and reason labels. Product copy
+  `java/platform-core/src/main/resources/io/rwsafe/platform/enduser/end-user-tr.properties`, review copies under
+  `docs/i18n/tr` (a test fails when they differ). Configured values (controller name, data protection contact, policy
+  link, retention days) come from `RWSAFE_ENDUSER_*` environment values, never committed. Seven wording items carry
+  `LEGAL-REVIEW LR-1..7` for the PO and the data protection officer (`docs/i18n/README.md`).
+- `EndUserPages` (platform-core) renders self-contained UTF-8 pages: every text and value HTML-escaped, a
+  Content-Security-Policy that loads nothing, no script, link or external resource, the reference id only. The notice
+  version is `catalogue.version` plus 8 hex of the rendered notice, so a text or value change is a new version (PC-1);
+  an incomplete notice has no version. The data plane's `BlockPages` renders from it (API JSON and SSE messages too);
+  `IcapConnectionHandler` is unchanged.
+- Notice acknowledgement (C12): Flyway `V5__notice_acknowledgement.sql` (V3 and V4 are reserved by open branches; merge
+  them first or the database must be fresh), pseudonym only, idempotent per user, version and source, ledgered, never
+  updated; `notice_version` records when each version was first issued, and an acknowledgement must name an issued
+  version. Intake `POST /internal/v1/notice-acknowledgements` on the capture sink: refused while the notice is
+  incomplete; the interactive sources (banner, IDE first run, gateway credential issue) record the current version
+  only; the directory HR record (version and date, Q-35) may carry an earlier issued version as history; the date lies
+  between the version's issue time and now (5 minutes of skew each way). `GET /api/v1/notice` and
+  `GET /api/v1/notice/acknowledgements?user=USR-…` for every role, masked through the funnel (the masked notice omits the
+  configured values). `NoticeAcknowledgementService.contentCaptureAllowed` is the SR-PRIV-10 gate for the C3 capture
+  store (fails closed without the current version's record).
+- Second review (Argon, `docs/reviews/PR22_2026_10_31_ARGON_END_USER_NOTICES.md`): D-01 to D-08 fixed and PO-Q1 to
+  PO-Q3 taken as recommended (`PR22_2026_10_31_RESPONSE.md`); catalogue `tr-2`; the LR markers stay for the PO and the
+  data protection officer.
+- Open: the banner and IDE first-run surfaces that show the notice and post the acknowledgement, the directory import
+  job, the `RWSAFE_ENDUSER_*` ConfigMap contract in `deploy/rwsafe/contracts`, a call site for the coaching page, and
+  the data plane reasons `PLATFORM_NOT_ALLOWED`, `VENDOR_INSTRUMENT_MISSING` and `PERSONAL_ACCOUNT` (their pages exist).
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
