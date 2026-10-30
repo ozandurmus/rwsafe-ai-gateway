@@ -2,7 +2,7 @@
 
 Checkpoint 2026-10-30, evening. Phase: **implementation, phase 0** (discovery and measurement; no production change).
 The design is FROZEN (`docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md`); ADR-001 to ADR-011 are ACCEPTED.
-Phase 0 movement 1 (repository and CI skeleton) is done on `feature/phase0-repo-ci-skeleton`; no product behaviour yet;
+Phase 0 movement 1 (repository and CI skeleton) is done on `feature/phase0-repo-ci-skeleton` (pull request 4); no product behaviour yet;
 nothing deployed; HOST-A, neXus and ProxySG unchanged.
 
 ## Done (design phase, closed 2026-10-30)
@@ -16,7 +16,7 @@ regulatory mapping, bypass catalogue, penetration test plan; platform matrix, ou
 roadmap; Turkish end-user texts; review scripts with the content guard; corporate stack reference. Design-freeze council
 (three seats, all ACCEPT WITH CORRECTIONS) run through `tools/review/`; both correction rounds applied and answered by ID
 (`docs/reviews/COUNCIL_RESPONSE.md` section 7). PO decisions: Q-30..Q-36 (record of 2026-10-30) and the design freeze.
-Public GitHub repository with branch protection; pull requests 1 and 2 (decisions and freeze) merged.
+Public GitHub repository with branch protection; pull requests 1, 2 (decisions and freeze) and 3 (Git authority) merged.
 
 ## Done (phase 0, movement 1: repository and CI)
 
@@ -39,10 +39,11 @@ Public GitHub repository with branch protection; pull requests 1 and 2 (decision
 ## Pending on the Product Owner
 
 Mark the three `validation` jobs (`privacy-gate`, `gitleaks`, `java-tests`) as required status checks on `main`
-(none is required today). PO-only files the harness refuses the agent: `.claude/settings.json` (rules given in chat),
-`AGENTS.md` section 1 item 4 (`docs/reviews/` → evidence, Q-36) and section 9 (standing push/PR/merge sentence), the
-Git-authority decision record. Decisions Q-1..Q-29 (ask one at a time with the recommendation first). Lab tenant
-procurement (Q-34). Approvers and DPO identity (Q-5).
+(none is required today). Decisions Q-1..Q-29 and Q-37 (ask one at a time with the recommendation first). Lab tenant
+procurement (Q-34). Approvers and DPO identity (Q-5). Governance is settled: pull request 2 merged;
+`.claude/settings.json` committed; AGENTS.md section 1 (reviews as evidence) and section 9 (standing push/PR/merge
+authorisation) amended; the Git-authority decision record RATIFIED; `main` requires a pull request and zero approving
+reviews.
 
 ## Not done
 

@@ -26,3 +26,8 @@ __pycache__/
 .pytest_cache/
 .rwsafe/
 .githooks/
+
+# Claude Code session state; the project settings file .claude/settings.json is committed.
+.claude/scheduled_tasks.lock
+.claude/*.local.json
+.claude/worktrees/
