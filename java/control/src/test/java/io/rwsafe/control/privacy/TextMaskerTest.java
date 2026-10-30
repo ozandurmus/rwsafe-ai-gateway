@@ -88,5 +88,11 @@ class TextMaskerTest {
         assertThrows(MaskingUnavailableException.class, off::masker);
         assertTrue(noDictionary.keyAvailable());
         assertEquals(List.of(), new PrivacyKeys(key, List.of()).estateTerms());
+        // PR 26 review D-07: an empty (or comment-only) dictionary is as unavailable as a missing one.
+        PrivacyKeys empty = new PrivacyKeys(key, List.of());
+        assertFalse(empty.maskingAvailable());
+        Masking emptyMasking = new Masking(empty, new Pseudonymiser(empty));
+        assertFalse(emptyMasking.available());
+        assertThrows(MaskingUnavailableException.class, emptyMasking::masker);
     }
 }

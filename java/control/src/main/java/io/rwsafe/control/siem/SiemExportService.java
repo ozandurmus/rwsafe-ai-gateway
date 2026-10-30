@@ -1,8 +1,10 @@
 package io.rwsafe.control.siem;
 
 import io.rwsafe.control.config.ControlProperties;
+import io.rwsafe.control.privacy.Masking;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
+import io.rwsafe.control.privacy.TextMasker;
 import io.rwsafe.control.siem.SiemDeliveryException.Reason;
 import io.rwsafe.control.siem.SiemField.SiemStream;
 import io.rwsafe.control.siem.SiemFormats.LineFormat;
@@ -64,6 +66,12 @@ public class SiemExportService implements SmartLifecycle {
             refuse("siem", "the privacy key or the estate dictionary is missing; nothing is exported");
             return;
         }
+        Masking masking = new Masking(keys, pseudonymiser);
+        if (!masking.available()) {
+            refuse("siem", "the name dictionary is missing; nothing is exported");
+            return;
+        }
+        TextMasker masker = masking.masker();
         if (!config.syslog().configured() && !config.hec().configured()) {
             refuse("siem", "export is enabled but no destination is set");
             return;
@@ -74,7 +82,7 @@ public class SiemExportService implements SmartLifecycle {
             return;
         }
         SiemRecords records = new SiemRecords(pseudonymiser::user, key -> pseudonymiser.token("KEY", key),
-            keys.estateTerms());
+            keys.estateTerms(), masker::maskFreeText);
         if (records.estate(host)) {
             refuse("siem", "the exporter host name contains an estate term");
             return;
@@ -172,8 +180,6 @@ public class SiemExportService implements SmartLifecycle {
      * One health line: {@code UP}, {@code DEGRADED} (a destination's reader or sender is retrying after a failure),
      * {@code DOWN} (export refused at start) or {@code UNKNOWN} (export off), and a fixed-vocabulary detail with the
      * backlog, the queue, possibly lost syslog batches and a {@code latest} start's skip count.
-     */
-    /**
      * {@code counts} (PR 28 review D-03) carries the same facts as numbers under {@code <destination>.<name>} keys:
      * {@code notStarted}, {@code delivered}, {@code backlog} (absent until counted), {@code queueDepth},
      * {@code queueCapacity}, {@code stalled} (0/1), {@code heldBehindOpenTransaction}, {@code possiblyLostBatches},

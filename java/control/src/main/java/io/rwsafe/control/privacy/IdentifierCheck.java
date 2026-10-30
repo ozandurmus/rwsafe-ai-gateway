@@ -18,8 +18,9 @@ import org.springframework.stereotype.Component;
  *       {@code SUBE_X} and {@code sube.x} are one term).</li>
  * </ul>
  * Without the estate dictionary nothing can be checked and the check refuses ({@link MaskingUnavailableException}, 503;
- * AGENTS.md 4.10). A person's name is not recognisable without the layer-4 name dictionary, which is why free text is
- * withheld from the masked role ({@link TextMasker#WITHHELD}).
+ * AGENTS.md 4.10). A person's name is not a shape: the free-text masker's layer 4 finds it, and callers that store free
+ * text check that the masker would leave the text as it is; free text a person wrote stays withheld from the masked role
+ * ({@link TextMasker#WITHHELD}, PR 24 Q-1). {@link TextMasker} masks every shape this check refuses (PR 26 review D-04).
  */
 @Component
 public class IdentifierCheck {
@@ -44,11 +45,19 @@ public class IdentifierCheck {
         if (!keys.maskingAvailable()) {
             throw new MaskingUnavailableException("estate dictionary");
         }
+        return containsTerm(value, keys.estateTerms());
+    }
+
+    /**
+     * True when {@code value} contains one of {@code terms}, both compared as folded letters and digits only (the one
+     * estate comparison for checks: this class and the SIEM export; PR 26 review D-06).
+     */
+    public static boolean containsTerm(String value, java.util.List<String> terms) {
         if (value == null) {
             return false;
         }
         String v = letters(value);
-        for (String term : keys.estateTerms()) {
+        for (String term : terms) {
             String t = letters(term);
             if (!t.isEmpty() && v.contains(t)) {
                 return true;

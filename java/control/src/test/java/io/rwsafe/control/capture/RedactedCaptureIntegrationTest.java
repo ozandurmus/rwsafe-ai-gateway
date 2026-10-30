@@ -58,7 +58,9 @@ import org.springframework.test.context.DynamicPropertySource;
 class RedactedCaptureIntegrationTest {
 
     /** A synthetic marker that must never appear in any log line (AGENTS.md 4.14). */
-    private static final String MARK = "synthetic-capture-canary-" + UUID.randomUUID().toString().substring(0, 8);
+    /** Letters only: a random digit run would be a serial-like or number token to the free-text layers (PR 26). */
+    private static final String MARK = "synthetic-capture-canary-"
+        + UUID.randomUUID().toString().substring(0, 8).replaceAll("[0-9]", "q");
     private static final String ACKED = "SYNTHETIC\\capture-acked";
     private static final String NOT_ACKED = "SYNTHETIC\\capture-not-acked";
     private static final AtomicReference<Double> USED = new AtomicReference<>(0.10);

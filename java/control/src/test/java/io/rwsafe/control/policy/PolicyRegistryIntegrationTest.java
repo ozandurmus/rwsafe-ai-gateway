@@ -462,10 +462,11 @@ class PolicyRegistryIntegrationTest {
 
     // PO decision Q-40: one security administrator retires a platform row with a reason.
 
+    /** The reason may name a vendor endpoint of an active platform row (public, not estate data). */
     @Test
     void onlyASecurityAdministratorRetiresAPlatformWithAReasonAndItLeavesTheSnapshot() throws Exception {
         String retire = "/api/v1/policy/rules/platform.github/retirement";
-        String reason = JSON.createObjectNode().put("reason", "Synthetic vendor retired").toString();
+        String reason = JSON.createObjectNode().put("reason", "Synthetic vendor retired, see api.github.com").toString();
         for (String login : new String[] {"synthetic-viewer", "synthetic-officer", "synthetic-aiview",
             "synthetic-dual"}) {
             assertEquals(403, signedIn(login).post(retire, reason, true).status(), login);
@@ -484,7 +485,7 @@ class PolicyRegistryIntegrationTest {
         assertEquals(200, done.status(), String.valueOf(done.body()));
         JsonNode row = done.body().get("retired").get(0);
         assertEquals("retired", row.get("status").asText());
-        assertEquals("Synthetic vendor retired", row.get("retirement").get("reason").asText());
+        assertEquals("Synthetic vendor retired, see api.github.com", row.get("retirement").get("reason").asText());
         assertTrue(row.get("retirement").get("retiredBy").asText().matches("USR-[0-9a-f]{10}"));
 
         JsonNode doc = verified(snapshot(internal.snapshotPort(), "\"1\""));
@@ -498,7 +499,7 @@ class PolicyRegistryIntegrationTest {
         assertEquals("retired", listed.get("status").asText(), "the row is kept, never deleted");
         assertEquals(1, new JdbcTemplate(dataSource).queryForObject("SELECT count(*) FROM audit_event WHERE "
             + "table_name = 'policy_rule_version' AND operation = 'UPDATE' AND action_id = 'policy.platform_retire' "
-            + "AND reason_code = 'Synthetic vendor retired' AND actor_fingerprint = ?", Integer.class,
+            + "AND reason_code = 'Synthetic vendor retired, see api.github.com' AND actor_fingerprint = ?", Integer.class,
             row.get("retirement").get("retiredBy").asText()));
         ApiClient.Response again = admin.post(retire, reason, true);
         assertEquals(404, again.status());
@@ -548,7 +549,8 @@ class PolicyRegistryIntegrationTest {
         // Identifier-shaped values are built at runtime (AGENTS.md 4.5).
         for (String reason : new String[] {"moved, see 192.0.2.10",
             "contact " + String.join("@", "synthetic.person", "example.com"),
-            "card " + SyntheticCard.luhnValid()}) {
+            "card " + SyntheticCard.luhnValid(), "asked by Ayşe Yılmaz", "Mehmet'in talebi",
+            "moved to node7.example.com", "ticket ref" + "7341029"}) {
             ApiClient.Response r = admin.post(retire, JSON.createObjectNode().put("reason", reason).toString(), true);
             assertEquals(400, r.status(), reason);
             assertEquals("REASON_HOLDS_IDENTIFIER", r.body().get("reason").asText(), reason);

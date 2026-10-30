@@ -297,7 +297,7 @@ class ControlPlaneIntegrationTest {
         ApiClient.Response traffic = aiview.get("/api/v1/traffic?limit=5");
         assertEquals(200, traffic.status());
         assertEquals("true", traffic.raw().headers().firstValue("X-RWSAFE-Masked").orElse(""));
-        assertEquals("rwmask-v1-slice1", traffic.raw().headers().firstValue("X-RWSAFE-Mask-Rules").orElse(""));
+        assertEquals("rwmask-v1-slice2", traffic.raw().headers().firstValue("X-RWSAFE-Mask-Rules").orElse(""));
         assertEquals(403, aiview.post("/api/v1/policies", "{}", true).status());
         assertEquals(204, aiview.post("/api/v1/auth/logout", "", true).status());
         assertEquals(401, aiview.get("/api/v1/traffic").status());

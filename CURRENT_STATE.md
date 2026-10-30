@@ -112,7 +112,7 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
   break-glass account (owner-only initial password file, ledgered), every sign-in ledgered under a pseudonym, login
   throttling per name and client, request bodies bounded as read, session + CSRF cookies, roles
   `security_admin`, `viewer`, `replay_viewer` (read-only, masked). The masking funnel (`ResponseBodyAdvice`) serves the
-  masked role (exclusive, read-only) only `MaskedView` bodies through the `rwmask-v1-slice1` text layers, with
+  masked role (exclusive, read-only) only `MaskedView` bodies through the text layers (now `rwmask-v1-slice2`), with
   `X-RWSAFE-Masked`, and 503
   `MASKING_UNAVAILABLE` without the key or the estate dictionary; `FunnelCoverageTest` proves every API route has a masked
   projection. Read API: overview, traffic (keyset pages, pseudonym-only user filter), event detail, platforms, health
@@ -262,9 +262,8 @@ Both run in `:control:test`, so in `unitTest` and the CI `java-tests` job; no wo
   and also applies to scope group names and at activation; the probe decodes percent escapes per sequence and emits every
   span of grouped digits.
 - Not covered: a browser-level (Playwright) walk of the screens (needs a browser download; the UI reads only the API
-  client the probe enumerates); the layer 4 name dictionary and customer numbers (not implemented, so names are seeded
-  only where pseudonymisation applies or where ingestion refuses them); third-party loggers below their production
-  levels.
+  client the probe enumerates); layer 4 customer numbers (pending Q-23; the name dictionary arrived with masking
+  layers 4 and 5 below); third-party loggers below their production levels.
 
 ## Done (SIEM export, branch `feature/siem-export`)
 
@@ -367,6 +366,11 @@ ROADMAP "Capture in redacted mode (Q-4 b)", acceptance SR-PRIV-10, SR-PRIV-11, S
   `docs/reviews/PR25_2026_10_31_RESPONSE.md`; the confirmation review (`PR25_2026_10_31_ARGON_REDACTED_CAPTURE_RECHECK.md`)
   closed everything and its D-08 (dedup decided again inside the insert) and D-09 (re-wrap from mounted keys only)
   are fixed. The migration is V8 (after V7).
+- Open: ADR-009 gaps listed in the response (C5 special-category flag, legal
+  hold and DSAR APIs, restore-time receipt replay, the worker module); deploy wiring (the capture PVC, the capture-key
+  Secret, `RWSAFE_CAPTURE_*` in the ConfigMaps and contracts); the screen that opens a record; persisted skip
+  counters.
+
 - Open: ADR-009 gaps listed in the response (C5 special-category flag, masking layers 4 and 5 at persistence, legal
   hold and DSAR APIs, restore-time receipt replay, the worker module); the screen that opens a record; persisted skip
   counters. Deploy wiring: done in pull request 27 (below).
@@ -411,6 +415,49 @@ Product Owner inputs, before the first release or the feature named:
 6. HOST-A's disk (80 % used): reclaim space or confirm the 32 GiB capture cap; raising it, the 40Gi claim or the
    138Gi budget needs a new measurement and the PO's decision.
 
+## Done (masking layers 4 and 5, branch `feature/masking-layers-4-5`, pull request 26)
+
+- Rule set `rwmask-v1-slice2` (`TextMasker.RULE_SET`, header `X-RWSAFE-Mask-Rules` on every masked page). One
+  pipeline for every path (`mask`, `maskFreeText`, `maskVendorHost`): each layer claims spans of the original text, no
+  layer touches a claimed span, the result is written once, so a token is never masked again and one value reads the
+  same on screens, in the capture store and in the SIEM export. Order: tokens and UUIDs kept; Tier-1 detectors on the
+  text and its folded lower- and upper-case forms; URL hosts with their userinfo, e-mail, user-directory paths,
+  `DOMAIN\user`; IPv6 (with IPv4-mapped) then IPv4; IBAN shapes (any country, letters in the account part, glued);
+  mobile numbers in every form (hyphen, dot, underscore, parentheses, `+90`, `90`, `0090`) and every digit run joined as
+  `IdentifierCheck` joins it (TCKN, TEL, CARD, otherwise `NUM-` from six digits, glued, grouped or free-standing; only
+  an exact calendar date is excepted); the estate dictionary, folded, every run of separators and spaces as one; names;
+  host-shaped names. Free text adds lone names, the word after a keyword (host, user, kullanıcı, müşteri, hesap; TCKN
+  and IBAN only before a word with a digit; from and to only before an identifier-shaped word; ordinary product and
+  operational words never) and serial-like tokens (`SER-`). Every shape `IdentifierCheck` refuses is masked (tested on both paths). A text over the detectors' finding
+  limit in any piece is withheld whole. An empty estate dictionary is unavailable (503), like a missing one.
+- Layer 4: a committed Turkish name dictionary (`java/control/src/main/resources/io/rwsafe/control/privacy/names/`;
+  source and licence in its README, PO decision Q-23). Folded matching (NFC, case, every i form, Turkish letters),
+  whole words, apostrophes `' ’ ‘ ʼ ` ´`, simple and compound case endings without an apostrophe with the longest,
+  non-everyday stem preferred and softened consonants restored (Mehmede, Burağa). A person (a given and a family name,
+  or an initial and a name: `A. Yılmaz`, `Ayşe N. Yılmaz`, `a.yilmaz`; either order; any case mix; three lower-case
+  words; a suffixed first word; a capitalised word hyphenated to a family name) is one `NAME-<WORD>` in every field,
+  keyed by the sorted names. Privacy before readability (orchestrator, PR 26 confirmation review): in free text every
+  capitalised name word is a name, alone, in capitals or with an ending; an everyday word that is also a name stays a
+  word only in lower case and alone, and is a name next to another name word or by a title (Sayın, Dr., Bey, Beye,
+  Hanıma). A given name followed by a lower-case everyday family name is taken as one person ("Mehmet yazıcı").
+  Two- and three-letter stems with an ending count only next to another name word or capitalised. `<WORD>` (`Pseudonymiser.word`) is four consonant-vowel
+  syllables keyed by rwsafe's HMAC, never itself a dictionary name, consonants only if every draw is refused.
+- Applied: error messages, health details (masked role); captured text at persistence (`CaptureSink`, SR-PRIV-15);
+  registry host columns keep public vendor endpoints (`maskVendorHost`). Retirement and withdrawal reasons stay withheld
+  from the masked role (PR 24 Q-1) and are refused on write when `IdentifierCheck` or the free-text layers would change
+  them, vendor endpoints of approved platform rows excepted. The SIEM export uses `IdentifierCheck` for vocabulary and
+  its folded estate comparison, and sends a free-text ledger reason only through the free-text masker.
+- Leak probe: free-text name, glued TCKN and domain-account canaries in the positive-control fixture; names in
+  registry reasons are refused at write; the admin's capture read shows the person as a `NAME-<WORD>`.
+- Second review (Argon, `docs/reviews/PR26_2026_10_31_ARGON_MASKING_LAYERS_4_5.md`, DO NOT MERGE) and its
+  confirmation review (`PR26_2026_10_31_ARGON_MASKING_LAYERS_4_5_RECHECK.md`: D-02, D-03, D-05, D-07, D-08 closed;
+  N-01 to N-04) answered by id in `docs/reviews/PR26_2026_10_31_RESPONSE.md`. Class-token widening is the PO's open
+  question Q-44.
+- Remaining before `rwmask-v1` (MASKING_AND_PRIVACY B2, B3): the B3 `pseudonym_registry` (class tokens stay 4 hex
+  until then; open as Q-44), MAC OUI-preserving masking (a MAC reads `[REDACTED_IP]` today),
+  customer numbers `CUST-` by the PO's format rules (Q-23; only the word after müşteri, customer or hesap is `CUST-`
+  now), project code names (they need an estate list of code names that does not exist yet).
+
 ## Done (admin UI slice 3, pull request 28)
 
 Screens for the control-plane features merged on 2026-10-31; every new string in both catalogues (Turkish in plain words).
@@ -437,7 +484,7 @@ Screens for the control-plane features merged on 2026-10-31; every new string in
   incomplete notice says so for every role (D-04); an acknowledgement lookup that sends only a well-formed `USR-`
   pseudonym.
 - `frontend/src/api.ts` gained `readCapture`, `notice` and `noticeAcknowledgements`; the leak probe already walked those
-  routes, so its inventory check passes unchanged. Vitest 61, `tsc` clean, `:control:test` 161 green.
+  routes, so its inventory check passes unchanged. Vitest 61, `tsc` clean, `:control:test` 203 green on the tree merged with pull request 26.
 - Second review `docs/reviews/PR28_2026_10_31_ARGON_ADMIN_UI_SLICE3.md` (MERGE WITH CORRECTIONS), answered in
   `PR28_2026_10_31_RESPONSE.md`.
 - Open: ADR-009 §5 still names `security_analyst` for the incident read (the role does not exist yet; the PO's records

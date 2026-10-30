@@ -124,8 +124,9 @@ public class CaptureSink {
         if (!expiresAt.isAfter(now)) {
             return Outcome.EXPIRED;
         }
-        // ADR-009 §2: the masking layers run at persistence as well as at view.
-        byte[] plain = masking.masker().mask(text).getBytes(StandardCharsets.UTF_8);
+        // ADR-009 §2: the masking layers run at persistence as well as at view; captured text is free text, so the
+        // free-text layers 4 and 5 run too (SR-PRIV-15, PC-7).
+        byte[] plain = masking.masker().maskFreeText(text).getBytes(StandardCharsets.UTF_8);
         try {
             if (plain.length == 0) {
                 return Outcome.EMPTY;
