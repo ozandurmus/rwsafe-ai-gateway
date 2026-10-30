@@ -138,7 +138,7 @@ public final class JsonLeafScanner {
             }
             byte c = b[pos];
             if (c == '"') {
-                out.append(new String(b, run, pos - run, StandardCharsets.UTF_8));
+                out.append(utf8(run, pos));
                 pos++;
                 break;
             }
@@ -146,7 +146,7 @@ public final class JsonLeafScanner {
                 throw new Malformed("control character in string");
             }
             if (c == '\\') {
-                out.append(new String(b, run, pos - run, StandardCharsets.UTF_8));
+                out.append(utf8(run, pos));
                 pos++;
                 if (pos >= end) {
                     throw new Malformed("unterminated escape");
@@ -173,6 +173,18 @@ public final class JsonLeafScanner {
             throw new Malformed("too many fields");
         }
         leaves.add(new JsonLeaf(start, pos, out.toString(), false));
+    }
+
+    /** Strict UTF-8 for a raw string run: invalid bytes are Malformed, never U+FFFD (PR 11 recheck N-03). */
+    private String utf8(int from, int to) throws Malformed {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(b, from, to - from)).toString();
+        } catch (java.nio.charset.CharacterCodingException e) {
+            throw new Malformed("invalid UTF-8 in a string");
+        }
     }
 
     private char hex4() throws Malformed {

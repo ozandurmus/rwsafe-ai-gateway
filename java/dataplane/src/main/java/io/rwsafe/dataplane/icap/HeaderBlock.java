@@ -59,6 +59,9 @@ public final class HeaderBlock {
                 if (line.isEmpty()) {
                     throw new IcapProtocolException(errorStatus, "empty start line");
                 }
+                if (Ows.hasControl(line) || line.indexOf('\t') >= 0) {
+                    throw new IcapProtocolException(errorStatus, "control character in a start line");
+                }
                 start = line;
             } else {
                 if (line.isEmpty()) {
@@ -183,6 +186,26 @@ public final class HeaderBlock {
         }
         int semi = ct.indexOf(';');
         return Ows.trim(semi >= 0 ? ct.substring(0, semi) : ct).toLowerCase(Locale.ROOT);
+    }
+
+    /** Lower-cased {@code charset} parameter of Content-Type, without quotes, or the empty string (PR 11 recheck N-03). */
+    public String charset() {
+        String ct = first("Content-Type");
+        if (ct == null) {
+            return "";
+        }
+        for (String param : Tokens.split(ct, ';')) {
+            String p = Ows.trim(param);
+            int eq = p.indexOf('=');
+            if (eq > 0 && Ows.trim(p.substring(0, eq)).equalsIgnoreCase("charset")) {
+                String v = Ows.trim(p.substring(eq + 1));
+                if (v.length() >= 2 && v.startsWith("\"") && v.endsWith("\"")) {
+                    v = v.substring(1, v.length() - 1);
+                }
+                return v.toLowerCase(Locale.ROOT);
+            }
+        }
+        return "";
     }
 
     @Override

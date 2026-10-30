@@ -49,6 +49,11 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     private static final List<String> SINGLE_HEADERS =
         List.of("Content-Length", "Transfer-Encoding", "Content-Type", "Content-Encoding", "Host");
 
+    /** Non-verdicts that can hide findings: a response with them is terminated, not passed (PR 11 recheck N-01). */
+    private static final java.util.Set<String> TERMINATING_REASONS = java.util.Set.of("FINDING_LIMIT", "NORMALISATION");
+    /** Spec §3: never more than 64 KiB of a response held per transaction. */
+    private static final int MAX_HELD = 64 * 1024;
+
     private enum State { HEAD, ENCAP, BODY, STREAM, CLOSED }
 
     private final IcapEngine engine;
@@ -339,7 +344,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         InspectionResult result;
         Decision decision;
         try {
-            result = engine.inspector().inspect(body, reqHttp.mediaType(), reqHttp.first("Content-Encoding"));
+            result = engine.inspector().inspect(body, reqHttp);
             decision = result.nonVerdict() != null
                 ? engine.evaluator().onNonVerdict(result.nonVerdict(), result.reason())
                 : engine.evaluator().onFindings(result.findings(), result.redactable());
@@ -425,8 +430,13 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             answerRespmodUnmodified(ctx, Verdict.ALLOW, "WEBSOCKET_INVISIBLE_AFTER_UPGRADE");
             return;
         }
-        InspectionResult result = engine.inspector().inspect(body, resHttp.mediaType(), resHttp.first("Content-Encoding"));
+        InspectionResult result = engine.inspector().inspect(body, resHttp);
         if (result.nonVerdict() != null) {
+            if (TERMINATING_REASONS.contains(result.reason())) {
+                // N-01: the limit was reached because of findings (or text that hides them); the response never leaves.
+                terminateWholeResponse(ctx, result.reason(), List.of());
+                return;
+            }
             // RESPMOD is the visibility path: an uninspectable response is passed and recorded (ADR-010 §2).
             answerRespmodUnmodified(ctx, result.nonVerdict(), result.reason());
             return;
@@ -436,18 +446,24 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             return;
         }
         Decision decision = engine.evaluator().onFindings(result.findings(), result.redactable());
-        String reason = decision.reason();
         // D-07: a class whose action is BLOCK (a secret) never leaves partially; only REDACT classes are rewritten.
-        boolean rewrite = decision.action() == Action.REDACT && result.redactedBody() != null;
-        byte[] replacement = rewrite ? result.redactedBody() : BlockPages.terminatedText(reason, correlation);
-        List<HeaderBlock.Field> add = rewrite
-            ? List.of(new HeaderBlock.Field("Content-Length", Integer.toString(replacement.length)))
-            : List.of(new HeaderBlock.Field("Content-Length", Integer.toString(replacement.length)),
-                new HeaderBlock.Field("Content-Type", "text/plain; charset=utf-8"));
-        List<String> remove = rewrite ? List.of("Content-Length", "Transfer-Encoding")
-            : List.of("Content-Length", "Transfer-Encoding", "Content-Type");
-        HeaderBlock head = resHttp.rewrite(remove, add);
-        emit(rewrite ? Verdict.REDACT : Verdict.STREAM_ABORTED, reason, result.findings());
+        if (decision.action() == Action.REDACT && result.redactedBody() != null) {
+            byte[] replacement = result.redactedBody();
+            emit(Verdict.REDACT, decision.reason(), result.findings());
+            ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.modified(isTag(), "res-hdr",
+                withLength(resHttp, replacement.length), replacement, false)));
+            resetTransaction();
+            return;
+        }
+        terminateWholeResponse(ctx, decision.reason(), result.findings());
+    }
+
+    private void terminateWholeResponse(ChannelHandlerContext ctx, String reason, List<Finding> findings) {
+        byte[] replacement = BlockPages.terminatedText(reason, correlation);
+        HeaderBlock head = resHttp.rewrite(List.of("Content-Length", "Transfer-Encoding", "Content-Type",
+            "Content-Encoding"), List.of(new HeaderBlock.Field("Content-Length", Integer.toString(replacement.length)),
+            new HeaderBlock.Field("Content-Type", "text/plain; charset=utf-8")));
+        emit(Verdict.STREAM_ABORTED, reason, findings);
         ctx.writeAndFlush(Unpooled.wrappedBuffer(
             IcapResponses.modified(isTag(), "res-hdr", head.toBytes(), replacement, false)));
         resetTransaction();
@@ -494,16 +510,28 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         while (state == State.STREAM && (pending.size() >= window || (last && pending.size() > 0))) {
             byte[] all = pending.toByteArray();
             int take = Math.min(window, all.length);
-            // Cut on a UTF-8 character boundary, so no window decodes half a character into U+FFFD and splits a value.
-            for (int back = 0; back < 3 && take < all.length && take > 1 && (all[take] & 0xC0) == 0x80; back++) {
-                take--;
+            if (!last || take < all.length) {
+                take = utf8Cut(all, take);
             }
             byte[] current = Arrays.copyOf(all, take);
             pending.reset();
             pending.write(all, take, all.length - take);
-            if (streamInspect && !inspectWindow(current)) {
-                abortStream(ctx);
+            int normalisedChars = streamInspect ? inspectWindow(current) : current.length;
+            if (normalisedChars < 0) {
+                abortStream(ctx, null);
                 return;
+            }
+            if (held != null && normalisedChars < engine.config().windowOverlap()) {
+                // N-02: a window that adds less than the overlap in characters (format padding) cannot vouch for the
+                // held bytes yet: keep holding, bounded by the spec's 64 KiB per transaction.
+                if (held.length + current.length > MAX_HELD) {
+                    abortStream(ctx, "NORMALISATION");
+                    return;
+                }
+                byte[] merged = Arrays.copyOf(held, held.length + current.length);
+                System.arraycopy(current, 0, merged, held.length, current.length);
+                held = merged;
+                continue;
             }
             if (held != null) {
                 ctx.write(Unpooled.wrappedBuffer(IcapResponses.chunk(held, 0, held.length)));
@@ -519,20 +547,37 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     }
 
     /**
-     * True when the window, prefixed with the normalised tail of the previous one, holds no high-confidence finding. The
-     * overlap is kept in normalised characters, so format characters cannot push a split value out of it (D-06).
+     * Moves a window cut back to a UTF-8 character boundary, also when the cut is the end of the buffered bytes: an
+     * incomplete trailing sequence waits for the next window (PR 11 recheck N-02).
      */
-    private boolean inspectWindow(byte[] current) {
+    static int utf8Cut(byte[] a, int take) {
+        for (int k = 1; k <= 3 && take - k >= 0; k++) {
+            int b = a[take - k] & 0xff;
+            if ((b & 0xC0) == 0x80) {
+                continue;
+            }
+            int needed = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
+            return needed > k && take - k > 0 ? take - k : take;
+        }
+        return take;
+    }
+
+    /**
+     * Inspects the window prefixed with the normalised tail of the previous one; the overlap is kept in normalised
+     * characters, so format characters cannot push a split value out of it (D-06). Returns the number of normalised
+     * characters the window contributed, or -1 on a finding.
+     */
+    private int inspectWindow(byte[] current) {
         String normalised = Normaliser.normalise(new String(current, StandardCharsets.UTF_8));
         String text = overlapText + normalised;
         List<Finding> found = engine.inspector().scanNormalised(text);
         if (!found.isEmpty()) {
             streamFindings = found;
-            return false;
+            return -1;
         }
         int keep = Math.min(engine.config().windowOverlap(), text.length());
         overlapText = text.substring(text.length() - keep);
-        return true;
+        return normalised.length();
     }
 
     private void finishStream(ChannelHandlerContext ctx) {
@@ -549,12 +594,12 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         resetTransaction();
     }
 
-    private void abortStream(ChannelHandlerContext ctx) {
-        String reason = streamFindings.get(0).dataClass().category();
+    private void abortStream(ChannelHandlerContext ctx, String nonVerdictReason) {
+        String reason = nonVerdictReason != null ? nonVerdictReason : streamFindings.get(0).dataClass().category();
         byte[] notice = resHttp.mediaType().equals("text/event-stream")
             ? BlockPages.sseTermination(reason, correlation) : BlockPages.terminatedText(reason, correlation);
         ctx.write(Unpooled.wrappedBuffer(IcapResponses.chunk(notice, 0, notice.length)));
-        emit(Verdict.STREAM_ABORTED, reason, streamFindings);
+        emit(Verdict.STREAM_ABORTED, reason, nonVerdictReason != null ? List.of() : streamFindings);
         held = null;
         pending = null;
         if (decoder.done()) {
@@ -640,7 +685,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             counts.merge(f.dataClass().name(), 1, Integer::sum);
         }
         Flow f = flow == null ? unknownFlow() : flow;
-        long bytes = verdict == Verdict.STREAM_ABORTED && streamedBytes > 0 ? forwardedBytes
+        long bytes = verdict == Verdict.STREAM_ABORTED ? forwardedBytes
             : body == null ? 0 : Math.max(body.totalBytes(), streamedBytes);
         engine.events().emit(new VerdictEvent(UUID.fromString(correlation), Instant.now(),
             req.method() == IcapRequest.Method.REQMOD ? "reqmod" : "respmod",
@@ -717,19 +762,42 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         return null;
     }
 
-    /** RFC 9112 §3.2.2: an absolute request target's authority wins over Host (D-12). */
+    /**
+     * RFC 9112 §3.2.2: an absolute-form target's authority wins over Host (D-12). The target is absolute-form only when
+     * it starts with an RFC 3986 scheme; the authority ends at the first '/', '?' or '#' (PR 11 recheck N-04).
+     */
     private static String host(HeaderBlock http) {
         String target = secondToken(http.startLine());
         int scheme = target.indexOf("://");
-        if (scheme > 0) {
+        if (scheme > 0 && isScheme(target, scheme)) {
             int start = scheme + 3;
-            int slash = target.indexOf('/', start);
-            String authority = slash < 0 ? target.substring(start) : target.substring(start, slash);
+            int end = target.length();
+            for (int i = start; i < target.length(); i++) {
+                char c = target.charAt(i);
+                if (c == '/' || c == '?' || c == '#') {
+                    end = i;
+                    break;
+                }
+            }
+            String authority = target.substring(start, end);
             int at = authority.lastIndexOf('@');
             return at >= 0 ? authority.substring(at + 1) : authority;
         }
         String h = http.first("Host");
         return h == null ? "" : h;
+    }
+
+    private static boolean isScheme(String s, int end) {
+        if (!Character.isLetter(s.charAt(0))) {
+            return false;
+        }
+        for (int i = 1; i < end; i++) {
+            char c = s.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '+' && c != '-' && c != '.') {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static String firstToken(String line) {

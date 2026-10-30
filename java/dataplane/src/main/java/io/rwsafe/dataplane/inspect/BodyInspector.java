@@ -1,5 +1,6 @@
 package io.rwsafe.dataplane.inspect;
 
+import io.rwsafe.dataplane.icap.HeaderBlock;
 import io.rwsafe.dataplane.icap.Ows;
 import io.rwsafe.dataplane.icap.Tokens;
 import io.rwsafe.detect.DetectorSet;
@@ -31,6 +32,8 @@ public final class BodyInspector {
     /** NFKC can expand a character up to 18 times; more than this factor over the input is refused (D-12). */
     private static final int MAX_EXPANSION = 4;
 
+    private static final Set<String> UTF8_CHARSETS = Set.of("", "utf-8", "utf8", "us-ascii");
+
     private static final Set<String> TEXT_LIKE = Set.of("application/xml", "application/javascript",
         "application/graphql", "application/x-ndjson", "application/ndjson", "application/yaml", "application/x-yaml");
 
@@ -40,16 +43,21 @@ public final class BodyInspector {
         this.detectors = detectors;
     }
 
-    public InspectionResult inspect(CapturedBody body, String mediaType, String contentEncoding) {
+    public InspectionResult inspect(CapturedBody body, HeaderBlock http) {
         if (body.oversize()) {
             return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "OVERSIZE");
         }
-        if (encoded(contentEncoding)) {
+        if (encoded(http.first("Content-Encoding"))) {
             return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "ENCODED");
         }
         if (body.length() == 0) {
             return InspectionResult.inspected(List.of(), true, null);
         }
+        // N-03: the detectors read UTF-8; another declared charset (UTF-16 interleaves NUL bytes) is not readable yet.
+        if (!UTF8_CHARSETS.contains(http.charset())) {
+            return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "UNSUPPORTED_CHARSET");
+        }
+        String mediaType = http.mediaType();
         byte[] bytes = body.bytes();
         int len = body.length();
         if (binaryMagic(bytes, len)) {
@@ -59,7 +67,9 @@ public final class BodyInspector {
             return inspectJson(bytes, len);
         }
         if (mediaType.equals("application/x-www-form-urlencoded")) {
-            return inspectText(percentDecode(bytes, len));
+            byte[] decoded = percentDecode(bytes, len);
+            String text = strictUtf8(decoded, decoded.length);
+            return text == null ? InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "BINARY") : inspectText(text);
         }
         if (mediaType.startsWith("multipart/")) {
             return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "MULTIPART");
@@ -174,7 +184,13 @@ public final class BodyInspector {
         return true;
     }
 
-    private static String strictUtf8(byte[] b, int len) {
+    /** Strict UTF-8 without NUL (N-03: NUL-interleaved text would split every value); null when not readable. */
+    public static String strictUtf8(byte[] b, int len) {
+        for (int i = 0; i < len; i++) {
+            if (b[i] == 0) {
+                return null;
+            }
+        }
         try {
             return StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPORT)
@@ -186,7 +202,7 @@ public final class BodyInspector {
     }
 
     /** {@code application/x-www-form-urlencoded}: '+' is a space, %XX is a byte; the result is decoded as UTF-8. */
-    static String percentDecode(byte[] b, int len) {
+    static byte[] percentDecode(byte[] b, int len) {
         ByteArrayOutputStream out = new ByteArrayOutputStream(len);
         for (int i = 0; i < len; i++) {
             byte c = b[i];
@@ -199,6 +215,6 @@ public final class BodyInspector {
                 out.write(c);
             }
         }
-        return out.toString(StandardCharsets.UTF_8);
+        return out.toByteArray();
     }
 }

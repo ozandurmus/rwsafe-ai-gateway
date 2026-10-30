@@ -531,4 +531,91 @@ class IcapEngineEndToEndTest {
         assertFalse(printed.contains("U1lOVEhFVElD"));
         assertFalse(printed.contains("192.0.2.10"));
     }
+
+    // ---- PR 11 confirmation review (Argon) findings ----
+
+    /** N-01: a previewed response that reaches the finding limit is terminated, never passed. */
+    @Test
+    void responseAtTheFindingLimitIsTerminated() throws Exception {
+        StringBuilder text = new StringBuilder("{\"text\":\"synthetic");
+        for (int i = 0; i < 1001; i++) {
+            text.append(' ').append(Synthetic.tckn(1000 + i));
+        }
+        byte[] body = text.append("\"}").toString().getBytes(StandardCharsets.UTF_8);
+        Frames.Http request = Frames.fixture("claude/api/messages.http", "synthetic hi");
+        IcapTestClient.Response r = once(Frames.respmod(request, "HTTP/1.1 200 OK\nContent-Type: application/json\n"
+            + "Content-Length: " + body.length + "\n", body, 65536));
+        assertEquals(200, r.status());
+        assertTrue(r.bodyText().contains("Yanıt kesildi"));
+        assertFalse(r.bodyText().contains(Synthetic.tckn(1000)));
+        VerdictEvent e = awaitEvent();
+        assertEquals(Verdict.STREAM_ABORTED, e.verdict());
+        assertEquals("FINDING_LIMIT", e.reason());
+    }
+
+    /** N-02 (1): a multi-byte character split exactly at a window that ends the buffered bytes. */
+    @Test
+    void characterSplitAtAnExactWindowBoundaryIsCaught() throws Exception {
+        String tckn = Synthetic.tckn(41);
+        String text = "data: " + "s".repeat(1010) + " " + tckn.substring(0, 6) + "\u200b" + tckn.substring(6) + " end\n\n";
+        byte[] body = text.getBytes(StandardCharsets.UTF_8);
+        Frames.Http request = Frames.fixture("openai/web/chat.http", "synthetic hi");
+        try (IcapTestClient c = new IcapTestClient(port)) {
+            c.write(Frames.respmodChunked(request, "HTTP/1.1 200 OK\nContent-Type: text/event-stream\n", body, 1024));
+            IcapTestClient.Response r = c.read();
+            assertTrue(r.bodyText().contains("rwsafe_stream_terminated"));
+            assertFalse(r.bodyText().contains(tckn.substring(6)));
+        }
+        assertEquals(Verdict.STREAM_ABORTED, awaitEvent().verdict());
+    }
+
+    /** N-02 (2): a window of pure format padding cannot release the held window that starts a split value. */
+    @Test
+    void formatPaddingWindowDoesNotReleaseTheHeldPrefix() throws Exception {
+        String tckn = Synthetic.tckn(43);
+        String w1 = "data: " + "s".repeat(1024 - 6 - 1 - 6) + " " + tckn.substring(0, 6);
+        String text = w1 + "\u200b".repeat(400) + tckn.substring(6) + " end\n\n";
+        byte[] body = text.getBytes(StandardCharsets.UTF_8);
+        Frames.Http request = Frames.fixture("openai/web/chat.http", "synthetic hi");
+        try (IcapTestClient c = new IcapTestClient(port)) {
+            c.write(Frames.respmodChunked(request, "HTTP/1.1 200 OK\nContent-Type: text/event-stream\n", body, 1024));
+            IcapTestClient.Response r = c.read();
+            assertTrue(r.bodyText().contains("rwsafe_stream_terminated"));
+            assertFalse(r.bodyText().contains(tckn.substring(0, 6)));
+        }
+        assertEquals(Verdict.STREAM_ABORTED, awaitEvent().verdict());
+    }
+
+    /** N-03: a declared non-UTF-8 charset, NUL-interleaved text and invalid UTF-8 in JSON are not readable. */
+    @Test
+    void unreadableEncodingsAreNotAllowed() throws Exception {
+        String key = Synthetic.awsKey();
+        StringBuilder interleaved = new StringBuilder();
+        for (char ch : ("synthetic " + key).toCharArray()) {
+            interleaved.append(ch).append('\u0000');
+        }
+        byte[] nul = interleaved.toString().getBytes(StandardCharsets.ISO_8859_1);
+        Frames.Http charset = Frames.http("POST /v1/messages HTTP/1.1\nHost: api.anthropic.com\n"
+            + "Content-Type: text/plain; charset=utf-16le\nContent-Length: " + nul.length + "\n", nul);
+        assertTrue(once(Frames.reqmod(charset, -1, true)).httpHead().startsWith("HTTP/1.1 403"));
+        assertEquals("UNSUPPORTED_CHARSET", awaitEvent().reason());
+        Frames.Http bare = Frames.http("POST /v1/messages HTTP/1.1\nHost: api.anthropic.com\n"
+            + "Content-Type: text/plain\nContent-Length: " + nul.length + "\n", nul);
+        assertTrue(once(Frames.reqmod(bare, -1, true)).httpHead().startsWith("HTTP/1.1 403"));
+        assertEquals("BINARY", awaitEvent().reason());
+        byte[] json = {'{', '"', 's', '"', ':', '"', (byte) 0xff, 'x', '"', '}'};
+        Frames.Http badJson = Frames.http("POST /v1/messages HTTP/1.1\nHost: api.anthropic.com\n"
+            + "Content-Type: application/json\nContent-Length: " + json.length + "\n", json);
+        assertTrue(once(Frames.reqmod(badJson, -1, true)).httpHead().startsWith("HTTP/1.1 403"));
+        assertEquals(Verdict.MALFORMED, awaitEvent().verdict());
+    }
+
+    /** N-04: "://" inside an origin-form query does not override Host. */
+    @Test
+    void schemeInsideAQueryDoesNotOverrideHost() throws Exception {
+        Frames.Http http = rawHttp("POST /backend-api/conversation?ref=https://api.anthropic.com/x HTTP/1.1\n"
+            + "Host: chatgpt.com\nContent-Type: application/json\nContent-Length: {{LEN}}\n", "{\"synthetic\":true}");
+        assertEquals(204, once(Frames.reqmod(http, -1, true)).status());
+        assertEquals("openai", awaitEvent().platform());
+    }
 }

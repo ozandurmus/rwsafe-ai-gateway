@@ -61,6 +61,23 @@ final class Frames {
         return frame("RESPMOD", "/respmod-ai", enc, heads, responseBody, preview, true, "");
     }
 
+    /** A RESPMOD frame without preview whose body is sent in ICAP chunks of exactly {@code chunkSize} bytes. */
+    static byte[] respmodChunked(Http request, String responseHead, byte[] responseBody, int chunkSize) {
+        byte[] resHead = (responseHead.replace("\n", "\r\n") + "\r\n").getBytes(StandardCharsets.ISO_8859_1);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        String head = "RESPMOD icap://icap.example.invalid/respmod-ai ICAP/1.0\r\nHost: icap.example.invalid\r\n"
+            + "Encapsulated: req-hdr=0, res-hdr=" + request.head().length + ", res-body="
+            + (request.head().length + resHead.length) + "\r\nAllow: 204\r\n\r\n";
+        out.writeBytes(head.getBytes(StandardCharsets.US_ASCII));
+        out.writeBytes(request.head());
+        out.writeBytes(resHead);
+        for (int off = 0; off < responseBody.length; off += chunkSize) {
+            out.writeBytes(chunk(responseBody, off, Math.min(chunkSize, responseBody.length - off)));
+        }
+        out.writeBytes("0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+        return out.toByteArray();
+    }
+
     static byte[] rest(byte[] body, int preview) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         if (body.length > preview) {

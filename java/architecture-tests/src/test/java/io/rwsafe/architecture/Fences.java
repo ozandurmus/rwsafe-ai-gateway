@@ -132,6 +132,7 @@ final class Fences {
     static ArchRule contentPackagesDoNotLog(String... contentPackages) {
         return noClasses().that().resideInAnyPackage(contentPackages)
             .should().dependOnClassesThat().resideInAnyPackage(TELEMETRY_APIS)
+            .orShould().dependOnClassesThat().belongToAnyOf(System.Logger.class)
             .orShould(ACCESS_STANDARD_STREAMS)
             .because("code that parses or scans content must not be able to leak it into telemetry (AGENTS.md 4.14)");
     }

@@ -96,4 +96,13 @@ class IcapParsingTest {
             "REQMOD icap://h/reqmod-ai ICAP/1.0\r\nX-Synthetic: a\u000bb\r\nEncapsulated: req-hdr=0, req-body=9\r\n\r\n"))
             .status());
     }
+
+    /** PR 11 recheck N-05: no control character or tab in a start line. */
+    @Test
+    void controlCharacterInAStartLineIsRefused() {
+        byte[] head = ascii("POST /\u0001x HTTP/1.1\r\nHost: a.example.invalid\r\n\r\n");
+        assertThrows(IcapProtocolException.class, () -> HeaderBlock.parse(head, 0, head.length, 8192, 64, 400));
+        byte[] tab = ascii("POST\t/ HTTP/1.1\r\nHost: a.example.invalid\r\n\r\n");
+        assertThrows(IcapProtocolException.class, () -> HeaderBlock.parse(tab, 0, tab.length, 8192, 64, 400));
+    }
 }
