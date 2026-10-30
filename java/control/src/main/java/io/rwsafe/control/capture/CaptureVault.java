@@ -54,12 +54,35 @@ public final class CaptureVault {
         private final List<ChunkPlan> plans;
         private final List<String> addresses;
         private final long newBytes;
+        /** The text and each address's cut, so a chunk that vanished before the insert can still be sealed (D-08). */
+        private final byte[] plain;
+        private final Map<String, int[]> cuts;
+        private final List<ChunkPlan> sealedLate = new ArrayList<>();
         private boolean finished;
 
-        private Prepared(List<ChunkPlan> plans, List<String> addresses, long newBytes) {
+        private Prepared(List<ChunkPlan> plans, List<String> addresses, long newBytes, byte[] plain,
+                         Map<String, int[]> cuts) {
             this.plans = plans;
             this.addresses = addresses;
             this.newBytes = newBytes;
+            this.plain = plain;
+            this.cuts = cuts;
+        }
+
+        /** Seals a chunk the store found gone inside the insert transaction (PR 25 confirmation review D-08). */
+        private ChunkPlan sealLate(String address) {
+            int[] cut = cuts.get(address);
+            if (cut == null) {
+                return null;
+            }
+            ChunkPlan plan = seal(plain, cut, address);
+            sealedLate.add(plan);
+            return plan;
+        }
+
+        /** Chunks sealed inside the insert because a deduplicated one was deleted meanwhile. */
+        public int sealedLate() {
+            return sealedLate.size();
         }
 
         /** The bytes the new chunks add to the store (deduplicated chunks add none). */
@@ -79,7 +102,7 @@ public final class CaptureVault {
                     byte[] mac = mac(recordKey, r, addresses);
                     r = new CaptureRecord(r.eventId(), r.capturedAt(), r.expiresAt(), r.userPseudonym(), r.keyId(),
                         r.wrappedKey(), mac, r.plainBytes(), r.truncated(), r.maskRuleSet(), false);
-                    return database.captures().insert(r, plans, files::commit).stored();
+                    return database.captures().insert(r, plans, files::commit, this::sealLate).stored();
                 } finally {
                     Arrays.fill(recordKey, (byte) 0);
                 }
@@ -99,10 +122,16 @@ public final class CaptureVault {
                     files.deleteTemp(p.chunkId());
                 }
             }
+            for (ChunkPlan p : sealedLate) {
+                files.deleteTemp(p.chunkId());
+            }
         }
     }
 
-    /** Cuts, addresses and seals the new chunks of {@code plain[0, len)}; the caller zeroes {@code plain}. */
+    /**
+     * Cuts, addresses and seals the new chunks of {@code plain[0, len)}; the caller zeroes {@code plain} after
+     * {@link Prepared#store} (a chunk found stored here is decided again inside the insert, D-08).
+     */
     public Prepared prepare(byte[] plain, int len) {
         List<int[]> cuts = Chunker.cut(plain, len);
         List<String> addresses = new ArrayList<>(cuts.size());
@@ -111,11 +140,13 @@ public final class CaptureVault {
         }
         Map<String, java.util.UUID> existing = database.captures().existingChunks(addresses);
         Map<String, ChunkPlan> byAddress = new LinkedHashMap<>();
+        Map<String, int[]> cutOf = new LinkedHashMap<>();
         List<ChunkPlan> plans = new ArrayList<>(cuts.size());
         long newBytes = 0;
         try {
             for (int i = 0; i < cuts.size(); i++) {
                 String address = addresses.get(i);
+                cutOf.putIfAbsent(address, cuts.get(i));
                 ChunkPlan plan = byAddress.get(address);
                 if (plan == null) {
                     if (existing.containsKey(address)) {
@@ -136,7 +167,7 @@ public final class CaptureVault {
             }
             throw e;
         }
-        return new Prepared(plans, addresses, newBytes);
+        return new Prepared(plans, addresses, newBytes, plain, cutOf);
     }
 
     private ChunkPlan seal(byte[] plain, int[] cut, String address) {

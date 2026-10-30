@@ -172,8 +172,8 @@ class CaptureStoreTest {
         String oldChunk = address();
         UUID a = stored(now, now.plus(90, ChronoUnit.DAYS), "cap-old", chunk(oldChunk, 100, "cap-old"));
         UUID b = stored(now, now.plus(90, ChronoUnit.DAYS), "cap-old", chunk(address(), 100, "cap-old"));
-        assertEquals(2, db.captures().recordsToRewrap("cap-new", now, 10).size());
-        assertEquals(2, db.captures().chunksToRewrap("cap-new", 10).size());
+        assertEquals(2, db.captures().recordsToRewrap(Set.of("cap-old"), now, 10).size());
+        assertEquals(2, db.captures().chunksToRewrap(Set.of("cap-old"), 10).size());
         var chunkA = db.captures().manifest(a).get(0);
         int n = db.captures().applyRewrap(
             List.of(new CaptureStore.Rewrap(a, "cap-old", "cap-new", random(60))),
@@ -192,6 +192,60 @@ class CaptureStoreTest {
         assertEquals("EMERGENCY_SHRED", db.dsl().select(Schema.KE_OPERATION).from(Schema.CAPTURE_KEY_EVENT)
             .where(Schema.KE_OPERATION.eq("EMERGENCY_SHRED")).fetchOne(0));
         assertEquals(Set.of("cap-new"), db.captures().keysInUse());
+    }
+
+    /** PR 25 confirmation review D-08: a deduplicated chunk deleted before the insert is sealed and stored inside it. */
+    @Test
+    void aDeduplicatedChunkThatVanishedIsSealedInsideTheInsert() {
+        Instant now = Instant.now();
+        String shared = address();
+        UUID old = stored(now.minus(1, ChronoUnit.HOURS), now.plus(80, ChronoUnit.DAYS), "cap-a",
+            chunk(shared, 400, "cap-a"));
+        // The caller decided "already stored"; then an eviction took the last reference before the insert began.
+        ChunkPlan known = new ChunkPlan(shared, UUID.randomUUID(), "cap-a", null, 400);
+        assertEquals(1, db.captures().evictOldest(10).records());
+        assertTrue(db.captures().existingChunks(List.of(shared)).isEmpty());
+
+        UUID next = storedEvent();
+        List<UUID> created = new ArrayList<>();
+        var inserted = db.captures().insert(record(next, now, now.plus(90, ChronoUnit.DAYS), "cap-a"), List.of(known),
+            created::add, a -> chunk(a, 400, "cap-a"));
+        assertTrue(inserted.stored());
+        assertEquals(1, created.size(), "the vanished chunk was stored again");
+        assertEquals(1, refs(shared));
+        assertEquals(400, db.captures().usage());
+        assertTrue(db.captures().findLive(old, now).isEmpty());
+
+        UUID third = storedEvent();
+        String gone = address();
+        assertThrows(IllegalStateException.class, () -> db.captures().insert(
+            record(third, now, now.plus(90, ChronoUnit.DAYS), "cap-a"),
+            List.of(new ChunkPlan(gone, UUID.randomUUID(), "cap-a", null, 1)), c -> { }, a -> null));
+        assertTrue(db.captures().findLive(third, now).isEmpty(), "rolled back whole");
+    }
+
+    /** D-09: re-wrap pages only rows under mounted keys; Health counts rows under shredded and missing keys apart. */
+    @Test
+    void rewrapSkipsUnmountedKeysAndTotalsReportThemApart() {
+        Instant now = Instant.now();
+        for (int i = 0; i < 3; i++) {
+            UUID held = stored(now, now.plus(90, ChronoUnit.DAYS), "cap-shredded", chunk(address(), 100, "cap-shredded"));
+            db.captures().setLegalHold(held, true, HOLD);
+        }
+        stored(now, now.plus(90, ChronoUnit.DAYS), "cap-missing", chunk(address(), 100, "cap-missing"));
+        UUID rotating = stored(now, now.plus(90, ChronoUnit.DAYS), "cap-old", chunk(address(), 100, "cap-old"));
+        stored(now, now.plus(90, ChronoUnit.DAYS), "cap-new", chunk(address(), 100, "cap-new"));
+        List<CaptureRecord> page = db.captures().recordsToRewrap(Set.of("cap-old"), now, 2);
+        assertEquals(List.of(rotating), page.stream().map(CaptureRecord::eventId).toList(),
+            "rows under unmounted keys never fill the page");
+        assertEquals(1, db.captures().chunksToRewrap(Set.of("cap-old"), 2).size());
+        assertTrue(db.captures().recordsToRewrap(Set.of(), now, 2).isEmpty());
+
+        CaptureStore.Totals t = db.captures().totals("cap-new", Set.of("cap-new", "cap-old"), Set.of("cap-shredded"));
+        assertEquals(1, t.recordsUnderOtherKeys(), "a rotation still to re-wrap");
+        assertEquals(1, t.chunksUnderOtherKeys());
+        assertEquals(3, t.recordsUnderShreddedKeys(), "held records an emergency shred left");
+        assertEquals(1, t.recordsUnderMissingKeys(), "under a key neither mounted nor shredded");
     }
 
     @Test

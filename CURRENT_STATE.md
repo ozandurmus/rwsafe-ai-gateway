@@ -364,7 +364,9 @@ ROADMAP "Capture in redacted mode (Q-4 b)", acceptance SR-PRIV-10, SR-PRIV-11, S
   an admin read is its positive control); a capture test proves no log line carries content. Deletions reach the SIEM
   as exported ledger rows (PR 23) keyed by the event id.
 - Second review (Argon, `docs/reviews/PR25_2026_10_31_ARGON_REDACTED_CAPTURE.md`), answered by id in
-  `docs/reviews/PR25_2026_10_31_RESPONSE.md`; a confirmation review follows for the storage model.
+  `docs/reviews/PR25_2026_10_31_RESPONSE.md`; the confirmation review (`PR25_2026_10_31_ARGON_REDACTED_CAPTURE_RECHECK.md`)
+  closed everything and its D-08 (dedup decided again inside the insert) and D-09 (re-wrap from mounted keys only)
+  are fixed. The migration is V8 (after V7).
 - Open: ADR-009 gaps listed in the response (C5 special-category flag, masking layers 4 and 5 at persistence, legal
   hold and DSAR APIs, restore-time receipt replay, the worker module); deploy wiring (the capture PVC, the capture-key
   Secret, `RWSAFE_CAPTURE_*` in the ConfigMaps and contracts); the screen that opens a record; persisted skip

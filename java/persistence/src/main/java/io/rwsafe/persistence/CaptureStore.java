@@ -102,6 +102,17 @@ public final class CaptureStore {
      * everything back). A plan without a wrapped key must still be stored: it is locked and referenced.
      */
     public Inserted insert(CaptureRecord r, List<ChunkPlan> chunks, Consumer<UUID> onNewChunk) {
+        return insert(r, chunks, onNewChunk, address -> null);
+    }
+
+    /**
+     * {@link #insert(CaptureRecord, List, Consumer)} where a chunk the caller found stored may have been deleted since
+     * (an eviction or a retention pass took its last reference, PR 25 confirmation review D-08): the decision is taken
+     * again inside this transaction under a row lock, and a vanished chunk is sealed through {@code sealMissing} and
+     * stored. Null from {@code sealMissing} rolls everything back.
+     */
+    public Inserted insert(CaptureRecord r, List<ChunkPlan> chunks, Consumer<UUID> onNewChunk,
+                           java.util.function.Function<String, ChunkPlan> sealMissing) {
         return dsl.transactionResult(cfg -> {
             DSLContext tx = DSL.using(cfg);
             int rows = tx.insertInto(CAPTURE, CAP_EVENT_ID, CAP_CAPTURED_AT, CAP_EXPIRES_AT, CAP_USER, CAP_KEY_ID,
@@ -119,20 +130,31 @@ public final class CaptureStore {
                     continue;
                 }
                 UUID id = null;
-                if (c.wrappedKey() != null) {
-                    id = tx.insertInto(CAPTURE_CHUNK, CH_ID, CH_ADDRESS, CH_KEY_ID, CH_WRAPPED_KEY, CH_STORED_BYTES)
-                        .values(c.chunkId(), c.address(), c.keyId(), c.wrappedKey(), c.storedBytes())
-                        .onConflict(CH_ADDRESS).doNothing().returning(CH_ID).fetchOptional(CH_ID).orElse(null);
-                    if (id != null) {
-                        onNewChunk.accept(id);
-                        created.add(id);
+                ChunkPlan plan = c;
+                for (int attempt = 0; attempt < 3 && id == null; attempt++) {
+                    if (plan.wrappedKey() != null) {
+                        // Waits for a concurrent deletion of the same address; inserts when that deleted it.
+                        id = tx.insertInto(CAPTURE_CHUNK, CH_ID, CH_ADDRESS, CH_KEY_ID, CH_WRAPPED_KEY, CH_STORED_BYTES)
+                            .values(plan.chunkId(), plan.address(), plan.keyId(), plan.wrappedKey(), plan.storedBytes())
+                            .onConflict(CH_ADDRESS).doNothing().returning(CH_ID).fetchOptional(CH_ID).orElse(null);
+                        if (id != null) {
+                            onNewChunk.accept(id);
+                            created.add(id);
+                            break;
+                        }
+                    }
+                    // Locked so a concurrent deletion of an unreferenced chunk waits and then sees the new reference.
+                    id = tx.select(CH_ID).from(CAPTURE_CHUNK).where(CH_ADDRESS.eq(c.address())).forUpdate()
+                        .fetchOptional(CH_ID).orElse(null);
+                    if (id == null && plan.wrappedKey() == null) {
+                        plan = sealMissing.apply(c.address());
+                        if (plan == null) {
+                            throw new IllegalStateException("a referenced chunk is no longer stored");
+                        }
                     }
                 }
                 if (id == null) {
-                    // Locked so a concurrent deletion of an unreferenced chunk waits and then sees the new reference.
-                    id = tx.select(CH_ID).from(CAPTURE_CHUNK).where(CH_ADDRESS.eq(c.address())).forUpdate()
-                        .fetchOptional(CH_ID)
-                        .orElseThrow(() -> new IllegalStateException("a referenced chunk is no longer stored"));
+                    throw new IllegalStateException("a chunk could not be stored or referenced");
                 }
                 ids.put(c.address(), id);
             }
@@ -260,19 +282,29 @@ public final class CaptureStore {
         });
     }
 
-    /** Records sealed under another key than {@code activeKeyId} that are still within retention or on hold. */
-    public List<CaptureRecord> recordsToRewrap(String activeKeyId, Instant now, int limit) {
+    /**
+     * Records still within retention or on hold whose key is one of {@code fromKeyIds} (the mounted keys other than the
+     * active one, PR 25 confirmation review D-09: rows under an unmounted or shredded key can never be re-wrapped and
+     * must not fill the page).
+     */
+    public List<CaptureRecord> recordsToRewrap(Set<String> fromKeyIds, Instant now, int limit) {
+        if (fromKeyIds.isEmpty()) {
+            return List.of();
+        }
         return dsl.select(CAP_EVENT_ID, CAP_CAPTURED_AT, CAP_EXPIRES_AT, CAP_USER, CAP_KEY_ID, CAP_WRAPPED_KEY, CAP_MAC,
                 CAP_PLAIN_BYTES, CAP_TRUNCATED, CAP_MASK_RULE_SET, CAP_LEGAL_HOLD)
             .from(CAPTURE)
-            .where(CAP_KEY_ID.ne(activeKeyId).and(CAP_EXPIRES_AT.gt(now).or(CAP_LEGAL_HOLD.isTrue())))
+            .where(CAP_KEY_ID.in(fromKeyIds).and(CAP_EXPIRES_AT.gt(now).or(CAP_LEGAL_HOLD.isTrue())))
             .orderBy(CAP_EVENT_ID).limit(limit).fetch(CaptureStore::record);
     }
 
-    /** Referenced chunks wrapped under another key than {@code activeKeyId}. */
-    public List<StoredChunk> chunksToRewrap(String activeKeyId, int limit) {
+    /** Referenced chunks wrapped under one of {@code fromKeyIds} (mounted, not active; D-09). */
+    public List<StoredChunk> chunksToRewrap(Set<String> fromKeyIds, int limit) {
+        if (fromKeyIds.isEmpty()) {
+            return List.of();
+        }
         return dsl.select(CH_ID, CH_ADDRESS, CH_KEY_ID, CH_WRAPPED_KEY, CH_STORED_BYTES).from(CAPTURE_CHUNK)
-            .where(CH_KEY_ID.ne(activeKeyId).and(CH_REF_COUNT.gt(0))).orderBy(CH_ID).limit(limit)
+            .where(CH_KEY_ID.in(fromKeyIds).and(CH_REF_COUNT.gt(0))).orderBy(CH_ID).limit(limit)
             .fetch(r -> new StoredChunk(r.get(CH_ID), r.get(CH_ADDRESS), r.get(CH_KEY_ID), r.get(CH_WRAPPED_KEY),
                 r.get(CH_STORED_BYTES)));
     }
@@ -317,20 +349,33 @@ public final class CaptureStore {
         });
     }
 
-    /** Counts for the Health screen. */
-    public Totals totals(String activeKeyId) {
-        String active = activeKeyId == null ? "" : activeKeyId;
+    /**
+     * Counts for the Health screen. Rows under a mounted key other than the active one are a rotation still to re-wrap;
+     * rows under a key that is not mounted are stranded (unreadable): under a shredded key (held records an emergency
+     * shred left) or under a key that is merely missing (D-09).
+     */
+    public Totals totals(String activeKeyId, Set<String> mountedKeyIds, Set<String> shreddedKeyIds) {
+        Set<String> rotating = new LinkedHashSet<>(mountedKeyIds);
+        rotating.remove(activeKeyId);
         long records = dsl.fetchCount(CAPTURE);
         long chunks = dsl.fetchCount(CAPTURE_CHUNK);
         long held = dsl.fetchCount(CAPTURE, CAP_LEGAL_HOLD.isTrue());
-        long recordsElsewhere = dsl.fetchCount(CAPTURE, CAP_KEY_ID.ne(active));
-        long chunksElsewhere = dsl.fetchCount(CAPTURE_CHUNK, CH_KEY_ID.ne(active));
-        return new Totals(records, chunks, usage(), held, recordsElsewhere, chunksElsewhere);
+        long recordsRotating = rotating.isEmpty() ? 0 : dsl.fetchCount(CAPTURE, CAP_KEY_ID.in(rotating));
+        long chunksRotating = rotating.isEmpty() ? 0 : dsl.fetchCount(CAPTURE_CHUNK, CH_KEY_ID.in(rotating));
+        long underShredded = shreddedKeyIds.isEmpty() ? 0 : dsl.fetchCount(CAPTURE, CAP_KEY_ID.in(shreddedKeyIds));
+        Set<String> known = new LinkedHashSet<>(mountedKeyIds);
+        known.addAll(shreddedKeyIds);
+        long underMissing = known.isEmpty() ? records : dsl.fetchCount(CAPTURE, CAP_KEY_ID.notIn(known));
+        return new Totals(records, chunks, usage(), held, recordsRotating, chunksRotating, underShredded, underMissing);
     }
 
-    /** {@code *UnderOtherKeys}: still wrapped under a key other than the active one (a rotation not yet re-wrapped). */
+    /**
+     * {@code *UnderOtherKeys}: under a mounted key other than the active one (a rotation not yet re-wrapped);
+     * {@code recordsUnderShreddedKeys}: held records an emergency shred left, unreadable; {@code recordsUnderMissingKeys}:
+     * records under a key neither mounted nor listed as shredded, unreadable until it returns.
+     */
     public record Totals(long records, long chunks, long storedBytes, long heldRecords, long recordsUnderOtherKeys,
-                         long chunksUnderOtherKeys) {
+                         long chunksUnderOtherKeys, long recordsUnderShreddedKeys, long recordsUnderMissingKeys) {
     }
 
     /** The key ids that still wrap a record or a chunk. */

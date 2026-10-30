@@ -100,13 +100,20 @@ public class CaptureRetentionJob {
         if (active.isEmpty()) {
             return new int[] {0, 0};
         }
+        // D-09: only mounted keys other than the active one can be re-wrapped from; rows under an unmounted or shredded
+        // key are never selected, so they cannot fill a page and starve the rotation (Health reports them apart).
+        Set<String> from = new TreeSet<>(keys.ids());
+        from.remove(active.get());
+        if (from.isEmpty()) {
+            return new int[] {0, 0};
+        }
         int done = 0;
         Set<String> skipped = new TreeSet<>();
         int stranded = 0;
         for (int pass = 0; pass < MAX_PASSES; pass++) {
             List<Rewrap> records = new ArrayList<>();
             int seen = 0;
-            for (CaptureRecord r : database.captures().recordsToRewrap(active.get(), now, REWRAP_BATCH)) {
+            for (CaptureRecord r : database.captures().recordsToRewrap(from, now, REWRAP_BATCH)) {
                 seen++;
                 Optional<CaptureKeyring.Wrapped> w = keys.rewrap(r.keyId(), r.wrappedKey(),
                     CaptureVault.recordPurpose(r.eventId()));
@@ -117,7 +124,7 @@ public class CaptureRetentionJob {
                 }
             }
             List<Rewrap> chunks = new ArrayList<>();
-            for (StoredChunk c : database.captures().chunksToRewrap(active.get(), REWRAP_BATCH)) {
+            for (StoredChunk c : database.captures().chunksToRewrap(from, REWRAP_BATCH)) {
                 seen++;
                 Optional<CaptureKeyring.Wrapped> w = keys.rewrap(c.keyId(), c.wrappedKey(),
                     CaptureVault.chunkPurpose(c.address()));

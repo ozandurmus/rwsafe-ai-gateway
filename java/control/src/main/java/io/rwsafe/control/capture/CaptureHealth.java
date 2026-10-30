@@ -61,15 +61,22 @@ public class CaptureHealth {
         }
         String totals = "";
         boolean rotationPending = false;
+        boolean keyMissing = false;
         if (databaseUp) {
-            CaptureStore.Totals t = database.captures().totals(keys.activeId().orElse(null));
+            CaptureStore.Totals t = database.captures().totals(keys.activeId().orElse(null), keys.ids(),
+                keys.shredded());
             rotationPending = t.recordsUnderOtherKeys() + t.chunksUnderOtherKeys() > 0;
+            keyMissing = t.recordsUnderMissingKeys() > 0;
+            // D-09: a rotation still to re-wrap, held records an emergency shred left (expected, unreadable), and
+            // records under a key that is merely missing (a fault) are reported apart.
             totals = t.records() + " records, " + t.chunks() + " chunks, " + t.storedBytes() + " of " + cap.maxBytes()
-                + " bytes, " + t.heldRecords() + " on hold; under older keys: " + t.recordsUnderOtherKeys()
-                + " records and " + t.chunksUnderOtherKeys() + " chunks; ";
+                + " bytes, " + t.heldRecords() + " on hold; to re-wrap from older mounted keys: "
+                + t.recordsUnderOtherKeys() + " records and " + t.chunksUnderOtherKeys() + " chunks; held under "
+                + "shredded keys: " + t.recordsUnderShreddedKeys() + "; under missing keys: "
+                + t.recordsUnderMissingKeys() + "; ";
         }
         boolean degraded = c.get(CaptureSink.Outcome.DETECTOR_HIT) > 0 || c.get(CaptureSink.Outcome.FAILED) > 0
-            || c.get(CaptureSink.Outcome.STORE_FULL) > 0 || rotationPending;
+            || c.get(CaptureSink.Outcome.STORE_FULL) > 0 || rotationPending || keyMissing;
         return new ComponentView("capture", degraded ? "DEGRADED" : "UP", "redacted mode, active key "
             + keys.activeId().orElse("") + "; " + totals + skipped);
     }

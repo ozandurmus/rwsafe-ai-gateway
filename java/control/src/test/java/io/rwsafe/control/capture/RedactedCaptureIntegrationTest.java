@@ -427,6 +427,9 @@ class RedactedCaptureIntegrationTest {
             "Q-3: a planned rotation keeps records readable after the old key is gone");
 
         UUID doomed = storedDirectly(Instant.now().plus(1, ChronoUnit.DAYS));
+        UUID held = storedDirectly(Instant.now().plus(1, ChronoUnit.DAYS));
+        database.captures().setLegalHold(held, true, new io.rwsafe.persistence.AuditContext(
+            pseudonymiser.user("synthetic-officer"), "capture.hold", "LEGAL_HOLD_REVIEW", null));
         String nextKey = "cap-rot-" + UUID.randomUUID().toString().substring(0, 6);
         CaptureKeyringTest.writeKey(keyDir, nextKey);
         Files.writeString(keyDir.resolve("active"), nextKey);
@@ -440,6 +443,49 @@ class RedactedCaptureIntegrationTest {
         assertTrue(jdbc().queryForObject("SELECT count(*) FROM capture_deletion_receipt WHERE reason = 'KEY_SHREDDED'",
             Integer.class) >= 1);
         assertEquals(404, read(admin, doomed, "INCIDENT_INVESTIGATION", "CASE-0007").status());
+        assertEquals(1, stored(held), "a held record stays, unreadable");
+        assertEquals(410, read(admin, held, "LEGAL_HOLD_REVIEW", "CASE-0008").status());
+
+        // D-09: the held row under the shredded key never blocks a later rotation, and Health reports it apart.
+        UUID later = storedDirectly(Instant.now().plus(1, ChronoUnit.DAYS));
+        String lastKey = "cap-rot-" + UUID.randomUUID().toString().substring(0, 6);
+        CaptureKeyringTest.writeKey(keyDir, lastKey);
+        Files.writeString(keyDir.resolve("active"), lastKey);
+        assertTrue(maintenance.runOnce().rewrapped() >= 2, "the rotation is not starved by the stranded row");
+        assertEquals(lastKey, jdbc().queryForObject("SELECT key_id FROM capture_record WHERE event_id = ?",
+            String.class, later));
+        JsonNode capture = null;
+        for (JsonNode c : signedIn("synthetic-viewer").get("/api/v1/health").body().get("components")) {
+            if (c.get("component").asText().equals("capture")) {
+                capture = c;
+            }
+        }
+        String detail = capture.get("detail").asText();
+        assertTrue(detail.contains("held under shredded keys: 1"), detail);
+        assertTrue(detail.contains("to re-wrap from older mounted keys: 0 records and 0 chunks"), detail);
+        assertTrue(detail.contains("under missing keys: 0"), detail);
         assertTrue(maintenance.runOnce().sweptFiles() >= 0);
+    }
+
+    /** PR 25 confirmation review D-08: a chunk evicted between the dedup decision and the insert is sealed again. */
+    @Test
+    void aChunkEvictedBetweenPrepareAndStoreIsSealedAgain() throws Exception {
+        storedDirectly(Instant.now().plus(1, ChronoUnit.DAYS));
+        ObjectNode e = event("claude", "REDACT", ACKED, "192.0.2.10");
+        ingest(e);
+        UUID id = UUID.fromString(e.get("eventId").asText());
+        byte[] plain = ("synthetic " + MARK).getBytes(StandardCharsets.UTF_8);
+        CaptureVault.Prepared prepared = vault.prepare(plain, plain.length);
+        assertEquals(0, prepared.newBytes(), "the same text: every chunk is deduplicated");
+        // A concurrent eviction takes the last reference to those chunks before the insert starts.
+        Thread evictor = new Thread(() -> vault.removeFiles(database.captures().evictOldest(1000)));
+        evictor.start();
+        evictor.join();
+        assertTrue(prepared.store(id, pseudonymiser.user(ACKED), Instant.now(), Instant.now().plus(1, ChronoUnit.DAYS),
+            plain.length, false, "rwmask-v1-slice1"));
+        assertTrue(prepared.sealedLate() >= 1, "the vanished chunk was sealed inside the insert");
+        ApiClient.Response r = read(signedIn("synthetic-admin"), id, "INCIDENT_INVESTIGATION", "CASE-0009");
+        assertEquals(200, r.status(), String.valueOf(r.body()));
+        assertTrue(r.body().get("text").asText().contains(MARK));
     }
 }

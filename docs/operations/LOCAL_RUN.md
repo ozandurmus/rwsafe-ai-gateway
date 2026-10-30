@@ -316,7 +316,8 @@ RWSAFE_CAPTURE_MODE=redacted RWSAFE_CONTROL_EVENTS_URL=http://127.0.0.1:8092/int
 
 Nothing is stored until the user has acknowledged the current notice (`POST /internal/v1/notice-acknowledgements`, the
 `RWSAFE_ENDUSER_*` values set). Health shows two components: `capture` (mode, active key, records, chunks and bytes
-against the cap, records on hold, what is still wrapped under an older key, and why content was not stored, counted
+against the cap, records on hold, what a rotation still has to re-wrap from an older mounted key, held records left
+under a shredded key, records under a key that is missing (DEGRADED), and why content was not stored, counted
 since start) and `capture-watermark` (UP below 75 % used; DEGRADED above 75 %: raw off; DOWN above 85 % or with no
 reading for 5 minutes: redacted off). A tripped level resumes 5 points below its threshold. The data plane applies the
 same breaker to its spool: above 85 % it spools events without their text (`icap_capture_spool_stripped_total`).
