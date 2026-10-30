@@ -1,6 +1,7 @@
 package io.rwsafe.policy;
 
 import io.rwsafe.platform.verdict.DataClass;
+import java.time.Instant;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -19,9 +20,16 @@ public final class PolicySnapshot {
     private final Map<DataClass, Action> classActions;
     private final boolean enforceFailClosed;
     private final List<PlatformRule> platforms;
+    private final Instant issuedAt;
 
     public PolicySnapshot(long version, String id, Map<DataClass, Action> classActions, boolean enforceFailClosed,
                           List<PlatformRule> platforms) {
+        this(version, id, classActions, enforceFailClosed, platforms, null);
+    }
+
+    /** @param issuedAt when the control plane signed it; null for the built-in development snapshot (never stale) */
+    public PolicySnapshot(long version, String id, Map<DataClass, Action> classActions, boolean enforceFailClosed,
+                          List<PlatformRule> platforms, Instant issuedAt) {
         if (version < 1 || id == null || id.isBlank()) {
             throw new IllegalArgumentException("a snapshot needs a positive version and an id");
         }
@@ -33,6 +41,7 @@ public final class PolicySnapshot {
         }
         this.enforceFailClosed = enforceFailClosed;
         this.platforms = List.copyOf(platforms);
+        this.issuedAt = issuedAt;
     }
 
     public long version() {
@@ -51,6 +60,11 @@ public final class PolicySnapshot {
     /** True when the AI-category flow is an enforce-mode entry with fail-closed classes (ADR-010 "fail-closed flow"). */
     public boolean enforceFailClosed() {
         return enforceFailClosed;
+    }
+
+    /** Null for the built-in development snapshot. */
+    public Instant issuedAt() {
+        return issuedAt;
     }
 
     public List<PlatformRule> platforms() {

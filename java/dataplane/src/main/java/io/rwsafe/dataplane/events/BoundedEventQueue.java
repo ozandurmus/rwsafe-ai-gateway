@@ -27,6 +27,11 @@ public final class BoundedEventQueue implements EventSink {
         }
     }
 
+    @Override
+    public boolean saturated() {
+        return queue.remainingCapacity() == 0;
+    }
+
     /** Moves up to {@code max} queued events into {@code into}; never waits. */
     public int drainTo(Collection<VerdictEvent> into, int max) {
         return queue.drainTo(into, max);

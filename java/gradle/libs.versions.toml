@@ -9,6 +9,7 @@ re2j = "1.8"
 slf4j = "2.0.18"
 jazzer = "0.24.0"
 netty = "4.1.139.Final"
+bouncycastle = "1.86"
 # Control plane (ARCHITECTURE.md §3.2): the neXus ui2 versions; the Spring Boot BOM manages jOOQ, Flyway, HikariCP and
 # UnboundID, and the three overrides below are the neXus security floors above the BOM's managed versions.
 # Spring Boot 4.1.1 (2026-08-20) manages Spring Framework 7.0.9, the only open-source fix for CVE-2026-47884 and
@@ -68,3 +69,5 @@ embedded-postgres-binaries-darwin-arm64v8 = { module = "io.zonky.test.postgres:e
 embedded-postgres-binaries-linux-amd64 = { module = "io.zonky.test.postgres:embedded-postgres-binaries-linux-amd64" }
 # Annotations on jOOQ's Settings class; compile-time only, so -Xlint:classfile finds them (no JAXB at runtime).
 jakarta-xml-bind-api = { module = "jakarta.xml.bind:jakarta.xml.bind-api" }
+# Test only: runtime generation of the CA, server and client certificates for the Secure ICAP tests.
+bcpkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }

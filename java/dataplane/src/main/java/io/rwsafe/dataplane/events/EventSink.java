@@ -4,4 +4,9 @@ package io.rwsafe.dataplane.events;
 public interface EventSink {
 
     void emit(VerdictEvent event);
+
+    /** True when the event path cannot take more: fail-closed flows then block (SR-DP-12, ADR-010 §3). */
+    default boolean saturated() {
+        return false;
+    }
 }

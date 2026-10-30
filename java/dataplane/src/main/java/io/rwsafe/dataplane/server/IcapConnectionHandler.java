@@ -17,6 +17,7 @@ import io.rwsafe.dataplane.icap.IcapResponses;
 import io.rwsafe.dataplane.inspect.BodyInspector;
 import io.rwsafe.dataplane.inspect.CapturedBody;
 import io.rwsafe.dataplane.inspect.InspectionResult;
+import io.rwsafe.dataplane.metrics.EngineMetrics;
 import io.rwsafe.detect.Normaliser;
 import io.rwsafe.platform.verdict.Finding;
 import io.rwsafe.platform.verdict.Verdict;
@@ -59,11 +60,15 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     private final IcapEngine engine;
     private final byte[] scratch = new byte[64 * 1024];
     private ByteBuf cum;
+    private ChannelHandlerContext context;
     private State state = State.HEAD;
     private ScheduledFuture<?> txnTimer;
     private long txnSeq;
 
     // per transaction
+    private IcapEngine.Policy policy;
+    private Admission.Ticket ticket;
+    private long reservedBody;
     private IcapRequest req;
     private HeaderBlock reqHttp;
     private HeaderBlock resHttp;
@@ -87,18 +92,24 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     private long forwardedBytes;
     private List<Finding> streamFindings = List.of();
 
-    IcapConnectionHandler(IcapEngine engine) {
+    private final boolean mutualTls;
+
+    /** @param mutualTls true on the Secure ICAP listener, where the TLS layer has verified the proxy's client certificate */
+    IcapConnectionHandler(IcapEngine engine, boolean mutualTls) {
         this.engine = engine;
+        this.mutualTls = mutualTls;
     }
 
     @Override
     public void handlerAdded(ChannelHandlerContext ctx) {
         cum = ctx.alloc().buffer(16 * 1024);
+        context = ctx;
     }
 
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) {
         cancelTimer();
+        releaseAdmission();
         if (cum != null) {
             cum.release();
             cum = null;
@@ -178,7 +189,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
                     }
                 }
                 case BODY -> {
-                    if (!consume(body::append)) {
+                    if (!consume(this::appendBody)) {
                         return;
                     }
                     onBodyChunksEnded(ctx);
@@ -211,6 +222,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         byte[] head = new byte[end - cum.readerIndex()];
         cum.readBytes(head);
         req = IcapRequest.parse(head, 0, head.length);
+        policy = engine.policy();
         startNanos = System.nanoTime();
         correlation = UUID.randomUUID().toString();
         IcapRequest.Method serviceMethod = serviceMethod(req.servicePath());
@@ -226,6 +238,23 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         if (req.method() != serviceMethod) {
             throw new IcapProtocolException(405, "method not allowed on this service");
         }
+        if (policy == null || engine.refusingNewTransactions()) {
+            throw new IcapProtocolException(503, "no policy or draining");
+        }
+        Admission.Ticket[] admitted = new Admission.Ticket[1];
+        Admission.Refusal refusal = engine.admission().tryEnter(req.head().first("X-Authenticated-User"),
+            req.head().first("X-Client-IP"), admitted);
+        if (refusal == Admission.Refusal.ENGINE_FULL
+            || (refusal == Admission.Refusal.IDENTITY_LIMIT && req.method() == IcapRequest.Method.RESPMOD)) {
+            throw new IcapProtocolException(503, "admission refused");
+        }
+        if (refusal == Admission.Refusal.IDENTITY_LIMIT) {
+            // OFF2-10: one identity cannot exhaust the pool; its excess transaction gets the flow action now.
+            flow = unknownFlow();
+            answerNonVerdictAndClose(ctx, Verdict.UNINSPECTABLE, "IDENTITY_LIMIT");
+            return false;
+        }
+        ticket = admitted[0];
         if (req.method() == IcapRequest.Method.RESPMOD) {
             armTimer(ctx, engine.config().respmodTimeoutMillis());
         }
@@ -311,7 +340,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             return unknownFlow();
         }
         String method = firstToken(reqHttp.startLine());
-        return engine.classifier().classify(host(reqHttp), method, reqHttp.first("Content-Type"),
+        return policy.classifier().classify(host(reqHttp), method, reqHttp.first("Content-Type"),
             reqHttp.first("User-Agent"));
     }
 
@@ -343,23 +372,35 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     private void decideReqmod(ChannelHandlerContext ctx) {
         InspectionResult result;
         Decision decision;
+        if (engine.events().saturated()) {
+            // SR-DP-12: when verdict events cannot be kept, a fail-closed flow blocks rather than decide unrecorded.
+            Decision saturated = policy.evaluator().onNonVerdict(Verdict.INSPECTION_FAILED, "EVENT_BACKPRESSURE");
+            emit(saturated.verdict(), saturated.reason(), List.of());
+            if (saturated.action() == Action.BLOCK) {
+                ctx.writeAndFlush(msg(blockResponse(saturated.reason())));
+            } else if (!answerUnchanged(ctx, true)) {
+                return;
+            }
+            resetTransaction();
+            return;
+        }
         try {
             result = engine.inspector().inspect(body, reqHttp);
             decision = result.nonVerdict() != null
-                ? engine.evaluator().onNonVerdict(result.nonVerdict(), result.reason())
-                : engine.evaluator().onFindings(result.findings(), result.redactable());
+                ? policy.evaluator().onNonVerdict(result.nonVerdict(), result.reason())
+                : policy.evaluator().onFindings(result.findings(), result.redactable());
         } catch (RuntimeException e) {
             result = null;
-            decision = engine.evaluator().onNonVerdict(Verdict.INSPECTION_FAILED, "INTERNAL");
+            decision = policy.evaluator().onNonVerdict(Verdict.INSPECTION_FAILED, "INTERNAL");
         }
         emit(decision.verdict(), decision.reason(), result == null ? List.of() : result.findings());
         Action action = decision.action();
         if (action == Action.REDACT && result != null && result.redactedBody() != null) {
             byte[] redacted = result.redactedBody();
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.modified(isTag(), "req-hdr",
+            ctx.writeAndFlush(msg(IcapResponses.modified(isTag(), "req-hdr",
                 withLength(reqHttp, redacted.length), redacted, false)));
         } else if (action == Action.BLOCK || action == Action.REDACT) {
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(blockResponse(decision.reason())));
+            ctx.writeAndFlush(msg(blockResponse(decision.reason())));
         } else if (!answerUnchanged(ctx, true)) {
             return;
         }
@@ -375,7 +416,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
      */
     private boolean answerUnchanged(ChannelHandlerContext ctx, boolean request) {
         if (may204()) {
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.noContent(isTag())));
+            ctx.writeAndFlush(msg(IcapResponses.noContent(isTag())));
             return true;
         }
         boolean nullBody = req.bodySection().name().equals("null-body");
@@ -445,12 +486,12 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             answerRespmodUnmodified(ctx, Verdict.ALLOW, null);
             return;
         }
-        Decision decision = engine.evaluator().onFindings(result.findings(), result.redactable());
+        Decision decision = policy.evaluator().onFindings(result.findings(), result.redactable());
         // D-07: a class whose action is BLOCK (a secret) never leaves partially; only REDACT classes are rewritten.
         if (decision.action() == Action.REDACT && result.redactedBody() != null) {
             byte[] replacement = result.redactedBody();
             emit(Verdict.REDACT, decision.reason(), result.findings());
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.modified(isTag(), "res-hdr",
+            ctx.writeAndFlush(msg(IcapResponses.modified(isTag(), "res-hdr",
                 withLength(resHttp, replacement.length), replacement, false)));
             resetTransaction();
             return;
@@ -482,7 +523,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         String encoding = resHttp.first("Content-Encoding");
         streamInspect = !BodyInspector.encoded(encoding);
         HeaderBlock head = resHttp.rewrite(List.of("Content-Length"), List.of());
-        ctx.write(Unpooled.wrappedBuffer(IcapResponses.streamedResponseHead(isTag(), head.toBytes())));
+        ctx.write(msg(IcapResponses.streamedResponseHead(isTag(), head.toBytes())));
         pending = new ByteArrayOutputStream(engine.config().windowBytes() * 2);
         held = null;
         overlapText = "";
@@ -637,7 +678,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
 
     /** A REQMOD non-verdict answered before the transaction is fully read; the connection closes afterwards. */
     private void answerNonVerdictAndClose(ChannelHandlerContext ctx, Verdict verdict, String reason) {
-        Decision decision = engine.evaluator().onNonVerdict(verdict, reason);
+        Decision decision = policy.evaluator().onNonVerdict(verdict, reason);
         emit(decision.verdict(), decision.reason(), List.of());
         byte[] answer;
         if (decision.action() == Action.BLOCK) {
@@ -649,7 +690,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         }
         state = State.CLOSED;
         cancelTimer();
-        ctx.writeAndFlush(Unpooled.wrappedBuffer(answer)).addListener(ChannelFutureListener.CLOSE);
+        ctx.writeAndFlush(msg(answer)).addListener(ChannelFutureListener.CLOSE);
     }
 
     private void cancelTimer() {
@@ -663,7 +704,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     private void fail(ChannelHandlerContext ctx, int status, String phrase) {
         state = State.CLOSED;
         cancelTimer();
-        ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.error(status, phrase, isTag(), true)))
+        ctx.writeAndFlush(msg(IcapResponses.error(status, phrase, isTag(), true)))
             .addListener(ChannelFutureListener.CLOSE);
     }
 
@@ -687,17 +728,21 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         Flow f = flow == null ? unknownFlow() : flow;
         long bytes = verdict == Verdict.STREAM_ABORTED ? forwardedBytes
             : body == null ? 0 : Math.max(body.totalBytes(), streamedBytes);
+        engine.metrics().transaction(req.method() == IcapRequest.Method.REQMOD ? EngineMetrics.Method.REQMOD
+            : EngineMetrics.Method.RESPMOD, verdict);
         engine.events().emit(new VerdictEvent(UUID.fromString(correlation), Instant.now(),
             req.method() == IcapRequest.Method.REQMOD ? "reqmod" : "respmod",
             f.platform(), f.surface().name().toLowerCase(Locale.ROOT), f.step().name().toLowerCase(Locale.ROOT),
             verdict, reason, counts, bytes, (System.nanoTime() - startNanos) / 1000,
             VerdictEvent.bounded(req.head().first("X-Authenticated-User"), 256),
-            VerdictEvent.bounded(req.head().first("X-Client-IP"), 64), "plain_allowlisted",
-            engine.snapshot().version(), correlation));
+            VerdictEvent.bounded(req.head().first("X-Client-IP"), 64), mutualTls ? "mtls_verified" : "plain_allowlisted",
+            policy == null ? 0 : policy.snapshot().version(), correlation));
     }
 
     private void resetTransaction() {
         cancelTimer();
+        releaseAdmission();
+        policy = null;
         req = null;
         reqHttp = null;
         resHttp = null;
@@ -717,6 +762,11 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         streamFindings = List.of();
         if (state != State.CLOSED) {
             state = State.HEAD;
+            if (engine.draining() && context != null) {
+                // ICAP spec §7: every pooled connection ends at a transaction boundary while draining.
+                state = State.CLOSED;
+                context.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(ChannelFutureListener.CLOSE);
+            }
         }
     }
 
@@ -749,7 +799,35 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     }
 
     private String isTag() {
-        return engine.snapshot().isTag();
+        IcapEngine.Policy p = policy != null ? policy : engine.policy();
+        return p == null ? "\"rw0\"" : p.snapshot().isTag();
+    }
+
+    /** A final ICAP message; while draining it carries Connection: close (ICAP spec §7). */
+    private ByteBuf msg(byte[] message) {
+        return Unpooled.wrappedBuffer(engine.draining() ? IcapResponses.closing(message) : message);
+    }
+
+    /** Captures REQMOD body bytes against the pod-wide budget (PLAT-F1); over budget the transaction gets 503. */
+    private void appendBody(byte[] buf, int off, int n) {
+        if (req.method() == IcapRequest.Method.REQMOD) {
+            long room = Math.max(0, (long) engine.config().maxReqmodBody() - body.length());
+            long keep = Math.min(n, room);
+            if (keep > 0) {
+                if (!engine.admission().reserveBody(keep)) {
+                    throw new IcapProtocolException(503, "body budget exhausted");
+                }
+                reservedBody += keep;
+            }
+        }
+        body.append(buf, off, n);
+    }
+
+    private void releaseAdmission() {
+        engine.admission().exit(ticket);
+        ticket = null;
+        engine.admission().releaseBody(reservedBody);
+        reservedBody = 0;
     }
 
     private static IcapRequest.Method serviceMethod(String path) {
