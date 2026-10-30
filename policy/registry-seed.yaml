@@ -1,0 +1,60 @@
+# Policy registry seed fixture (AGENTS.md section 6, ADR-008 §4). The control plane imports it once, into an empty
+# registry, as version 1 of every rule, active, mode enforce, rollout stage all; its approval is the pull request that
+# changes this file. Every later change is a registry version with two approvals (security_admin and privacy_officer).
+# The values equal the built-in development snapshot (java/policy Snapshots.builtinDevelopment), which
+# RegistrySeedTest checks. Platform rows name vendor-published endpoints only (docs/product/PLATFORM_MATRIX.md §2);
+# never an estate host name.
+fixture: 1
+
+# Every Tier-1 class is fail-closed (SR-DLP-1): an enforce version never allows or warns it and it takes no exception.
+classActions:
+  - class: SECRET
+    action: BLOCK
+  - class: TCKN
+    action: REDACT
+  - class: TR_IBAN
+    action: REDACT
+  - class: PAYMENT_CARD
+    action: REDACT
+
+# The AI-category flow is an enforce entry with fail-closed classes (ADR-010 "fail-closed flow").
+flow:
+  enforceFailClosed: true
+
+platforms:
+  - platform: claude
+    hostSuffixes: [claude.ai, anthropic.com]
+    apiHosts: [api.anthropic.com]
+    loginHosts: []
+  - platform: copilot
+    hostSuffixes: [githubcopilot.com, copilot-proxy.githubusercontent.com]
+    apiHosts: [api.githubcopilot.com, copilot-proxy.githubusercontent.com]
+    loginHosts: []
+  - platform: github
+    hostSuffixes: [github.com]
+    apiHosts: [api.github.com]
+    loginHosts: []
+  - platform: openai
+    hostSuffixes: [chatgpt.com, openai.com]
+    apiHosts: [api.openai.com]
+    loginHosts: [auth.openai.com]
+  - platform: devin
+    hostSuffixes: [devin.ai]
+    apiHosts: [api.devin.ai]
+    loginHosts: []
+  - platform: windsurf
+    hostSuffixes: [windsurf.com, codeium.com]
+    apiHosts: [server.codeium.com]
+    loginHosts: []
+  - platform: gemini
+    hostSuffixes: [gemini.google.com, generativelanguage.googleapis.com, cloudcode-pa.googleapis.com, aiplatform.googleapis.com]
+    apiHosts: [generativelanguage.googleapis.com, cloudcode-pa.googleapis.com, aiplatform.googleapis.com]
+    loginHosts: []
+  - platform: google-auth
+    hostSuffixes: [accounts.google.com, oauth2.googleapis.com]
+    apiHosts: []
+    loginHosts: [accounts.google.com, oauth2.googleapis.com]
+  - platform: microsoft-auth
+    hostSuffixes: [login.microsoftonline.com, login.microsoft.com, login.windows.net, login.live.com]
+    apiHosts: []
+    loginHosts: [login.microsoftonline.com, login.microsoft.com, login.windows.net, login.live.com]

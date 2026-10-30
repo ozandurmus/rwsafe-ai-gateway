@@ -1,15 +1,17 @@
 import { Box, useTheme } from '@mui/material';
 import type { Verdict } from '../api';
-import { GROUP_LABEL, VERDICT_GROUP, VERDICT_LABEL, groupColor } from '../labels';
+import { useI18n } from '../i18n';
+import { VERDICT_GROUP, groupColor, groupLabel, verdictLabel } from '../labels';
 
 /** Status pill: a coloured dot plus the verdict's name, never colour alone. */
 export function VerdictPill({ verdict }: { verdict: Verdict }) {
   const theme = useTheme();
+  const i18n = useI18n();
   const group = VERDICT_GROUP[verdict];
   return (
     <Box
       component="span"
-      title={GROUP_LABEL[group]}
+      title={groupLabel(i18n, group)}
       sx={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -30,7 +32,7 @@ export function VerdictPill({ verdict }: { verdict: Verdict }) {
         aria-hidden
         sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: groupColor(group, theme.palette.mode) }}
       />
-      {VERDICT_LABEL[verdict]}
+      {verdictLabel(i18n, verdict)}
     </Box>
   );
 }

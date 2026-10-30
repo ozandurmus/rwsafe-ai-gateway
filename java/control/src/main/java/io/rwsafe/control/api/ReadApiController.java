@@ -8,8 +8,11 @@ import io.rwsafe.control.api.Views.HealthView;
 import io.rwsafe.control.api.Views.OverviewView;
 import io.rwsafe.control.api.Views.PlatformsView;
 import io.rwsafe.control.api.Views.TrafficView;
+import io.rwsafe.control.config.ControlProperties;
+import io.rwsafe.control.policy.SnapshotSigner;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.persistence.Database;
+import io.rwsafe.persistence.PolicySnapshotStore.IssuedSnapshot;
 import io.rwsafe.persistence.VerdictQueries;
 import io.rwsafe.platform.verdict.Verdict;
 import java.time.Clock;
@@ -17,6 +20,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -37,11 +41,13 @@ public class ReadApiController {
 
     private final Database database;
     private final PrivacyKeys keys;
+    private final SnapshotSigner signer;
     private final Clock clock;
 
-    public ReadApiController(Database database, PrivacyKeys keys) {
+    public ReadApiController(Database database, PrivacyKeys keys, SnapshotSigner signer) {
         this.database = database;
         this.keys = keys;
+        this.signer = signer;
         this.clock = Clock.systemUTC();
     }
 
@@ -112,8 +118,24 @@ public class ReadApiController {
                 keys.maskingAvailable() ? "masked role can be served" : "masked role gets 503"),
             new ComponentView("ingestion", stats.eventsSince() > 0 ? "UP" : "UNKNOWN",
                 stats.eventsSince() + " events in the last 5 minutes"),
-            new ComponentView("dataplane", "UNKNOWN", "snapshot feed and data-plane metrics are not implemented yet"));
+            snapshotFeed(db, now),
+            new ComponentView("dataplane", "UNKNOWN", "data-plane metrics are not implemented yet"));
         return new HealthView(now, components, stats.eventsSince(), stats.totalEvents(), stats.latestReceivedAt());
+    }
+
+    /** The signed snapshot feed: the signing key, and the latest issued version and its age (the contract's 6 h re-sign). */
+    private ComponentView snapshotFeed(boolean db, Instant now) {
+        if (!signer.available()) {
+            return new ComponentView("snapshot-feed", "DOWN", signer.unavailableReason() + "; the feed answers 503");
+        }
+        Optional<IssuedSnapshot> latest = db ? database.policySnapshots().latest() : Optional.empty();
+        if (latest.isEmpty()) {
+            return new ComponentView("snapshot-feed", "UNKNOWN", "no snapshot issued yet");
+        }
+        Duration age = Duration.between(latest.get().issuedAt(), now);
+        boolean fresh = age.compareTo(ControlProperties.Policy.MAX_SNAPSHOT_AGE.plusMinutes(10)) <= 0;
+        return new ComponentView("snapshot-feed", fresh ? "UP" : "DEGRADED", "version " + latest.get().version()
+            + " issued " + age.toMinutes() + " minutes ago, key id " + signer.keyId());
     }
 
     private Instant[] window(Instant from, Instant to) {

@@ -1,6 +1,7 @@
 package io.rwsafe.control.api;
 
 import io.rwsafe.control.config.BodyLimitFilter;
+import io.rwsafe.control.policy.RegistryRefusal;
 import io.rwsafe.control.privacy.MaskingUnavailableException;
 import org.jooq.exception.DataAccessException;
 import org.slf4j.Logger;
@@ -30,6 +31,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler(NotFound.class)
     ResponseEntity<ApiError> notFound(NotFound e) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiError.of(e.reason(), e.getMessage()));
+    }
+
+    @ExceptionHandler(RegistryRefusal.class)
+    ResponseEntity<ApiError> registry(RegistryRefusal e) {
+        return ResponseEntity.status(e.status()).body(ApiError.of(e.reason(), e.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)

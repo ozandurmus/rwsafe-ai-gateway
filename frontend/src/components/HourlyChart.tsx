@@ -1,7 +1,8 @@
 import { Box, Button, Paper, Table, TableBody, TableCell, TableHead, TableRow, Typography, useTheme } from '@mui/material';
 import { useMemo, useState } from 'react';
 import type { Overview, Verdict } from '../api';
-import { GROUP_LABEL, GROUP_ORDER, VERDICT_GROUP, type VerdictGroup, formatCount, formatHour, groupColor } from '../labels';
+import { useI18n } from '../i18n';
+import { GROUP_ORDER, VERDICT_GROUP, type VerdictGroup, groupColor, groupLabel } from '../labels';
 
 interface Bucket {
   hour: string;
@@ -50,6 +51,8 @@ function niceMax(v: number): number {
 /** Events per hour, stacked by verdict group, with a per-column tooltip, a legend and a table view. */
 export function HourlyChart({ overview }: { overview: Overview }) {
   const theme = useTheme();
+  const i18n = useI18n();
+  const { t, fmt } = i18n;
   const mode = theme.palette.mode;
   const data = useMemo(() => buckets(overview), [overview]);
   const [hover, setHover] = useState<number | null>(null);
@@ -68,32 +71,36 @@ export function HourlyChart({ overview }: { overview: Overview }) {
   return (
     <Box>
       <Box display="flex" flexWrap="wrap" alignItems="center" justifyContent="space-between" gap={1} mb={1}>
-        <Box component="ul" aria-label="Legend" sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, listStyle: 'none', m: 0, p: 0 }}>
+        <Box
+          component="ul"
+          aria-label={t('chart.legend')}
+          sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, listStyle: 'none', m: 0, p: 0 }}
+        >
           {GROUP_ORDER.map((g) => (
             <Box component="li" key={g} display="flex" alignItems="center" gap={0.75}>
               <Box aria-hidden sx={{ width: 10, height: 10, borderRadius: '2px', bgcolor: groupColor(g, mode) }} />
               <Typography variant="body2" color="text.secondary">
-                {GROUP_LABEL[g]}
+                {groupLabel(i18n, g)}
               </Typography>
             </Box>
           ))}
         </Box>
-        <Button size="small" onClick={() => setAsTable((t) => !t)}>
-          {asTable ? 'Show chart' : 'Show as table'}
+        <Button size="small" onClick={() => setAsTable((v) => !v)}>
+          {asTable ? t('chart.showChart') : t('chart.showTable')}
         </Button>
       </Box>
       {asTable ? (
         <Box sx={{ maxHeight: 320, overflow: 'auto' }}>
-          <Table size="small" aria-label="Events per hour">
+          <Table size="small" aria-label={t('overview.perHour')}>
             <TableHead>
               <TableRow>
-                <TableCell>Hour (Istanbul)</TableCell>
+                <TableCell>{t('chart.hour')}</TableCell>
                 {GROUP_ORDER.map((g) => (
                   <TableCell key={g} align="right">
-                    {GROUP_LABEL[g]}
+                    {groupLabel(i18n, g)}
                   </TableCell>
                 ))}
-                <TableCell align="right">Total</TableCell>
+                <TableCell align="right">{t('chart.total')}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -101,13 +108,13 @@ export function HourlyChart({ overview }: { overview: Overview }) {
                 .filter((d) => d.total > 0)
                 .map((d) => (
                   <TableRow key={d.hour}>
-                    <TableCell>{formatHour(d.hour)}</TableCell>
+                    <TableCell>{fmt.hour(d.hour)}</TableCell>
                     {GROUP_ORDER.map((g) => (
                       <TableCell key={g} align="right">
-                        {formatCount(d.groups[g])}
+                        {fmt.count(d.groups[g])}
                       </TableCell>
                     ))}
-                    <TableCell align="right">{formatCount(d.total)}</TableCell>
+                    <TableCell align="right">{fmt.count(d.total)}</TableCell>
                   </TableRow>
                 ))}
             </TableBody>
@@ -119,16 +126,16 @@ export function HourlyChart({ overview }: { overview: Overview }) {
             viewBox={`0 0 ${width} ${HEIGHT}`}
             width="100%"
             role="img"
-            aria-label={`Events per hour, ${data.length} hours`}
+            aria-label={t('chart.aria', { count: data.length })}
             style={{ display: 'block' }}
           >
-            {ticks.map((t) => {
-              const y = TOP + plotH - (t / max) * plotH;
+            {ticks.map((tick) => {
+              const y = TOP + plotH - (tick / max) * plotH;
               return (
-                <g key={t}>
+                <g key={tick}>
                   <line x1={LEFT} x2={width - 8} y1={y} y2={y} stroke={theme.palette.divider} strokeWidth={1} />
                   <text x={LEFT - 6} y={y + 4} textAnchor="end" fontSize={11} fill={theme.palette.text.secondary}>
-                    {formatCount(t)}
+                    {fmt.count(tick)}
                   </text>
                 </g>
               );
@@ -162,7 +169,7 @@ export function HourlyChart({ overview }: { overview: Overview }) {
                       fontSize={11}
                       fill={theme.palette.text.secondary}
                     >
-                      {formatHour(d.hour)}
+                      {fmt.hour(d.hour)}
                     </text>
                   )}
                   <rect
@@ -192,25 +199,25 @@ export function HourlyChart({ overview }: { overview: Overview }) {
               }}
             >
               <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                {formatHour(active.hour)}
+                {fmt.hour(active.hour)}
               </Typography>
               {GROUP_ORDER.map((g) => (
                 <Box key={g} display="flex" justifyContent="space-between" gap={2}>
                   <Box display="flex" alignItems="center" gap={0.75}>
                     <Box aria-hidden sx={{ width: 8, height: 8, borderRadius: '2px', bgcolor: groupColor(g, mode) }} />
                     <Typography variant="body2" color="text.secondary">
-                      {GROUP_LABEL[g]}
+                      {groupLabel(i18n, g)}
                     </Typography>
                   </Box>
                   <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums' }}>
-                    {formatCount(active.groups[g])}
+                    {fmt.count(active.groups[g])}
                   </Typography>
                 </Box>
               ))}
               <Box display="flex" justifyContent="space-between" mt={0.5}>
-                <Typography variant="body2">Total</Typography>
+                <Typography variant="body2">{t('chart.total')}</Typography>
                 <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                  {formatCount(active.total)}
+                  {fmt.count(active.total)}
                 </Typography>
               </Box>
             </Paper>

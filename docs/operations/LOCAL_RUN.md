@@ -60,10 +60,14 @@ On first start the runner generates, under `java/control/build/dev/` (ignored by
 | `estate-dictionary.txt` | a development estate dictionary with one synthetic term |
 | `credentials.txt` | the synthetic directory users and their passwords, regenerated at every start |
 | `break-glass-initial-password` | the break-glass account's initial password, written once when the account is created |
+| `snapshot-signing.key` | a development Ed25519 key (PKCS#8 PEM) that signs the policy snapshot, key id `dev-snapshot` |
+| `snapshot-public-keys/dev-snapshot.pem` | its public half (X.509 SubjectPublicKeyInfo PEM) for a local data plane |
 
-It also starts an in-memory LDAP directory on loopback with three synthetic users, one per role: `synthetic-admin`
-(`security_admin`), `synthetic-viewer` (`viewer`) and `synthetic-aiview` (`replay_viewer`, the masked session). The
-control plane listens on `127.0.0.1:8080` (admin API) and `127.0.0.1:8092` (the data plane's ingestion route only), and
+It also starts an in-memory LDAP directory on loopback with four synthetic users, one per role: `synthetic-admin`
+(`security_admin`), `synthetic-officer` (`privacy_officer`), `synthetic-viewer` (`viewer`) and `synthetic-aiview`
+(`replay_viewer`, the masked session). The control plane listens on `127.0.0.1:8080` (admin API), `127.0.0.1:8091` (the
+signed policy snapshot only) and `127.0.0.1:8092` (the data plane's ingestion route only); each internal route answers
+404 on every other port. An empty policy registry is seeded from `policy/registry-seed.yaml`, and the runner
 fills an empty database with 6 000 synthetic verdict events through the real ingestion path (validation,
 pseudonymisation, subnet masking). Environment variables: `RWSAFE_SAMPLE_EVENTS` (default 6000; 0 for none) and
 `RWSAFE_DEV_PG_PORT` (default 54329). To start again from an empty database, stop the runner and delete
@@ -78,8 +82,31 @@ cd frontend && npm ci && npm run dev
 Open `http://127.0.0.1:5173` and sign in with a user from `java/control/build/dev/credentials.txt`. The Vite server
 proxies `/api` to the control plane, so the session and CSRF cookies are same-origin as behind the ingress. Screens:
 Overview (headline counts, events per hour by verdict group, verdict mix, per-platform counts, DLP finding classes),
-Traffic (filters for window, platform, verdict, service and a `USR-` pseudonym; click a row for the event), Event detail
-and Health. Signed in as `synthetic-aiview`, every page carries the masked-view chip and passes the masking funnel.
+Traffic (filters for window, platform, verdict, service and a `USR-` pseudonym; click a row for the event), Event detail,
+Policies, Platforms and Health. The UI is Turkish by default; the user menu switches to English and remembers the choice
+for that user in this browser (PO decision Q-38). Signed in as `synthetic-aiview`, every page carries the masked-view chip
+and passes the masking funnel.
+
+The policy registry by hand: sign in as `synthetic-admin`, open Policies, select a class (for example TCKN), submit a new
+version (a fail-closed class is never offered Allow or Warn) and approve it as security administrator; then sign in as
+`synthetic-officer` in another browser profile and give the privacy officer approval. The second approval activates the
+version; with rollout stage `all` and mode `enforce` the next snapshot carries it (format 1 has no group targeting, so a
+staged or monitor version is shown, approved and simulated but not sent). The Simulate button counts how the stored
+events carrying the class would change under a proposed action.
+
+The signed snapshot, as the data plane pulls it:
+
+```bash
+curl -si http://127.0.0.1:8091/internal/v1/policy/snapshot
+curl -si -H 'If-None-Match: "1"' http://127.0.0.1:8091/internal/v1/policy/snapshot
+```
+
+The answer carries `ETag: "<version>"`, `X-RWSAFE-Key-Id: dev-snapshot` and `X-RWSAFE-Signature: ed25519:<base64>` over the
+exact body bytes; the second call is 304 while the version is unchanged. A new version is issued when an approval changes
+the active rules and, with no change, at least every 6 hours (a scheduled re-sign, so the data plane never reaches its
+24-hour staleness limit); every issued snapshot is recorded in `policy_snapshot` and ledgered. A local data plane verifies
+it with `RWSAFE_SNAPSHOT_PUBLIC_KEYS=java/control/build/dev/snapshot-public-keys/dev-snapshot.pem` and
+`RWSAFE_SNAPSHOT_URL=http://127.0.0.1:8091/internal/v1/policy/snapshot` (POLICY_SNAPSHOT_CONTRACT).
 
 Terminal 3 (optional), real verdicts from the ICAP engine into the same UI:
 
@@ -104,6 +131,13 @@ from a config tree (`RWSAFE_SECRETS_DIR`, default `/run/secrets/rwsafe/`, file `
 `RWSAFE_BREAK_GLASS_ENABLED=true` with `RWSAFE_BREAK_GLASS_PASSWORD_FILE` creates the break-glass account at first start.
 Behind an ingress, `RWSAFE_FORWARD_HEADERS=native` with `RWSAFE_TRUSTED_PROXIES` (a regular expression naming the ingress
 addresses only) gives the login throttle the real client address; both are off by default.
+The policy registry and snapshot read `RWSAFE_POLICY_SEED_FILE` (the committed `policy/registry-seed.yaml`, imported
+once into an empty registry; without it no snapshot can be issued and the feed answers 503), `RWSAFE_SNAPSHOT_SIGNING_KEY`
+(the Ed25519 private key file, PKCS#8 PEM, from a Secret), `RWSAFE_SNAPSHOT_KEY_ID` (the id the data plane knows the public
+key by; when unset, the key file's name without its extension), `RWSAFE_SNAPSHOT_REFRESH` (re-sign interval, default and
+maximum `PT6H`), `RWSAFE_SNAPSHOT_FEED_PORT` and `RWSAFE_SNAPSHOT_FEED_BIND` (default `127.0.0.1:8091`). Without the
+signing key the feed answers 503 `SNAPSHOT_SIGNING_UNAVAILABLE`, never an unsigned snapshot. Approvers come from the
+directory: bind a group to `privacy_officer` as to any other role.
 Every secret is a mounted file; none is a property value. Without the key file ingestion answers 503 and stores nothing;
 without the dictionary the masked role gets 503.
 

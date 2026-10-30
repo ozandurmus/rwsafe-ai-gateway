@@ -64,6 +64,85 @@ export interface Health {
   latestEventAt: string | null;
 }
 
+// Policy registry (AGENTS.md section 6): vocabulary stays the server's English identifiers.
+export type RuleKind = 'class_action' | 'platform' | 'flow';
+export type PolicyAction = 'ALLOW' | 'WARN' | 'REDACT' | 'BLOCK';
+export type PolicyMode = 'monitor' | 'enforce';
+export type RolloutStage = 'pilot' | 'pct25' | 'pct50' | 'all';
+export type VersionStatus = 'pending' | 'active' | 'superseded';
+export type ApproverRole = 'security_admin' | 'privacy_officer';
+
+export interface RuleVersion {
+  ruleId: string;
+  version: number;
+  action: PolicyAction | null;
+  enforceFailClosed: boolean | null;
+  hostSuffixes: string[] | null;
+  apiHosts: string[] | null;
+  loginHosts: string[] | null;
+  mode: PolicyMode;
+  rolloutStage: RolloutStage;
+  status: VersionStatus;
+  source: 'seed' | 'registry';
+  author: string;
+  reasonCode: string;
+  createdAt: string;
+  activatedAt: string | null;
+  supersededAt: string | null;
+  approvals: { role: ApproverRole; approver: string; approvedAt: string }[];
+  inSnapshot: boolean;
+}
+
+export interface Rule {
+  ruleId: string;
+  kind: RuleKind;
+  subject: string;
+  failClosed: boolean;
+  versions: RuleVersion[];
+}
+
+export interface Registry {
+  rules: Rule[];
+  snapshot: {
+    version: number;
+    id: string;
+    issuedAt: string;
+    documentSha256: string;
+    ruleVersions: string[];
+    approvers: string[];
+    keyId: string | null;
+  } | null;
+  failClosedClasses: string[];
+  actions: PolicyAction[];
+  modes: PolicyMode[];
+  stages: RolloutStage[];
+}
+
+export interface DraftRequest {
+  action?: PolicyAction;
+  enforceFailClosed?: boolean;
+  hostSuffixes?: string[];
+  apiHosts?: string[];
+  loginHosts?: string[];
+  mode: PolicyMode;
+  rolloutStage: RolloutStage;
+  reasonCode: string;
+}
+
+export interface Simulation {
+  ruleId: string;
+  dataClass: string;
+  currentAction: PolicyAction | null;
+  proposedAction: PolicyAction;
+  from: string;
+  to: string;
+  eventsInWindow: number;
+  eventsWithClass: number;
+  eventsChanged: number;
+  eventsNotReevaluated: number;
+  transitions: { from: Verdict; to: Verdict; events: number }[];
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -167,4 +246,15 @@ export const api = {
   platforms: (from: string, to: string) =>
     request<{ platforms: string[] }>('GET', `/api/v1/platforms${query({ from, to })}`),
   health: () => request<Health>('GET', '/api/v1/health'),
+  policyRules: () => request<Registry>('GET', '/api/v1/policy/rules'),
+  draftVersion: (ruleId: string, body: DraftRequest) =>
+    request<RuleVersion>('POST', `/api/v1/policy/rules/${encodeURIComponent(ruleId)}/versions`, body),
+  approve: (ruleId: string, version: number, role: ApproverRole) =>
+    request<RuleVersion>(
+      'POST',
+      `/api/v1/policy/rules/${encodeURIComponent(ruleId)}/versions/${version}/approvals`,
+      { role },
+    ),
+  simulate: (ruleId: string, action: PolicyAction) =>
+    request<Simulation>('GET', `/api/v1/policy/simulation${query({ ruleId, action })}`),
 };

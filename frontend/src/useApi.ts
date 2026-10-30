@@ -23,10 +23,11 @@ export function useApi<T>(load: () => Promise<T>, key: string): { data: T | null
 
 export type WindowId = '1h' | '24h' | '7d';
 
-export const WINDOWS: { id: WindowId; label: string; hours: number }[] = [
-  { id: '1h', label: 'Last hour', hours: 1 },
-  { id: '24h', label: 'Last 24 hours', hours: 24 },
-  { id: '7d', label: 'Last 7 days', hours: 24 * 7 },
+/** The label of a window is the catalogue key `window.<id>`. */
+export const WINDOWS: { id: WindowId; hours: number }[] = [
+  { id: '1h', hours: 1 },
+  { id: '24h', hours: 24 },
+  { id: '7d', hours: 24 * 7 },
 ];
 
 /** The window as ISO instants, rounded to the minute so repeated renders ask the same question. */

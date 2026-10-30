@@ -66,6 +66,15 @@ rwsafe:
   capture-sink:
     port: ${RWSAFE_CAPTURE_SINK_PORT:8092}
     bind-address: ${RWSAFE_CAPTURE_SINK_BIND:127.0.0.1}
+  snapshot-feed:
+    port: ${RWSAFE_SNAPSHOT_FEED_PORT:8091}
+    bind-address: ${RWSAFE_SNAPSHOT_FEED_BIND:127.0.0.1}
+  policy:
+    seed-file: ${RWSAFE_POLICY_SEED_FILE:/etc/rwsafe/policy/registry-seed.yaml}
+    signing-key-file: ${RWSAFE_SNAPSHOT_SIGNING_KEY:/run/secrets/rwsafe-snapshot-signing/private-key}
+    signing-key-id: ${RWSAFE_SNAPSHOT_KEY_ID:}
+    snapshot-refresh: ${RWSAFE_SNAPSHOT_REFRESH:PT6H}
+    simulation-window: P7D
   privacy:
     hmac-key-file: ${RWSAFE_PRIVACY_HMAC_KEY_FILE:/run/secrets/rwsafe-privacy-hmac-key/key}
     estate-dictionary-file: ${RWSAFE_ESTATE_DICTIONARY_FILE:/etc/rwsafe/estate-dictionary.txt}

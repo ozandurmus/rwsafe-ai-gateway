@@ -54,6 +54,14 @@ public final class Database {
         return new LoginRecordStore(dsl);
     }
 
+    public PolicyRegistryStore policyRegistry() {
+        return new PolicyRegistryStore(dsl);
+    }
+
+    public PolicySnapshotStore policySnapshots() {
+        return new PolicySnapshotStore(dsl, policyRegistry());
+    }
+
     /** True when a trivial query answers (health screen). */
     public boolean reachable() {
         try {

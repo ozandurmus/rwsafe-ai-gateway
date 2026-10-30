@@ -53,6 +53,55 @@ final class Schema {
     static final Field<String> LOGIN_SOURCE = DSL.field(DSL.name("login_record", "source"), SQLDataType.CLOB);
     static final Field<Boolean> LOGIN_MASKED = DSL.field(DSL.name("login_record", "masked"), SQLDataType.BOOLEAN);
 
+    static final Table<Record> RULE_VERSION = DSL.table(DSL.name("policy_rule_version"));
+    static final Field<String> RV_RULE_ID = DSL.field(DSL.name("policy_rule_version", "rule_id"), SQLDataType.CLOB);
+    static final Field<Integer> RV_VERSION = DSL.field(DSL.name("policy_rule_version", "version"), SQLDataType.INTEGER);
+    static final Field<String> RV_KIND = DSL.field(DSL.name("policy_rule_version", "kind"), SQLDataType.CLOB);
+    static final Field<String> RV_DATA_CLASS = DSL.field(DSL.name("policy_rule_version", "data_class"), SQLDataType.CLOB);
+    static final Field<String> RV_ACTION = DSL.field(DSL.name("policy_rule_version", "action"), SQLDataType.CLOB);
+    static final Field<String> RV_PLATFORM = DSL.field(DSL.name("policy_rule_version", "platform_id"), SQLDataType.CLOB);
+    static final Field<String[]> RV_HOST_SUFFIXES = DSL.field(DSL.name("policy_rule_version", "host_suffixes"),
+        SQLDataType.CLOB.array());
+    static final Field<String[]> RV_API_HOSTS = DSL.field(DSL.name("policy_rule_version", "api_hosts"),
+        SQLDataType.CLOB.array());
+    static final Field<String[]> RV_LOGIN_HOSTS = DSL.field(DSL.name("policy_rule_version", "login_hosts"),
+        SQLDataType.CLOB.array());
+    static final Field<Boolean> RV_ENFORCE_FAIL_CLOSED = DSL.field(DSL.name("policy_rule_version", "enforce_fail_closed"),
+        SQLDataType.BOOLEAN);
+    static final Field<String> RV_MODE = DSL.field(DSL.name("policy_rule_version", "mode"), SQLDataType.CLOB);
+    static final Field<String> RV_STAGE = DSL.field(DSL.name("policy_rule_version", "rollout_stage"), SQLDataType.CLOB);
+    static final Field<String> RV_STATUS = DSL.field(DSL.name("policy_rule_version", "status"), SQLDataType.CLOB);
+    static final Field<String> RV_SOURCE = DSL.field(DSL.name("policy_rule_version", "source"), SQLDataType.CLOB);
+    static final Field<String> RV_AUTHOR = DSL.field(DSL.name("policy_rule_version", "author_fingerprint"), SQLDataType.CLOB);
+    static final Field<String> RV_REASON = DSL.field(DSL.name("policy_rule_version", "reason_code"), SQLDataType.CLOB);
+    static final Field<Instant> RV_CREATED_AT = DSL.field(DSL.name("policy_rule_version", "created_at"),
+        SQLDataType.INSTANT);
+    static final Field<Instant> RV_ACTIVATED_AT = DSL.field(DSL.name("policy_rule_version", "activated_at"),
+        SQLDataType.INSTANT);
+    static final Field<Instant> RV_SUPERSEDED_AT = DSL.field(DSL.name("policy_rule_version", "superseded_at"),
+        SQLDataType.INSTANT);
+
+    static final Table<Record> APPROVAL = DSL.table(DSL.name("policy_approval"));
+    static final Field<String> AP_RULE_ID = DSL.field(DSL.name("policy_approval", "rule_id"), SQLDataType.CLOB);
+    static final Field<Integer> AP_VERSION = DSL.field(DSL.name("policy_approval", "version"), SQLDataType.INTEGER);
+    static final Field<String> AP_ROLE = DSL.field(DSL.name("policy_approval", "approver_role"), SQLDataType.CLOB);
+    static final Field<String> AP_APPROVER = DSL.field(DSL.name("policy_approval", "approver_fingerprint"),
+        SQLDataType.CLOB);
+    static final Field<Instant> AP_APPROVED_AT = DSL.field(DSL.name("policy_approval", "approved_at"), SQLDataType.INSTANT);
+
+    static final Table<Record> SNAPSHOT = DSL.table(DSL.name("policy_snapshot"));
+    static final Field<Long> SN_VERSION = DSL.field(DSL.name("policy_snapshot", "version"), SQLDataType.BIGINT);
+    static final Field<String> SN_ID = DSL.field(DSL.name("policy_snapshot", "snapshot_id"), SQLDataType.CLOB);
+    static final Field<Instant> SN_ISSUED_AT = DSL.field(DSL.name("policy_snapshot", "issued_at"), SQLDataType.INSTANT);
+    static final Field<String> SN_RULES_DIGEST = DSL.field(DSL.name("policy_snapshot", "rules_digest"), SQLDataType.CLOB);
+    static final Field<String> SN_DOCUMENT_SHA256 = DSL.field(DSL.name("policy_snapshot", "document_sha256"),
+        SQLDataType.CLOB);
+    static final Field<String> SN_DOCUMENT = DSL.field(DSL.name("policy_snapshot", "document"), SQLDataType.CLOB);
+    static final Field<String[]> SN_RULE_VERSIONS = DSL.field(DSL.name("policy_snapshot", "rule_versions"),
+        SQLDataType.CLOB.array());
+    static final Field<String[]> SN_APPROVERS = DSL.field(DSL.name("policy_snapshot", "approvers"),
+        SQLDataType.CLOB.array());
+
     static final Table<Record> AUDIT_EVENT = DSL.table(DSL.name("audit_event"));
     static final Field<String> AUDIT_ACTOR = DSL.field(DSL.name("audit_event", "actor_fingerprint"), SQLDataType.CLOB);
     static final Field<String> AUDIT_ACTION = DSL.field(DSL.name("audit_event", "action_id"), SQLDataType.CLOB);

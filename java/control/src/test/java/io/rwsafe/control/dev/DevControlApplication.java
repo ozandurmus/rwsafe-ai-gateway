@@ -6,6 +6,10 @@ import com.unboundid.ldap.listener.InMemoryListenerConfig;
 import com.unboundid.ldap.sdk.Attribute;
 import com.unboundid.ldap.sdk.Entry;
 import io.rwsafe.control.ControlApplication;
+import io.rwsafe.control.support.ControlTestEnvironment;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.util.Base64;
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
 import java.io.IOException;
 import java.net.InetAddress;
@@ -35,8 +39,11 @@ public final class DevControlApplication {
     private record DevUser(String login, String role) {
     }
 
+    static final String DEV_SNAPSHOT_KEY_ID = "dev-snapshot";
+
     private static final List<DevUser> USERS = List.of(
         new DevUser("synthetic-admin", "security_admin"),
+        new DevUser("synthetic-officer", "privacy_officer"),
         new DevUser("synthetic-viewer", "viewer"),
         new DevUser("synthetic-aiview", "replay_viewer"));
 
@@ -56,6 +63,19 @@ public final class DevControlApplication {
         if (!Files.exists(dictionary)) {
             Files.writeString(dictionary, "# Development estate dictionary: synthetic terms only, one per line.\n"
                 + "synthetic-estate-term\n");
+        }
+        // The snapshot signing key (POLICY_SNAPSHOT_CONTRACT "Keys"): generated on first start, owner-only, never
+        // committed; its public half is written as <key id>.pem for a local data plane (RWSAFE_SNAPSHOT_PUBLIC_KEYS).
+        Path signingKey = dir.resolve("snapshot-signing.key");
+        Path publicKeys = dir.resolve("snapshot-public-keys");
+        if (!Files.exists(signingKey)) {
+            KeyPair keys = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+            ownerOnly(signingKey, ControlTestEnvironment.pem(keys.getPrivate().getEncoded())
+                .getBytes(StandardCharsets.US_ASCII));
+            Files.createDirectories(publicKeys);
+            String spki = "-----BEGIN PUBLIC KEY-----\n" + Base64.getMimeEncoder(64, new byte[] {'\n'})
+                .encodeToString(keys.getPublic().getEncoded()) + "\n-----END PUBLIC KEY-----\n";
+            Files.writeString(publicKeys.resolve(DEV_SNAPSHOT_KEY_ID + ".pem"), spki);
         }
         int pgPort = Integer.parseInt(env("RWSAFE_DEV_PG_PORT", "54329"));
         EmbeddedPostgres postgres = EmbeddedPostgres.builder()
@@ -93,6 +113,9 @@ public final class DevControlApplication {
             set("rwsafe.identity.ldap.group-roles[cn=rwsafe-" + u.role() + "," + GROUPS + "]", u.role());
         }
         set("rwsafe.sample.events", env("RWSAFE_SAMPLE_EVENTS", "6000"));
+        set("rwsafe.policy.seed-file", ControlTestEnvironment.seedFixture().toString());
+        set("rwsafe.policy.signing-key-file", signingKey.toString());
+        set("rwsafe.policy.signing-key-id", DEV_SNAPSHOT_KEY_ID);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             ldap.shutDown(true);
