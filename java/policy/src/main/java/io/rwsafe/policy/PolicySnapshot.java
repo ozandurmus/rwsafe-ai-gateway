@@ -21,6 +21,7 @@ public final class PolicySnapshot {
     private final boolean enforceFailClosed;
     private final List<PlatformRule> platforms;
     private final Instant issuedAt;
+    private final List<ScopedRule> scopedRules;
 
     public PolicySnapshot(long version, String id, Map<DataClass, Action> classActions, boolean enforceFailClosed,
                           List<PlatformRule> platforms) {
@@ -30,6 +31,15 @@ public final class PolicySnapshot {
     /** @param issuedAt when the control plane signed it; null for the built-in development snapshot (never stale) */
     public PolicySnapshot(long version, String id, Map<DataClass, Action> classActions, boolean enforceFailClosed,
                           List<PlatformRule> platforms, Instant issuedAt) {
+        this(version, id, classActions, enforceFailClosed, platforms, issuedAt, List.of());
+    }
+
+    /**
+     * Format 2 (POLICY_SNAPSHOT_CONTRACT.md): {@code classActions} is the {@code ANY} scope; {@code scopedRules} are the
+     * group-scoped rules, resolved per transaction by {@link PolicyEvaluator#resolve}.
+     */
+    public PolicySnapshot(long version, String id, Map<DataClass, Action> classActions, boolean enforceFailClosed,
+                          List<PlatformRule> platforms, Instant issuedAt, List<ScopedRule> scopedRules) {
         if (version < 1 || id == null || id.isBlank()) {
             throw new IllegalArgumentException("a snapshot needs a positive version and an id");
         }
@@ -42,6 +52,7 @@ public final class PolicySnapshot {
         this.enforceFailClosed = enforceFailClosed;
         this.platforms = List.copyOf(platforms);
         this.issuedAt = issuedAt;
+        this.scopedRules = List.copyOf(scopedRules);
     }
 
     public long version() {
@@ -52,7 +63,10 @@ public final class PolicySnapshot {
         return id;
     }
 
-    /** The action for a class; a class the snapshot does not name blocks (UNKNOWN fails closed, AGENTS.md section 6). */
+    /**
+     * The {@code ANY}-scope action for a class; a class the snapshot does not name blocks (UNKNOWN fails closed, AGENTS.md
+     * section 6). A transaction decides with {@link PolicyEvaluator#resolve}, which adds the scoped rules.
+     */
     public Action actionFor(DataClass dataClass) {
         return classActions.get(dataClass);
     }
@@ -70,6 +84,11 @@ public final class PolicySnapshot {
     /** Null for the built-in development snapshot. */
     public Instant issuedAt() {
         return issuedAt;
+    }
+
+    /** Group-scoped rules (format 2), in snapshot order; empty for a format 1 snapshot. */
+    public List<ScopedRule> scopedRules() {
+        return scopedRules;
     }
 
     public List<PlatformRule> platforms() {

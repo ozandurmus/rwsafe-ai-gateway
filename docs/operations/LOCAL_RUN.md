@@ -41,6 +41,27 @@ at runtime and never written to disk.
 
 Any ICAP client works as well, for example `c-icap-client` against `icap://127.0.0.1:1344/reqmod-ai`.
 
+### Scoped rules (snapshot format 2)
+
+A format 2 snapshot adds group-scoped rules on top of the `ANY` class actions (POLICY_SNAPSHOT_CONTRACT.md, PO decision
+Q-39). The engine reads the proxy's `X-Authenticated-Groups` claim (comma-separated, trimmed, case-insensitive; a
+base64-encoded value is decoded; the estate proxy's exact format is UNVERIFIED) and trusts it only on the Secure ICAP
+listener. On plain ICAP, or with the header missing or unreadable, each class takes the strictest of `ANY` and every
+enforce scoped rule. The verdict event names the rules (`appliedRuleIds`, `monitorRuleIds`), never the groups.
+
+The quickest local check is the synthetic end-to-end suite, which runs one engine with a stricter, a looser and a monitor
+rule over both listeners:
+
+```bash
+./java/gradlew -p java :dataplane:test --tests '*ScopedPolicyEndToEndTest' --tests '*GroupClaimTest'
+```
+
+By hand: the built-in development snapshot has no scoped rules, so point the engine at a control plane that issues
+format 2 (`RWSAFE_SNAPSHOT_URL`, `RWSAFE_SNAPSHOT_PUBLIC_KEYS`), approve a group-scoped version there, and send a REQMOD
+with `-x "X-Authenticated-Groups: <synthetic group>"` from `c-icap-client`. On port 1344 a stricter group rule applies to
+every user and a looser one has no effect; group selection needs the Secure ICAP listener (`RWSAFE_TLS_*`) and a client
+that presents a certificate issued by `RWSAFE_TLS_CLIENT_CA`.
+
 ## Control plane and admin UI
 
 Requirements: JDK 21 and Node.js 22.12 or later. No container runtime is needed: the development runner starts an
@@ -143,6 +164,5 @@ without the dictionary the masked role gets 503.
 
 ## What the engine does not do yet
 
-Decompression and base64 layer decoding, the file pipeline, login-step tenant rules, shape fingerprints per flow, and
-group claims selecting policy on Secure ICAP connections. Each is a row of ICAP spec §2 to §5 that a later slice
-implements.
+Decompression and base64 layer decoding, the file pipeline, login-step tenant rules and shape fingerprints per flow.
+Each is a row of ICAP spec §2 to §5 that a later slice implements.

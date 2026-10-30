@@ -297,6 +297,6 @@ class Pr14ReviewTest {
 
     private static VerdictEvent event(String correlation) {
         return new VerdictEvent(UUID.randomUUID(), Instant.now(), "reqmod", "claude", "api", "chat", Verdict.ALLOW, null,
-            Map.of(), 10, 5, null, null, "plain_allowlisted", 1, correlation);
+            Map.of(), 10, 5, null, null, "plain_allowlisted", 1, correlation, List.of(), List.of());
     }
 }

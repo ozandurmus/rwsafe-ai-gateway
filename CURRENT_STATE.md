@@ -153,10 +153,24 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
 - Local run: `docs/operations/LOCAL_RUN.md` "Control plane and admin UI" (dev signing key and its public key for a local
   data plane, the snapshot feed with curl, the two-approval walk-through).
 
+## Done (scoped rules, data plane: branch `feature/scoped-policy-dataplane`, not yet merged)
+
+- Snapshot format 2 (POLICY_SNAPSHOT_CONTRACT.md, PO decision Q-39) in `java/policy`: `SnapshotCodec` reads formats 1
+  and 2 and refuses a scoped rule outside the contract (`SCOPE_FIELD`, `SCOPE_DUPLICATE_ID`, `SCOPE_GROUPS`,
+  `SCOPE_MODE`, `SCOPE_TOO_MANY`, and `FAIL_CLOSED_WEAKENED` in any scope and mode); `PolicyEvaluator.resolve` applies the
+  four evaluation steps (ANY baseline; trusted claim: matching enforce rules replace ANY, strictest wins; no trusted
+  claim: strictest of ANY and every enforce rule; monitor rules reported, never applied).
+- Data plane: `X-Authenticated-Groups` parsed per transaction (comma list or base64, format UNVERIFIED; anything
+  unreadable is no claim) and trusted only on the mutual-TLS listener; verdict events carry `appliedRuleIds` and
+  `monitorRuleIds` (rule ids only, at most 16 each, written only when non-empty). Synthetic end-to-end tests cover plain
+  and Secure ICAP; `docs/operations/LOCAL_RUN.md` "Scoped rules".
+- Open: the control plane's ingestion must accept the two new event fields before a scoped rule takes part in a verdict
+  (it refuses unknown fields today).
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
-fingerprints, group claims on Secure ICAP (`docs/operations/LOCAL_RUN.md` lists them). Slice 2 of the data plane (pull
+fingerprints (`docs/operations/LOCAL_RUN.md` lists them). Slice 2 of the data plane (pull
 request 14) added the signed snapshot pull, Secure ICAP with a required client certificate, per-identity and pod-wide
 admission, the body budget, the drain window, the verdict spool with backpressure and fixed-label metrics.
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
