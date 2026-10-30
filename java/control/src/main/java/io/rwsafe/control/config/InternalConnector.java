@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import org.apache.catalina.LifecycleState;
 import org.apache.catalina.connector.Connector;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.tomcat.servlet.TomcatServletWebServerFactory;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
@@ -16,9 +17,10 @@ import org.springframework.core.Ordered;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Two more Tomcat connectors for the data plane's internal routes (PORTS_AND_RESOURCES): the capture sink (8092) serves
- * the ingestion route ({@code /internal/v1/verdict-events}) and the snapshot feed (8091) serves the policy snapshot
- * ({@code /internal/v1/policy/**}, POLICY_SNAPSHOT_CONTRACT). Each internal route answers only on its own connector and
+ * Three more Tomcat connectors (PORTS_AND_RESOURCES §3): the capture sink (8092) serves the ingestion route
+ * ({@code /internal/v1/verdict-events}), the snapshot feed (8091) serves the policy snapshot
+ * ({@code /internal/v1/policy/**}, POLICY_SNAPSHOT_CONTRACT), and the metrics listener (9400) serves only
+ * {@code GET /metrics} (Prometheus text, fixed labels only). Each internal route answers only on its own connector and
  * the admin routes only on the admin port: everything else is 404, before Spring Security runs. An internal body must
  * declare its length; {@link BodyLimitFilter} bounds it to {@link #MAX_BODY_BYTES} as it is read.
  */
@@ -28,13 +30,25 @@ public class InternalConnector {
     public static final String INTERNAL_PREFIX = "/internal/";
     public static final String SNAPSHOT_PREFIX = "/internal/v1/policy/";
     public static final long MAX_BODY_BYTES = 2L * 1024 * 1024;
+    public static final String METRICS_PATH = "/metrics";
 
     private final Connector captureSink = new Connector(TomcatServletWebServerFactory.DEFAULT_PROTOCOL);
     private final Connector snapshotFeed = new Connector(TomcatServletWebServerFactory.DEFAULT_PROTOCOL);
+    private final Connector metrics = new Connector(TomcatServletWebServerFactory.DEFAULT_PROTOCOL);
 
+    /**
+     * The metrics listener is {@code rwsafe.metrics.port} / {@code rwsafe.metrics.bind-address} (RWSAFE_METRICS_PORT,
+     * RWSAFE_METRICS_BIND; loopback 9400 by default, the pod address in the deploy).
+     */
     @Bean
-    WebServerFactoryCustomizer<TomcatServletWebServerFactory> internalConnectorCustomizer(ControlProperties properties) {
+    WebServerFactoryCustomizer<TomcatServletWebServerFactory> internalConnectorCustomizer(ControlProperties properties,
+            @Value("${rwsafe.metrics.port:9400}") int metricsPort,
+            @Value("${rwsafe.metrics.bind-address:127.0.0.1}") String metricsBind) {
         return factory -> {
+            metrics.setPort(metricsPort);
+            metrics.setProperty("address", metricsBind);
+            metrics.setMaxPostSize(0);
+            factory.addAdditionalConnectors(metrics);
             captureSink.setPort(properties.captureSink().port());
             captureSink.setProperty("address", properties.captureSink().bindAddress());
             captureSink.setMaxPostSize(0);
@@ -55,29 +69,42 @@ public class InternalConnector {
         return snapshotFeed.getLocalPort();
     }
 
+    /** The metrics listener's bound port. */
+    public int metricsPort() {
+        return metrics.getLocalPort();
+    }
+
     /**
-     * True when both internal listeners are bound and started (the readiness endpoint; the admin listener answers the
-     * probe itself, and the migrations ran before the context, and so any listener, came up).
+     * True when the three additional listeners (capture sink, snapshot feed, metrics) are bound and started (the
+     * readiness endpoint; the admin listener answers the probe itself, and the migrations ran before the context, and so
+     * any listener, came up). PR 27 review D-04: the metrics listener counts too.
      */
     public boolean listening() {
-        return started(captureSink) && started(snapshotFeed);
+        return started(captureSink) && started(snapshotFeed) && started(metrics);
     }
 
     private static boolean started(Connector connector) {
         return connector.getState() == LifecycleState.STARTED && connector.getLocalPort() > 0;
     }
 
-    /** True when {@code uri} may be served on {@code localPort}. */
-    boolean routeAllowed(String uri, int localPort) {
+    /**
+     * True when {@code method} {@code uri} may be served on {@code localPort}. The metrics listener serves
+     * {@code GET /metrics} and nothing else (PR 27 review D-04).
+     */
+    boolean routeAllowed(String method, String uri, int localPort) {
         boolean internalRoute = uri.startsWith(INTERNAL_PREFIX);
         boolean snapshotRoute = uri.startsWith(SNAPSHOT_PREFIX);
+        boolean metricsRoute = uri.equals(METRICS_PATH);
+        if (localPort == metricsPort()) {
+            return metricsRoute && "GET".equals(method);
+        }
         if (localPort == snapshotPort()) {
             return snapshotRoute;
         }
         if (localPort == port()) {
             return internalRoute && !snapshotRoute;
         }
-        return !internalRoute;
+        return !internalRoute && !metricsRoute;
     }
 
     @Bean
@@ -86,7 +113,7 @@ public class InternalConnector {
             @Override
             protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
                 throws ServletException, IOException {
-                if (!routeAllowed(request.getRequestURI(), request.getLocalPort())) {
+                if (!routeAllowed(request.getMethod(), request.getRequestURI(), request.getLocalPort())) {
                     response.setStatus(HttpServletResponse.SC_NOT_FOUND);
                     return;
                 }

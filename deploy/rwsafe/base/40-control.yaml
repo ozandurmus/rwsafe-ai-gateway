@@ -3,8 +3,9 @@
 #        with the estate host names, ADR-003)
 #   8091 the signed policy snapshot feed for the data plane (POLICY_SNAPSHOT_CONTRACT.md)
 #   8092 verdict-event ingestion from the data plane
+#   9400 GET /metrics (Prometheus text) for the metrics scraper (k3s overlay NetworkPolicy)
 # Recreate (PORTS_AND_RESOURCES §4.3): one replica that runs migrations at start; the data plane keeps serving from its
-# snapshot during the gap. Ready (GET /readyz) only when all three listeners are up, which is after Flyway ran (PR 18 review
+# snapshot during the gap. Ready (GET /readyz) only when all four listeners are up, which is after Flyway ran (PR 18 review
 # D-01). The preStop sleep lets in-flight verdict-event batches on 8092 finish and the endpoint removal propagate before
 # SIGTERM (D-02); the runbook rolls this Deployment, and waits for it, before the data plane (§7.4). Secrets are mounted
 # files only (AGENTS.md 4.2, CORPORATE_TECHNOLOGY_STACK §2): the two database passwords (ADR-002: rwsafe_app for the
@@ -69,6 +70,36 @@ spec:
               valueFrom: { configMapKeyRef: { name: rwsafe-estate, key: ldap-user-search-base } }
             - name: RWSAFE_TRUSTED_PROXIES
               valueFrom: { configMapKeyRef: { name: rwsafe-estate, key: trusted-proxies } }
+            # SIEM export (LOCAL_RUN.md): from the uncommitted ConfigMap `rwsafe-siem-destination`. Optional: without it
+            # the export stays off (RWSAFE_SIEM_ENABLED defaults to false); a destination that is enabled but incomplete
+            # is refused by the application and shown DOWN on Health (fail closed, AGENTS.md 4.10).
+            - name: RWSAFE_SIEM_ENABLED
+              valueFrom: { configMapKeyRef: { name: rwsafe-siem-destination, key: enabled, optional: true } }
+            - name: RWSAFE_SIEM_SYSLOG_HOST
+              valueFrom: { configMapKeyRef: { name: rwsafe-siem-destination, key: syslog-host, optional: true } }
+            - name: RWSAFE_SIEM_SYSLOG_PORT
+              valueFrom: { configMapKeyRef: { name: rwsafe-siem-destination, key: syslog-port, optional: true } }
+            - name: RWSAFE_SIEM_SYSLOG_FORMAT
+              valueFrom: { configMapKeyRef: { name: rwsafe-siem-destination, key: syslog-format, optional: true } }
+            - name: RWSAFE_SIEM_HEC_URL
+              valueFrom: { configMapKeyRef: { name: rwsafe-siem-destination, key: hec-url, optional: true } }
+            - name: RWSAFE_SIEM_HEC_INDEX
+              valueFrom: { configMapKeyRef: { name: rwsafe-siem-destination, key: hec-index, optional: true } }
+            # The notice's configured values (docs/i18n/README.md), from the uncommitted ConfigMap `rwsafe-enduser`.
+            # Optional: while a value is missing the notice has no version, nothing can be acknowledged and content
+            # capture stays off for everyone (SR-PRIV-10).
+            - name: RWSAFE_ENDUSER_CONTROLLER_NAME
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: controller-name, optional: true } }
+            - name: RWSAFE_ENDUSER_DPO_CONTACT
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: dpo-contact, optional: true } }
+            - name: RWSAFE_ENDUSER_POLICY_LINK
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: policy-link, optional: true } }
+            - name: RWSAFE_ENDUSER_RETENTION_METADATA
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: retention-metadata, optional: true } }
+            - name: RWSAFE_ENDUSER_RETENTION_REDACTED
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: retention-redacted, optional: true } }
+            - name: RWSAFE_ENDUSER_RETENTION_RAW
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: retention-raw, optional: true } }
           ports:
             - name: http
               containerPort: 8080
@@ -78,6 +109,9 @@ spec:
               protocol: TCP
             - name: ingest
               containerPort: 8092
+              protocol: TCP
+            - name: metrics
+              containerPort: 9400
               protocol: TCP
           startupProbe:
             tcpSocket:
@@ -132,6 +166,17 @@ spec:
             - name: estate-dictionary
               mountPath: /etc/rwsafe/estate
               readOnly: true
+            - name: siem-ca
+              mountPath: /etc/rwsafe/siem
+              readOnly: true
+            - name: siem-credentials
+              mountPath: /run/secrets/rwsafe-siem
+              readOnly: true
+            - name: capture-key
+              mountPath: /run/secrets/rwsafe-capture-key
+              readOnly: true
+            - name: capture-store
+              mountPath: /var/lib/rwsafe/capture
       volumes:
         # Tomcat's work directory and multipart scratch.
         - name: tmp
@@ -167,6 +212,54 @@ spec:
             defaultMode: 288
             items:
               - { key: estate-dictionary.txt, path: estate-dictionary.txt }
+        # The SIEM receivers' CA bundle (PEM) for RWSAFE_SIEM_SYSLOG_CA_FILE and RWSAFE_SIEM_HEC_CA_FILE, and the HEC token
+        # for RWSAFE_SIEM_HEC_TOKEN_FILE. Optional: a missing bundle or token refuses that destination (SR-SIEM-3).
+        - name: siem-ca
+          configMap:
+            name: rwsafe-siem-destination
+            optional: true
+            defaultMode: 288
+            items:
+              - { key: ca.crt, path: ca.crt }
+        - name: siem-credentials
+          secret:
+            secretName: rwsafe-siem-credentials
+            optional: true
+            defaultMode: 288
+            items:
+              - { key: hec-token, path: hec-token }
+        # The capture key (ADR-009 C3), mounted whole and without `items`: its `<key id>.key` files are named by key id,
+        # so a rotation adds a key and moves `active` without a manifest change, and the kubelet refreshes the files in
+        # the running pod. Optional: with capture off no key is needed; with capture on and no usable key, nothing is
+        # stored and Health shows `capture` DOWN (fail closed).
+        - name: capture-key
+          secret:
+            secretName: rwsafe-capture-key
+            optional: true
+            defaultMode: 288
+        # The capture store's chunk files (ADR-009 §3): its own PVC, never the database's, never an emptyDir.
+        - name: capture-store
+          persistentVolumeClaim:
+            claimName: rwsafe-capture-store
+---
+# The capture store (ADR-009 §3, PORTS_AND_RESOURCES §4.2 storage caps): 40Gi, below the frozen plan's 100Gi until the
+# PO decides on HOST-A's disk (PR 27 review D-06, Q-2). With rwsafe-db-data's 20Gi the namespace requests 60Gi of its
+# 150Gi requests.storage quota, within the 138Gi host-free budget manifest_check.py enforces (PORTS_AND_RESOURCES §1
+# free space minus the kubelet's eviction reserve). The application caps the store at 32 GiB
+# (RWSAFE_CAPTURE_MAX_STORE_BYTES, oldest records without a hold evicted first), so the claim is 25 % above the cap, room for the file-system overhead of 8-64 KiB chunk files and the hourly orphan
+# sweep. local-path enforces no size (measured), so the binding limits are the application's cap and the disk watermark
+# breaker (redacted content stops at 85 % node-disk use, SR-HOST-2). One writer only (the Recreate control plane).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rwsafe-capture-store
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-control }
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 40Gi
 ---
 apiVersion: v1
 kind: Service
@@ -183,3 +276,4 @@ spec:
     - { name: http, port: 8080, targetPort: http, protocol: TCP }
     - { name: snapshot-feed, port: 8091, targetPort: snapshot-feed, protocol: TCP }
     - { name: ingest, port: 8092, targetPort: ingest, protocol: TCP }
+    - { name: metrics, port: 9400, targetPort: metrics, protocol: TCP }

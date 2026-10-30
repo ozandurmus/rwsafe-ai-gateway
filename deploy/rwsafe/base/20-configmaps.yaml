@@ -20,6 +20,16 @@ data:
   RWSAFE_CONTROL_EVENTS_URL: "http://rwsafe-control.rwsafe.svc.cluster.local:8092/internal/v1/verdict-events"
   RWSAFE_SPOOL_DIR: "/var/lib/rwsafe/spool"
   RWSAFE_SNAPSHOT_CACHE: "/var/cache/rwsafe/snapshot"
+  # Group claims (PO decision Q-39, PR 20 review D-01): deliberately unset, so group claims are disabled and every
+  # transaction takes the strictest of the Everyone rule and every enforce group rule. The engine never guesses the
+  # encoding. Which one the estate proxy uses for X-Authenticated-Groups is UNVERIFIED (2026-10-31); once a masked
+  # capture of one header shape proves it, the PO adds `RWSAFE_GROUP_CLAIM_ENCODING: "plain"` or `"base64"` here in a
+  # pull request (DEPLOY_AND_SHARED_HOST_RUNBOOK §7.5), never by `kubectl set env`.
+  # Redacted capture (Q-4 b): off on both sides until the capture key, the notice values and the PO's go-ahead exist
+  # (runbook §7.5); `redacted` turns it on here and in rwsafe-control-config together. The bound of one event's text is
+  # the engine's default, written out (at most 65536).
+  RWSAFE_CAPTURE_MODE: "off"
+  RWSAFE_CAPTURE_MAX_BYTES: "32768"
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -36,6 +46,9 @@ data:
   RWSAFE_SNAPSHOT_FEED_PORT: "8091"
   RWSAFE_CAPTURE_SINK_BIND: "0.0.0.0"
   RWSAFE_CAPTURE_SINK_PORT: "8092"
+  # PORTS_AND_RESOURCES §3: GET /metrics (Prometheus text) only; the k3s overlay admits the scraper's namespace.
+  RWSAFE_METRICS_BIND: "0.0.0.0"
+  RWSAFE_METRICS_PORT: "9400"
   RWSAFE_DB_URL: "jdbc:postgresql://rwsafe-db.rwsafe.svc.cluster.local:5432/rwsafe"
   # ADR-002 §1-§2: the application queries as the DML role; Flyway migrates as the schema owner. Both passwords are
   # config-tree files from Secret `rwsafe-db-credentials` (spring.datasource.password, rwsafe.migration.password).
@@ -46,3 +59,22 @@ data:
   RWSAFE_FORWARD_HEADERS: "native"
   RWSAFE_COOKIE_SECURE: "true"
   RWSAFE_BREAK_GLASS_ENABLED: "false"
+  # SIEM export (LOCAL_RUN.md "SIEM export"): on/off, the destinations and the index come from the uncommitted ConfigMap
+  # rwsafe-siem-destination, the CA bundle and the HEC token are mounted files (40-control.yaml). `earliest`: a new
+  # destination receives everything stored (Q-SIEM-1).
+  RWSAFE_SIEM_START_FROM: "earliest"
+  RWSAFE_SIEM_SYSLOG_CA_FILE: "/etc/rwsafe/siem/ca.crt"
+  RWSAFE_SIEM_HEC_CA_FILE: "/etc/rwsafe/siem/ca.crt"
+  RWSAFE_SIEM_HEC_TOKEN_FILE: "/run/secrets/rwsafe-siem/hec-token"
+  # Redacted capture (Q-4 b, ADR-009): off until the PO turns it on together with the data plane (runbook §7.5). The
+  # store is the PVC rwsafe-capture-store (40Gi requested); the application caps it at 32 GiB, below ADR-009's 80 GiB
+  # MAX_STORE_BYTES, until the PO decides on HOST-A's disk (PR 27 review D-06, Q-2: 80 % used, redacted capture stops
+  # at 85 %); raising it is the PO's decision. The key directory is the capture-key Secret, mounted whole (its
+  # `<key id>.key` files, `active`, `shredded`). The watermark breaker reads the store's filesystem and /tmp (an emptyDir
+  # on the kubelet's node filesystem, the one the kubelet evicts on; on k3s local-path both are the node's root
+  # filesystem, where the database volume lives too).
+  RWSAFE_CAPTURE_MODE: "off"
+  RWSAFE_CAPTURE_STORE_DIR: "/var/lib/rwsafe/capture"
+  RWSAFE_CAPTURE_MAX_STORE_BYTES: "34359738368"
+  RWSAFE_CAPTURE_KEY_DIR: "/run/secrets/rwsafe-capture-key"
+  RWSAFE_CAPTURE_WATERMARK_PATHS: "/tmp"

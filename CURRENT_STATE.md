@@ -371,6 +371,50 @@ ROADMAP "Capture in redacted mode (Q-4 b)", acceptance SR-PRIV-10, SR-PRIV-11, S
   Secret, `RWSAFE_CAPTURE_*` in the ConfigMaps and contracts); the screen that opens a record; persisted skip
   counters.
 
+- Open: ADR-009 gaps listed in the response (C5 special-category flag, masking layers 4 and 5 at persistence, legal
+  hold and DSAR APIs, restore-time receipt replay, the worker module); the screen that opens a record; persisted skip
+  counters. Deploy wiring: done in pull request 27 (below).
+
+## Done (deploy wiring 2, pull request 27)
+
+The features above are wired into `deploy/rwsafe/`, every one off by default; nothing applied (the PO's step,
+`DEPLOY_AND_SHARED_HOST_RUNBOOK.md` §7.4, first-run steps §7.5).
+
+- Data plane: `RWSAFE_CAPTURE_MODE` off, `RWSAFE_CAPTURE_MAX_BYTES` 32768, `RWSAFE_GROUP_CLAIM_ENCODING` unset (group
+  claims disabled until the proxy's encoding is verified), `RWSAFE_ENDUSER_*` from the uncommitted ConfigMap
+  `rwsafe-enduser` (optional).
+- Control plane: `RWSAFE_SIEM_*` from `rwsafe-siem-destination` (CA bundle as a file) and the HEC token from
+  `rwsafe-siem-credentials`; capture with the Secret `rwsafe-capture-key` mounted whole and the PVC
+  `rwsafe-capture-store` (40Gi; application cap 32 GiB, below ADR-009's 80 GiB until the PO decides on HOST-A's disk,
+  PR 27 review Q-2); the watermark paths; `RWSAFE_ENDUSER_*`; the metrics listener on 9400 (`GET /metrics` only, the
+  SIEM exporter's Prometheus text, 404 for anything else before security; `/readyz` counts it).
+- k3s overlay: egress `rwsafe-control-to-siem` with its own RFC 5737 placeholder; 9400 and 9401 admitted only from pods
+  labelled `rwsafe.io/metrics-scraper=true` in a namespace with the same label.
+- `tools/deploy/manifest_check.py`: claimed PVCs rendered; PVCs and claim templates within the LimitRange maximum;
+  projected Secret and ConfigMap sources in the contract; an ipBlock without a valid cidr, an ingress rule without
+  `from`, an empty peer or an empty selector in a peer fail; no placeholder shared by two policies; all requested
+  storage within `HOST_FREE_STORAGE_BUDGET` (138Gi: PORTS_AND_RESOURCES §1 free space minus the kubelet's eviction
+  reserve). Namespace `rwsafe` now requests 60Gi (database 20Gi, capture 40Gi).
+- Second review: `docs/reviews/PR27_2026_10_31_ARGON_DEPLOY_WIRING_2.md`, answered in `PR27_2026_10_31_RESPONSE.md`.
+- Residual (accepted, PR 27 review Q-1): 9401 also holds the ICAP preStop drain, so an admitted scraper pod could
+  drain an ICAP pod; 9402 is the gateway's port in the frozen plan, so the drain gets no port of its own.
+- Departures: the frozen runbook gained §7.5 and the two-placeholder estate patch in §7.4, and the frozen plan's capture
+  claim (100Gi) is 40Gi for now; both need the PO's record. The quota ceilings of the three namespaces (150Gi, 20Gi,
+  30Gi; 200Gi together) still exceed the host-free budget: the check bounds what is requested, not the quotas.
+
+Product Owner inputs, before the first release or the feature named:
+
+1. The SIEM receivers' CIDR (`siem-cidr`) and the ConfigMap `rwsafe-siem-destination`: §7.4 refuses a release without
+   it. The HEC token Secret when HEC is used; confirm the receivers' ports (6514, 8088).
+2. The six notice values in `rwsafe-enduser` (controller name, DPO contact, policy link, three retention figures).
+3. The capture key Secret `rwsafe-capture-key`, and the go-ahead that sets `RWSAFE_CAPTURE_MODE: "redacted"` in both
+   ConfigMaps (a pull request).
+4. The proxy's encoding of `X-Authenticated-Groups` (`plain` or `base64`), then a pull request setting
+   `RWSAFE_GROUP_CLAIM_ENCODING`.
+5. The scraper: label its namespace and its pods `rwsafe.io/metrics-scraper=true`.
+6. HOST-A's disk (80 % used): reclaim space or confirm the 32 GiB capture cap; raising it, the 40Gi claim or the
+   138Gi budget needs a new measurement and the PO's decision.
+
 ## Done (masking layers 4 and 5, branch `feature/masking-layers-4-5`, pull request 26)
 
 - Rule set `rwmask-v1-slice2` (`TextMasker.RULE_SET`, header `X-RWSAFE-Mask-Rules` on every masked page). One
@@ -423,8 +467,7 @@ settings store for the UI language, the
 ratified decision record that mirrors the seed fixture, the C4 raw capture and its grants, the Incidents, Identities
 and roles and Administration screens, a browser-level (Playwright) masked-role leak probe on top of the API-level one,
 the cluster PostgreSQL Job); the Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with
-them); Trivy image scanning and SBOM (with the first image, ship pipeline). SIEM export, later: the Deployment's
-environment and volume wiring with the NetworkPolicy egress to the SIEM (deploy lane), the 9400 metrics listener, a
+them); Trivy image scanning and SBOM (with the first image, ship pipeline). SIEM export, later: a
 client certificate towards the SIEM, the raw-access SIEM copy (with raw access), and one QRadar test event per format to
 clear the LEEF UNVERIFIED marks (capture deletions reach the SIEM as exported ledger rows: "Done (redacted capture)").
 
