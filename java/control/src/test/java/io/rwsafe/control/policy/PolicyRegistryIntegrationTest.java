@@ -306,7 +306,7 @@ class PolicyRegistryIntegrationTest {
     void withoutASigningKeyNoSnapshotIsIssuedOrLedgered() {
         io.rwsafe.control.config.ControlProperties props = new io.rwsafe.control.config.ControlProperties(null, null,
             null, null, new io.rwsafe.control.config.ControlProperties.Policy(null,
-                ControlTestEnvironment.dir().resolve("absent-signing-key"), "k1", null, null), null);
+                ControlTestEnvironment.dir().resolve("absent-signing-key"), "k1", null, null), null, null);
         PolicyRegistryService unsigned = new PolicyRegistryService(database, props, pseudonymiser, keys,
             new SnapshotSigner(props));
         assertEquals("SNAPSHOT_SIGNING_UNAVAILABLE",

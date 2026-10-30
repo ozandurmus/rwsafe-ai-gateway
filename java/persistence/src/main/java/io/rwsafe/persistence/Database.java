@@ -70,6 +70,10 @@ public final class Database {
         return new PolicySnapshotStore(dsl, policyRegistry());
     }
 
+    public SiemExportStore siemExport() {
+        return new SiemExportStore(dsl);
+    }
+
     /** True when a trivial query answers (health screen). */
     public boolean reachable() {
         try {

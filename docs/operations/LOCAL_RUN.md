@@ -141,6 +141,48 @@ directory: bind a group to `privacy_officer` as to any other role.
 Every secret is a mounted file; none is a property value. Without the key file ingestion answers 503 and stores nothing;
 without the dictionary the masked role gets 503.
 
+### SIEM export
+
+The control plane exports verdict events and audit-ledger rows (ADR-009 C8: C1, C2, C6 and C7 fields only, never a body)
+to syslog over TLS (RFC 5425 octet framing, CEF or LEEF 1.0 payload) and/or Splunk HEC over HTTPS. It is off by default.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RWSAFE_SIEM_ENABLED` | `false` | turns the exporter on |
+| `RWSAFE_SIEM_START_FROM` | `earliest` | where a destination without a watermark starts: `earliest` (everything stored) or `latest` |
+| `RWSAFE_SIEM_SYSLOG_HOST` | empty (off) | syslog receiver; with `RWSAFE_SIEM_SYSLOG_PORT` (default `6514`) |
+| `RWSAFE_SIEM_SYSLOG_FORMAT` | `cef` | `cef` or `leef` |
+| `RWSAFE_SIEM_SYSLOG_CA_FILE` | `/etc/rwsafe/siem/ca.crt` | PEM bundle the receiver's certificate must chain to |
+| `RWSAFE_SIEM_HEC_URL` | empty (off) | `https://host:port` (the path `/services/collector/event` is added) or the full endpoint URL |
+| `RWSAFE_SIEM_HEC_TOKEN_FILE` | `/run/secrets/rwsafe-siem/hec-token` | the HEC token, a mounted Secret file |
+| `RWSAFE_SIEM_HEC_CA_FILE` | `/etc/rwsafe/siem/ca.crt` | PEM bundle for the HEC endpoint |
+| `RWSAFE_SIEM_HEC_INDEX` | empty | target index; empty uses the token's default |
+
+Tuning stays in `rwsafe.siem.*` (`poll-interval` 2 s, `settle` 15 s, `queue-capacity` 10000, `page-size` 500,
+`batch-size` 200, `backoff-initial` 1 s, `backoff-max` 2 min). In the cluster the real destinations, the index and the CA
+bundle live in the uncommitted ConfigMap `rwsafe-siem-destination` and the token in the Secret `rwsafe-siem-credentials`
+(`deploy/rwsafe/contracts/runtime-contracts.json`); the Deployment wiring and the NetworkPolicy egress to the SIEM follow
+in the deploy lane.
+
+- **Transport (SR-SIEM-3)**: TLS 1.3/1.2 only, trust exactly the configured CA bundle (never the JVM store), host name
+  verified. There is no UDP and no plain-TCP setting. A destination with a missing CA bundle or token, a non-HTTPS URL or
+  an unknown format is not started; the Health screen's `siem` row names the reason.
+- **Fields (SR-SIEM-1, SR-SIEM-2)**: the fixed set in `SiemField`; users are `USR-` pseudonyms or `system:` actors, the
+  client a masked /24 label, findings `CLASS:count`; a `local_account` ledger row key is pseudonymised, any other key
+  leaves only as a plain token no detector recognises, otherwise `[WITHHELD]`. Every string is stripped of control
+  characters and ANSI sequences and length-capped before formatting.
+- **Delivery**: at least once, in order per stream. The watermark (`siem_watermark`, one row per destination) moves only
+  after the destination acknowledged (syslog: written and flushed; HEC: HTTP 200); a restart resumes from it, so the last
+  batch can arrive twice (de-duplicate on `externalId`/`eventId`). Overflow: the queue is bounded; when it has no room for
+  a page the reader does not read (counted as a deferred read); nothing is dropped and ingestion never waits. Failures
+  back off from 1 s doubling to 2 min. Metrics (`rwsafe_siem_*`, labels destination, stream, reason only) are rendered by
+  `SiemExportService.prometheus()`; the metrics listener (9400) is not served yet.
+- **Residuals**: rows are read only once they are older than the settle window (database clock), because commit order is
+  not insertion order; a transaction open longer than the window could be overtaken and its rows skipped (ingestion and
+  ledger transactions are single short statements). RFC 5425 has no acknowledgement: a connection that dies after a
+  flush can lose that batch; a closed connection is detected before the next batch. UNVERIFIED (2026-10-30): LEEF header
+  escaping and `=` inside LEEF values in the corporate QRadar; send one test event per format before production.
+
 ## What the engine does not do yet
 
 Decompression and base64 layer decoding, the file pipeline, login-step tenant rules, shape fingerprints per flow, and

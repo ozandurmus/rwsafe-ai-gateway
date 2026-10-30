@@ -162,6 +162,21 @@ bases, UID 185 group 0, read-only root); kustomize base for `rwsafe-icap` (the `
 `manifests` runs `tools/deploy/manifest_check.py` (AGENTS.md section 8 rules, quota fit) and its fixture self-test.
 Nothing applied; build and apply commands in `DEPLOY_AND_SHARED_HOST_RUNBOOK.md` §7 (apply is the PO's step).
 
+## Done (SIEM export, branch `feature/siem-export`)
+
+`java/control` package `siem` (ROADMAP MVP "SIEM out (CEF/LEEF/HEC)", SR-SIEM-1 to 3): verdict events and audit-ledger rows
+leave as CEF or LEEF 1.0 lines over syslog with TLS (RFC 5425 octet framing) and as Splunk HEC JSON over HTTPS. A fixed
+field set (`SiemField`; C1/C2/C6/C7 only, no body field, schema test), pseudonyms only (`local_account` ledger keys
+pseudonymised, any other non-token key `[WITHHELD]`), every string stripped of control characters and ANSI sequences and
+length-capped; CEF header and extension escaping and LEEF tab safety tested against an independent parser. TLS only
+(CA bundle, host-name check, TLS 1.3/1.2), no UDP or plain-TCP path; an unsafe destination is not started and the Health
+screen's `siem` row says why. Two threads per destination around a bounded queue: the reader defers when the queue has no
+room for a page (nothing dropped, ingestion untouched), the sender retries with exponential back-off and moves the
+persisted watermark (Flyway V4 `siem_watermark`) only after acknowledgement: at least once, in order per stream, restart
+from the watermark. Fixed-label counters (`rwsafe_siem_*`). Tests run a local TLS syslog receiver and a HEC stub with
+certificates generated at runtime. Configuration and residuals: `docs/operations/LOCAL_RUN.md` "SIEM export"; the contract
+names `rwsafe-siem-destination` (ConfigMap) and `rwsafe-siem-credentials` (Secret) are in the runtime contract.
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
@@ -175,7 +190,10 @@ staged versions (both need a snapshot format with groups), a server-side user se
 ratified decision record that mirrors the seed fixture, C3 capture store, the Incidents, Identities and roles and
 Administration screens, Playwright masked-role leak probe, the cluster PostgreSQL Job); the
 Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with them); Trivy image scanning and SBOM (with
-the first image, ship pipeline).
+the first image, ship pipeline). SIEM export, later: the Deployment's environment and volume wiring with the NetworkPolicy
+egress to the SIEM (deploy lane), the 9400 metrics listener, a client certificate towards the SIEM, deletion events
+(ADR-009 §4, with the retention job), the raw-access SIEM copy (with raw access), and one QRadar test event per format to
+clear the LEEF UNVERIFIED marks.
 
 ## Next (ROADMAP phase 0, in this order)
 

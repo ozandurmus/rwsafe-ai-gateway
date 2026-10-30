@@ -30,6 +30,8 @@ dependencies {
 
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.spring.security.test)
+    // Runtime generation of the CA and server certificates of the local TLS syslog receiver and HEC stub (SIEM tests).
+    testImplementation(libs.bcpkix)
     testImplementation(libs.embedded.postgres)
     testImplementation(platform(libs.embedded.postgres.binaries.bom))
     testRuntimeOnly(libs.embedded.postgres.binaries.darwin.arm64v8)
