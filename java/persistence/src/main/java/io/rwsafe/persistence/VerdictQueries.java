@@ -155,6 +155,45 @@ public final class VerdictQueries {
             .orderBy(PLATFORM).fetch(PLATFORM);
     }
 
+    /** Stored events with this verdict and exactly this (sorted) set of finding classes. */
+    public record ClassCombination(Verdict verdict, List<String> classes, long events) {
+
+        public ClassCombination {
+            classes = List.copyOf(classes);
+        }
+    }
+
+    public record SimulationBase(long eventsInWindow, List<ClassCombination> combinations) {
+
+        public SimulationBase {
+            combinations = List.copyOf(combinations);
+        }
+    }
+
+    /**
+     * Stored events in the window grouped by verdict and the set of finding classes they carry, for the policy
+     * simulation: one row per (verdict, sorted class set) with its count, plus the number of events in the window. Counts
+     * only; no event is returned.
+     *
+     * @param dataClass when set, only events with a finding of this class
+     */
+    public SimulationBase classCombinations(Instant from, Instant to, String dataClass) {
+        Condition window = RECEIVED_AT.ge(from).and(RECEIVED_AT.lt(to));
+        Field<String[]> classes = DSL.arrayAgg(DATA_CLASS).orderBy(DATA_CLASS).as("classes");
+        var perEvent = dsl.select(EVENT_ID, VERDICT, classes).from(VERDICT_EVENT).join(VERDICT_FINDING)
+            .on(FINDING_EVENT_ID.eq(EVENT_ID)).where(window).groupBy(EVENT_ID, VERDICT).asTable("per_event");
+        Field<String> verdict = perEvent.field(VERDICT.getName(), String.class);
+        Field<String[]> classSet = perEvent.field("classes", String[].class);
+        Condition withClass = dataClass == null ? DSL.trueCondition()
+            : DSL.condition("{0} = ANY({1})", DSL.val(dataClass), classSet);
+        Field<Integer> count = DSL.count();
+        List<ClassCombination> rows = dsl.select(verdict, classSet, count).from(perEvent).where(withClass)
+            .groupBy(verdict, classSet).orderBy(count.desc()).fetch(r -> new ClassCombination(
+                Verdict.valueOf(r.get(verdict)), List.of(r.get(classSet)), r.get(count)));
+        long total = dsl.fetchCount(VERDICT_EVENT, window);
+        return new SimulationBase(total, rows);
+    }
+
     public IngestStats ingestStats(Instant since) {
         Field<Integer> recent = DSL.count().filterWhere(INGESTED_AT.ge(since));
         Field<Instant> latest = DSL.max(RECEIVED_AT);

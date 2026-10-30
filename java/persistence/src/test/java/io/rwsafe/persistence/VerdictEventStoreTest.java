@@ -30,6 +30,23 @@ class VerdictEventStoreTest {
     }
 
     @Test
+    void simulationBaseGroupsEventsByVerdictAndClassSet() {
+        db.verdictEvents().insert(List.of(
+            event(base, "claude", Verdict.REDACT, List.of(new FindingCount("TCKN", 1))),
+            event(base.plusSeconds(1), "claude", Verdict.REDACT, List.of(new FindingCount("TCKN", 3))),
+            event(base.plusSeconds(2), "openai", Verdict.BLOCK,
+                List.of(new FindingCount("TCKN", 1), new FindingCount("SECRET", 1))),
+            event(base.plusSeconds(3), "openai", Verdict.REDACT, List.of(new FindingCount("TR_IBAN", 1))),
+            event(base.plusSeconds(4), "openai", Verdict.ALLOW, List.of()),
+            event(base.minus(Duration.ofDays(2)), "openai", Verdict.REDACT, List.of(new FindingCount("TCKN", 1)))));
+        VerdictQueries.SimulationBase tckn = db.verdictQueries().classCombinations(base, base.plusSeconds(60), "TCKN");
+        assertEquals(5, tckn.eventsInWindow());
+        assertEquals(List.of(new VerdictQueries.ClassCombination(Verdict.REDACT, List.of("TCKN"), 2),
+            new VerdictQueries.ClassCombination(Verdict.BLOCK, List.of("SECRET", "TCKN"), 1)), tckn.combinations());
+        assertEquals(3, db.verdictQueries().classCombinations(base, base.plusSeconds(60), null).combinations().size());
+    }
+
+    @Test
     void ingestionIsIdempotentOnTheEventId() {
         StoredVerdictEvent e = event(base, "claude", Verdict.REDACT, List.of(new FindingCount("TCKN", 2)));
         assertEquals(1, db.verdictEvents().insert(List.of(e)));
