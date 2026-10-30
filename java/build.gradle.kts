@@ -73,8 +73,9 @@ tasks.register("architectureTest") {
 // SR-DP-4: the modules whose parsers are fuzzed. `test` replays every @FuzzTest's committed corpus (Jazzer regression
 // mode, part of `unitTest`); `fuzzTest` fuzzes for the duration each @FuzzTest declares, one JVM per test class (Jazzer's
 // fuzzer is one per process, so every *FuzzTest class holds exactly one @FuzzTest), and writes a crashing input next to
-// the corpus. A per-input @Timeout on each target becomes libFuzzer's -timeout. Never cached: a fuzzing run is not a
-// function of its inputs. `detect` joins this list with the normaliser, its first parser (it adds jazzer-junit then).
+// the corpus. A per-input @Timeout on each target bounds every replayed input under JUnit and becomes libFuzzer's
+// -timeout when fuzzing, where JUnit's own timeout is disabled (it would otherwise apply to the whole fuzzing run). Never
+// cached: a fuzzing run is not a function of its inputs. `detect` joins this list with the normaliser, its first parser (it adds jazzer-junit then).
 val fuzzModules = listOf("dataplane")
 
 configure(fuzzModules.map { project(":$it") }) {
@@ -90,6 +91,7 @@ configure(fuzzModules.map { project(":$it") }) {
         useJUnitPlatform()
         filter.includeTestsMatching("*FuzzTest")
         environment("JAZZER_FUZZ", "1")
+        systemProperty("junit.jupiter.execution.timeout.mode", "disabled")
         forkEvery = 1
         outputs.upToDateWhen { false }
         outputs.cacheIf { false }
