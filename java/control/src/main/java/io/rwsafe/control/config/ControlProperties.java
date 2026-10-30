@@ -20,7 +20,7 @@ public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFe
         identity = identity == null ? new Identity(null, null, false) : identity;
         policy = policy == null ? new Policy(null, null, null, null, null) : policy;
         sample = sample == null ? new Sample(0, 1) : sample;
-        siem = siem == null ? new Siem(false, null, null, null, 0, 0, 0, null, null, null, null) : siem;
+        siem = siem == null ? new Siem(false, null, null, 0, 0, 0, null, null, null, null) : siem;
     }
 
     /**
@@ -30,16 +30,16 @@ public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFe
      * ({@code deploy/rwsafe/contracts/runtime-contracts.json}).
      *
      * @param startFrom {@code earliest} (default: everything stored reaches the SIEM) or {@code latest} (a destination
-     *                  without a watermark starts at the newest event)
+     *                  without a watermark skips the stored verdict events; audit-ledger rows always export from the
+     *                  first one, PO decision Q-SIEM-1)
      */
-    public record Siem(boolean enabled, String startFrom, Duration pollInterval, Duration settle, int queueCapacity,
+    public record Siem(boolean enabled, String startFrom, Duration pollInterval, int queueCapacity,
                        int pageSize, int batchSize, Duration backoffInitial, Duration backoffMax, Syslog syslog,
                        Hec hec) {
 
         public Siem {
             startFrom = startFrom == null || startFrom.isBlank() ? "earliest" : startFrom.strip();
             pollInterval = pollInterval == null ? Duration.ofSeconds(2) : pollInterval;
-            settle = settle == null ? Duration.ofSeconds(15) : settle;
             queueCapacity = queueCapacity == 0 ? 10_000 : queueCapacity;
             pageSize = pageSize == 0 ? 500 : pageSize;
             batchSize = batchSize == 0 ? 200 : batchSize;

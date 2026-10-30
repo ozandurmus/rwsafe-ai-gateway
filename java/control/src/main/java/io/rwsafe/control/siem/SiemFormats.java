@@ -20,11 +20,11 @@ import java.util.Locale;
  *       Extension keys are fixed constants of {@link SiemField}.</li>
  *   <li><b>LEEF 1.0</b> (IBM QRadar LEEF guide): {@code LEEF:1.0|Vendor|Product|Version|EventID|} followed by
  *       tab-separated {@code key=value} attributes. A value never contains a tab or any other control character (it
- *       is cleaned), so no attribute can be split or forged. UNVERIFIED (2026-10-30): whether QRadar un-escapes a
- *       backslash-escaped pipe in a LEEF 1.0 header (we escape {@code \} and {@code |} there as CEF does; header values
- *       are fixed vocabulary, so the case does not arise today) and whether an {@code =} inside a value needs escaping
- *       (we do not escape it; no exported value contains one). Verify with one test event per format in the QRadar DSM
- *       editor.</li>
+ *       is cleaned), so no attribute can be split or forged; a backslash and an equals sign in a value are escaped
+ *       with a backslash as in CEF (PR 23 review D-5), so a receiver that splits on {@code =} cannot read a second
+ *       key. UNVERIFIED (2026-10-30): whether QRadar un-escapes those in LEEF 1.0 values and a backslash-escaped pipe
+ *       in the header (exported values are fixed-shape tokens, so the cases do not arise today). Verify with one test
+ *       event per format in the QRadar DSM editor.</li>
  *   <li><b>Splunk HEC</b> event endpoint ({@code /services/collector/event}): one JSON object per event,
  *       {@code {"time":<epoch seconds>,"host","source","sourcetype","index"?,"event":{...}}}; several objects are
  *       concatenated in one request body. JSON escaping is Jackson's.</li>
@@ -53,7 +53,7 @@ public final class SiemFormats {
     public static String cef(SiemRecord r, String productVersion) {
         StringBuilder s = new StringBuilder(256);
         s.append("CEF:0|").append(cefHeader(VENDOR)).append('|').append(cefHeader(PRODUCT)).append('|')
-            .append(cefHeader(productVersion)).append('|').append(cefHeader(r.eventClassId())).append('|')
+            .append(cefHeader(version(productVersion))).append('|').append(cefHeader(r.eventClassId())).append('|')
             .append(cefHeader(r.name())).append('|').append(r.severity()).append('|');
         s.append("rt=").append(r.time().toEpochMilli());
         for (Value v : r.values()) {
@@ -69,7 +69,7 @@ public final class SiemFormats {
     public static String leef(SiemRecord r, String productVersion) {
         StringBuilder s = new StringBuilder(256);
         s.append("LEEF:1.0|").append(cefHeader(VENDOR)).append('|').append(cefHeader(PRODUCT)).append('|')
-            .append(cefHeader(productVersion)).append('|').append(cefHeader(r.eventClassId())).append('|');
+            .append(cefHeader(version(productVersion))).append('|').append(cefHeader(r.eventClassId())).append('|');
         s.append("devTime=").append(LEEF_TIME.format(r.time()));
         s.append("\tdevTimeFormat=").append(LEEF_TIME_PATTERN);
         s.append("\tcat=").append(r.stream().name().toLowerCase(Locale.ROOT));
@@ -93,11 +93,12 @@ public final class SiemFormats {
         ObjectNode root = JSON.createObjectNode();
         // Epoch seconds with milliseconds, written plain (a double would print in exponent form).
         root.put("time", BigDecimal.valueOf(r.time().toEpochMilli(), 3));
-        root.put("host", host);
+        root.put("host", nonEmpty(SiemText.clean(host, 64), "rwsafe"));
         root.put("source", VENDOR);
         root.put("sourcetype", VENDOR + ":" + r.stream().name().toLowerCase(Locale.ROOT));
-        if (index != null) {
-            root.put("index", index);
+        String cleanIndex = SiemText.clean(index, 80);
+        if (cleanIndex != null && !cleanIndex.isEmpty()) {
+            root.put("index", cleanIndex);
         }
         ObjectNode event = root.putObject("event");
         event.put("eventClass", r.eventClassId());
@@ -145,15 +146,26 @@ public final class SiemFormats {
         return out.toString();
     }
 
-    /** LEEF value: the attribute delimiter (tab) and every other control character cannot appear. */
+    /** LEEF value: no tab or control character; backslash and equals escaped (D-5). */
     static String leefValue(String s) {
-        StringBuilder out = new StringBuilder(s.length());
+        StringBuilder out = new StringBuilder(s.length() + 8);
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
-            if (c != '\t' && !Character.isISOControl(c)) {
+            if (c == '\\' || c == '=') {
+                out.append('\\').append(c);
+            } else if (c != '\t' && !Character.isISOControl(c)) {
                 out.append(c);
             }
         }
         return out.toString();
+    }
+
+    /** Every header field is cleaned text (D-5), the product version included. */
+    static String version(String productVersion) {
+        return nonEmpty(SiemText.clean(productVersion, 32), "dev");
+    }
+
+    private static String nonEmpty(String s, String fallback) {
+        return s == null || s.isEmpty() ? fallback : s;
     }
 }

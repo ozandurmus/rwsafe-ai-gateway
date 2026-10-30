@@ -102,8 +102,8 @@ class SiemTransportTest {
         TlsSyslogReceiver receiver = receiver(pki.loopbackServer());
         seedAccountAndEvents();
         export(syslog(receiver.port(), LineFormat.CEF));
-        List<String> messages = receiver.take(3, 10_000);
-        assertEquals(3, messages.size());
+        List<String> messages = receiver.take(4, 10_000);
+        assertEquals(4, messages.size(), "the account's ledger row, the export's start row, two verdict events");
         assertTrue(receiver.errors.isEmpty(), receiver.errors.toString());
 
         String audit = messages.get(0);
@@ -113,7 +113,8 @@ class SiemTransportTest {
         Cef auditCef = Cef.parse(audit.substring(audit.indexOf("CEF:0|")));
         assertEquals(fx.pseudonymiser.user("synthetic-glass"), auditCef.extension.get("cs3"));
 
-        for (String m : messages.subList(1, 3)) {
+        assertTrue(messages.get(1).contains("|audit.siem_export.start|"));
+        for (String m : messages.subList(2, 4)) {
             assertTrue(m.startsWith("<108>1 "), "block is a warning");
             Cef cef = Cef.parse(m.substring(m.indexOf("CEF:0|")));
             assertEquals(fx.pseudonymiser.user(CLAIM), cef.extension.get("suser"));
@@ -132,9 +133,9 @@ class SiemTransportTest {
         TlsSyslogReceiver receiver = receiver(pki.loopbackServer());
         seedAccountAndEvents();
         export(syslog(receiver.port(), LineFormat.LEEF));
-        List<String> messages = receiver.take(3, 10_000);
-        assertEquals(3, messages.size());
-        String verdict = messages.get(1);
+        List<String> messages = receiver.take(4, 10_000);
+        assertEquals(4, messages.size());
+        String verdict = messages.get(2);
         String leef = verdict.substring(verdict.indexOf("LEEF:1.0|"));
         assertTrue(leef.startsWith("LEEF:1.0|rwsafe|ai-gateway|1.0|verdict.BLOCK|devTime="), leef);
         assertTrue(leef.contains("\tusrName=" + fx.pseudonymiser.user(CLAIM) + "\t"));
@@ -176,6 +177,10 @@ class SiemTransportTest {
         String second = receiver.next(5_000);
         assertTrue(second != null && second.contains("verdict.WARN"), "the batch went over a new connection");
         assertEquals(2, receiver.accepted.get());
+        assertEquals(1, sink.possiblyLostBatches(), "a batch was flushed on the connection the receiver closed");
+        sink.deliver(List.of(Rows.RECORDS.verdict(Rows.verdict(Verdict.WARN, "openai", "r"))));
+        assertTrue(receiver.next(5_000) != null);
+        assertEquals(2, receiver.accepted.get(), "an open connection is reused");
         sink.close();
     }
 
@@ -221,8 +226,8 @@ class SiemTransportTest {
             Duration.ofSeconds(5));
         assertFalse(sink.toString().contains(token));
         export(sink);
-        List<JsonNode> events = stub.take(3, 10_000);
-        assertEquals(3, events.size());
+        List<JsonNode> events = stub.take(4, 10_000);
+        assertEquals(4, events.size());
         assertTrue(stub.requests.get() >= 2, "the 503 was retried");
         assertEquals(0, stub.unauthorised.get());
         assertTrue(stub.paths.stream().allMatch(HecSink.EVENT_PATH::equals));
@@ -232,7 +237,7 @@ class SiemTransportTest {
         Set<String> auditKeys = keys(audit.get("event"));
         assertTrue(SiemSchemaTest.AUDIT_EVENT_KEYS.containsAll(auditKeys), auditKeys.toString());
         assertTrue(auditKeys.containsAll(Set.of("eventId", "action", "usrName", "auditedTable", "operation", "rowKey")));
-        for (JsonNode verdict : events.subList(1, 3)) {
+        for (JsonNode verdict : events.subList(2, 4)) {
             assertEquals(SiemSchemaTest.HEC_ENVELOPE_KEYS, keys(verdict));
             assertEquals(SiemSchemaTest.VERDICT_EVENT_KEYS, keys(verdict.get("event")));
             assertEquals(fx.pseudonymiser.user(CLAIM), verdict.get("event").get("usrName").asText());
@@ -271,14 +276,21 @@ class SiemTransportTest {
         sink.close();
     }
 
+    private SiemExportService service(ControlProperties.Siem siem, io.rwsafe.control.privacy.PrivacyKeys keys) {
+        return new SiemExportService(new ControlProperties(null, null, null, null, null, null, siem), fx.db, keys,
+            fx.pseudonymiser);
+    }
+
+    private static ControlProperties.Siem enabled(ControlProperties.Syslog syslog, ControlProperties.Hec hec) {
+        return new ControlProperties.Siem(true, null, null, 0, 0, 0, null, null, syslog, hec);
+    }
+
     @Test
     void anIncompleteDestinationIsNotStartedAndShowsWhy() throws Exception {
-        ControlProperties.Siem siem = new ControlProperties.Siem(true, null, null, null, 0, 0, 0, null, null,
+        SiemExportService service = service(enabled(
             new ControlProperties.Syslog("127.0.0.1", 6514, "cef", dir.resolve("absent-ca.crt"), null, 0, null, null),
             new ControlProperties.Hec("http://127.0.0.1:8088", tokenFile(runtimeToken()), pki.writeCaBundle(dir), null,
-                null));
-        SiemExportService service = new SiemExportService(new ControlProperties(null, null, null, null, null, null, siem),
-            fx.db, fx.pseudonymiser);
+                null)), fx.keys);
         service.start();
         SiemExportService.Health h = service.health();
         service.stop();
@@ -287,13 +299,65 @@ class SiemTransportTest {
         assertTrue(h.detail().contains("hec: not started, the HEC URL must be https"), h.detail());
         assertFalse(h.detail().contains(dir.toString()), "no path in the health detail");
 
-        SiemExportService off = new SiemExportService(new ControlProperties(null, null, null, null, null, null, null),
-            fx.db, fx.pseudonymiser);
+        SiemExportService off = service(null, fx.keys);
         off.start();
         assertEquals("UNKNOWN", off.health().state());
         off.stop();
-        assertThrows(IllegalArgumentException.class, () -> new ControlProperties.Siem(true, "middle", null, null, 0, 0,
-            0, null, null, null, null));
+        assertThrows(IllegalArgumentException.class, () -> new ControlProperties.Siem(true, "middle", null, 0, 0, 0,
+            null, null, null, null));
+    }
+
+    /** PR 23 review D-3: without the privacy key or the estate dictionary nothing starts. */
+    @Test
+    void withoutThePrivacyKeyOrTheDictionaryNoExporterStarts() throws Exception {
+        TlsSyslogReceiver receiver = receiver(pki.loopbackServer());
+        ControlProperties.Syslog syslog = new ControlProperties.Syslog("127.0.0.1", receiver.port(), "cef",
+            pki.writeCaBundle(dir), null, 0, null, null);
+        Path absent = dir.resolve("absent");
+        for (io.rwsafe.control.privacy.PrivacyKeys keys : List.of(
+            new io.rwsafe.control.privacy.PrivacyKeys(new ControlProperties(null, null, new ControlProperties.Privacy(
+                absent, io.rwsafe.control.support.ControlTestEnvironment.dir().resolve("dictionary.txt")), null, null,
+                null, null)),
+            new io.rwsafe.control.privacy.PrivacyKeys(new ControlProperties(null, null, new ControlProperties.Privacy(
+                io.rwsafe.control.support.ControlTestEnvironment.dir().resolve("key"), absent), null, null, null,
+                null)))) {
+            SiemExportService service = service(enabled(syslog, null), keys);
+            service.start();
+            SiemExportService.Health h = service.health();
+            service.stop();
+            assertEquals("DOWN", h.state());
+            assertTrue(h.detail().contains("the privacy key or the estate dictionary is missing"), h.detail());
+        }
+        assertNull(receiver.next(300), "nothing was sent");
+        assertEquals(0, receiver.accepted.get(), "no connection was even opened");
+
+        SiemExportService badHost = service(enabled(new ControlProperties.Syslog("127.0.0.1", receiver.port(), "cef",
+            pki.writeCaBundle(dir), "Host With Spaces", 0, null, null), null), fx.keys);
+        badHost.start();
+        assertTrue(badHost.health().detail().contains("not a plain lower-case name"));
+        badHost.stop();
+    }
+
+    @Test
+    void aRunningExportShowsItsBacklogOnHealthAndInMetrics() throws Exception {
+        TlsSyslogReceiver receiver = receiver(pki.loopbackServer());
+        seedAccountAndEvents();
+        SiemExportService service = service(enabled(new ControlProperties.Syslog("127.0.0.1", receiver.port(), "leef",
+            pki.writeCaBundle(dir), null, 0, null, null), null), fx.keys);
+        service.start();
+        try {
+            assertEquals(4, receiver.take(4, 10_000).size());
+            SiemFixture.await("health shows the drained backlog", 10_000,
+                () -> service.health().detail().contains("4 events delivered, backlog 0"));
+            assertEquals("UP", service.health().state());
+            String metrics = service.prometheus();
+            assertTrue(metrics.contains("rwsafe_siem_backlog_rows{destination=\"syslog\"} 0"), metrics);
+            assertTrue(metrics.contains("rwsafe_siem_failing{destination=\"syslog\",thread=\"reader\"} 0"));
+            assertTrue(metrics.contains("rwsafe_siem_batches_possibly_lost_total{destination=\"syslog\"} 0"));
+            assertNoRawIdentity(metrics + service.health().detail());
+        } finally {
+            service.stop();
+        }
     }
 
     private static Set<String> keys(JsonNode n) {

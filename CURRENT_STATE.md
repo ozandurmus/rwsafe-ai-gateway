@@ -166,16 +166,24 @@ Nothing applied; build and apply commands in `DEPLOY_AND_SHARED_HOST_RUNBOOK.md`
 
 `java/control` package `siem` (ROADMAP MVP "SIEM out (CEF/LEEF/HEC)", SR-SIEM-1 to 3): verdict events and audit-ledger rows
 leave as CEF or LEEF 1.0 lines over syslog with TLS (RFC 5425 octet framing) and as Splunk HEC JSON over HTTPS. A fixed
-field set (`SiemField`; C1/C2/C6/C7 only, no body field, schema test), pseudonyms only (`local_account` ledger keys
-pseudonymised, any other non-token key `[WITHHELD]`), every string stripped of control characters and ANSI sequences and
-length-capped; CEF header and extension escaping and LEEF tab safety tested against an independent parser. TLS only
-(CA bundle, host-name check, TLS 1.3/1.2), no UDP or plain-TCP path; an unsafe destination is not started and the Health
-screen's `siem` row says why. Two threads per destination around a bounded queue: the reader defers when the queue has no
-room for a page (nothing dropped, ingestion untouched), the sender retries with exponential back-off and moves the
-persisted watermark (Flyway V4 `siem_watermark`) only after acknowledgement: at least once, in order per stream, restart
-from the watermark. Fixed-label counters (`rwsafe_siem_*`). Tests run a local TLS syslog receiver and a HEC stub with
-certificates generated at runtime. Configuration and residuals: `docs/operations/LOCAL_RUN.md` "SIEM export"; the contract
-names `rwsafe-siem-destination` (ConfigMap) and `rwsafe-siem-credentials` (Secret) are in the runtime contract.
+field set (`SiemField`; C1/C2/C6/C7 only, no body field, schema test). Every value must match its exact shape and hold no
+estate term, or it leaves as `[WITHHELD]`. Ledger row keys leave as written only in an allow-listed table's key shape;
+account keys become `USR-` pseudonyms and any other key a keyed `KEY-` pseudonym. Every string is stripped of control
+characters and bounded ANSI sequences and length-capped. CEF escaping, LEEF tab, `=` and `\` safety are tested against an
+independent parser. TLS only (CA bundle, host-name check, TLS 1.3/1.2), no UDP or plain-TCP path. Without the privacy key
+or the estate dictionary nothing starts; an unsafe destination is not started; the Health screen's `siem` row says why.
+Commit-safe order (PR 23 review D-1): Flyway V7 adds `tx_id` (the writing transaction) to `verdict_event` and
+`audit_event`, and the exporter reads only rows below the snapshot's xmin in (tx_id, id) order, so a late commit is never
+overtaken. Two threads per destination around a bounded queue, a page per stream per round: the reader defers when the
+queue has no room (nothing dropped, ingestion untouched). The sender retries with exponential back-off and moves the
+persisted watermark (`siem_watermark`) only after acknowledgement: at least once, restart from the watermark. Creating a
+watermark is a ledger row. Ledger rows always export from the first one; `latest` skips only verdict events and records
+the count (Q-SIEM-1). Backlog, separate reader and sender failure states, and possibly lost syslog batches are on Health
+and in fixed-label counters (`rwsafe_siem_*`). Audit durability relies on HEC (Q-SIEM-2). Tests run a local TLS syslog
+receiver and a HEC stub with certificates generated at runtime, and two concurrent transactions where the older commits
+last. Second review: `docs/reviews/PR23_2026_10_31_ARGON_SIEM_EXPORT.md`, answered in `PR23_2026_10_31_RESPONSE.md`.
+Configuration and residuals: `docs/operations/LOCAL_RUN.md` "SIEM export". The runtime contract holds the ConfigMap
+`rwsafe-siem-destination` and the Secret `rwsafe-siem-credentials`.
 
 ## Not done
 

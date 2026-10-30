@@ -14,6 +14,15 @@ public interface SiemSink extends AutoCloseable {
 
     void deliver(List<SiemRecord> batch) throws SiemDeliveryException;
 
+    /**
+     * Batches that counted as delivered but may not have been read by the receiver: syslog over TLS has no application
+     * acknowledgement, so a connection the receiver closed after a flush may have lost the bytes in flight (PO decision
+     * Q-SIEM-2). Always 0 for an acknowledged transport (HEC).
+     */
+    default long possiblyLostBatches() {
+        return 0;
+    }
+
     @Override
     void close();
 }

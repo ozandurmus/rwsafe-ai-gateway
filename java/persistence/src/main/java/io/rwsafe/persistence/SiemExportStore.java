@@ -2,7 +2,6 @@ package io.rwsafe.persistence;
 
 import static io.rwsafe.persistence.Schema.*;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,19 +14,26 @@ import org.jooq.DSLContext;
 import org.jooq.Field;
 import org.jooq.Record;
 import org.jooq.impl.DSL;
+import org.jooq.impl.SQLDataType;
 
 /**
  * The SIEM exporter's reads and its persisted watermark (ADR-002 "SIEM watermarks", ADR-009 C8). Reads return what is
  * already stored: verdict events are metadata only (C1/C2/C6, pseudonymised before persistence) and ledger rows carry a
  * pseudonymous actor; nothing here can return a body.
  *
- * <p>Commit order is not insertion order: a row becomes visible at its transaction's commit while its
- * {@code ingested_at}/{@code occurred_at} (and its {@code audit_id}) are taken earlier. Every read therefore stops at rows
- * older than a settle window measured on the database's own clock, so a transaction that commits within the window is
- * never overtaken by the watermark. A transaction open longer than the window could be skipped; ingestion and ledger
- * transactions are single short statements (LOCAL_RUN.md "SIEM export" names the residual).
+ * <p><b>Commit-safe order</b> (PR 23 review D-1, migration V7): both exported tables carry {@code tx_id}, the id of the
+ * writing transaction. Reads return only rows with {@code tx_id < pg_snapshot_xmin(pg_current_snapshot())}, ordered by
+ * ({@code tx_id}, row id), and the watermark is the (tx_id, row id) of the last acknowledged row. Every transaction below
+ * a snapshot's xmin has ended, so its rows are all visible to that read (or were aborted); any transaction still running,
+ * or not yet holding an id, gets an id at or above that xmin, and later snapshots never have a lower xmin. A row can
+ * therefore never become visible behind the watermark. A long transaction holds the xmin back and pauses the export
+ * (counted as backlog); it never causes a skip. Each read is one statement, so one snapshot decides both the barrier and
+ * the rows.
  */
 public final class SiemExportStore {
+
+    private static final Condition VERDICT_VISIBLE = visible(VERDICT_TX_ID);
+    private static final Condition AUDIT_VISIBLE = visible(AUDIT_TX_ID);
 
     private final DSLContext dsl;
 
@@ -35,32 +41,33 @@ public final class SiemExportStore {
         this.dsl = dsl;
     }
 
-    /** The position of the last acknowledged verdict event, or null before the first one. */
-    public record VerdictPosition(Instant ingestedAt, UUID eventId) {
+    /** The position of an acknowledged verdict event. */
+    public record VerdictPosition(long txId, UUID eventId) {
 
         public VerdictPosition {
-            Objects.requireNonNull(ingestedAt, "ingestedAt");
             Objects.requireNonNull(eventId, "eventId");
         }
     }
 
-    /** One destination's watermark: {@code verdict} may be null; {@code auditId} is 0 before the first ledger row. */
-    public record Watermark(VerdictPosition verdict, long auditId) {
-
-        public static final Watermark START = new Watermark(null, 0);
-
-        public Watermark {
-            if (auditId < 0) {
-                throw new IllegalArgumentException("auditId");
-            }
-        }
+    /** The position of an acknowledged ledger row. */
+    public record AuditPosition(long txId, long auditId) {
     }
 
-    /** A stored verdict event with its ingestion time (the export order). */
-    public record ExportVerdict(StoredVerdictEvent event, Instant ingestedAt) {
+    /** One destination's watermark; a null position means "before the first row" of that stream. */
+    public record Watermark(VerdictPosition verdict, AuditPosition audit) {
+
+        public static final Watermark START = new Watermark(null, null);
+    }
+
+    /** Where a new destination starts and how many verdict events that start skips (zero from the beginning). */
+    public record Start(Watermark watermark, long skippedVerdicts) {
+    }
+
+    /** A stored verdict event with its ingestion time and writing transaction (the export order). */
+    public record ExportVerdict(StoredVerdictEvent event, Instant ingestedAt, long txId) {
 
         public VerdictPosition position() {
-            return new VerdictPosition(ingestedAt, event.eventId());
+            return new VerdictPosition(txId, event.eventId());
         }
     }
 
@@ -68,9 +75,13 @@ public final class SiemExportStore {
      * One audit-ledger row (C7). {@code actorFingerprint} is a {@code USR-} pseudonym or a {@code system:} actor (the
      * trigger refuses anything else); {@code rowKey} is the audited table's key column and may name an account.
      */
-    public record LedgerRow(long auditId, Instant occurredAt, String actorFingerprint, String actionId,
+    public record LedgerRow(long auditId, long txId, Instant occurredAt, String actorFingerprint, String actionId,
                             String reasonCode, String correlationId, String tableName, String operation,
                             String rowKey) {
+
+        public AuditPosition position() {
+            return new AuditPosition(txId, auditId);
+        }
 
         /** Never prints the row key (it may be an account name). */
         @Override
@@ -80,78 +91,139 @@ public final class SiemExportStore {
     }
 
     public Optional<Watermark> watermark(String destination) {
-        Record r = dsl.select(SW_VERDICT_INGESTED_AT, SW_VERDICT_EVENT_ID, SW_AUDIT_ID).from(SIEM_WATERMARK)
+        Field<String> vtx = text(SW_VERDICT_TX_ID, "verdict_tx");
+        Field<String> atx = text(SW_AUDIT_TX_ID, "audit_tx");
+        Record r = dsl.select(vtx, SW_VERDICT_EVENT_ID, atx, SW_AUDIT_ID).from(SIEM_WATERMARK)
             .where(SW_DESTINATION.eq(destination)).fetchOne();
         if (r == null) {
             return Optional.empty();
         }
-        VerdictPosition v = r.get(SW_VERDICT_INGESTED_AT) == null ? null
-            : new VerdictPosition(r.get(SW_VERDICT_INGESTED_AT), r.get(SW_VERDICT_EVENT_ID));
-        return Optional.of(new Watermark(v, r.get(SW_AUDIT_ID)));
+        VerdictPosition v = r.get(vtx) == null ? null
+            : new VerdictPosition(Long.parseLong(r.get(vtx)), r.get(SW_VERDICT_EVENT_ID));
+        AuditPosition a = r.get(atx) == null ? null : new AuditPosition(Long.parseLong(r.get(atx)), r.get(SW_AUDIT_ID));
+        return Optional.of(new Watermark(v, a));
     }
 
-    /** Stores the destination's watermark (insert or replace). */
-    public void saveWatermark(String destination, Watermark w) {
-        Instant at = w.verdict() == null ? null : w.verdict().ingestedAt();
-        UUID id = w.verdict() == null ? null : w.verdict().eventId();
-        dsl.insertInto(SIEM_WATERMARK, SW_DESTINATION, SW_VERDICT_INGESTED_AT, SW_VERDICT_EVENT_ID, SW_AUDIT_ID)
-            .values(destination, at, id, w.auditId())
-            .onConflict(SW_DESTINATION).doUpdate()
-            .set(SW_VERDICT_INGESTED_AT, at)
-            .set(SW_VERDICT_EVENT_ID, id)
-            .set(SW_AUDIT_ID, w.auditId())
-            .set(SW_UPDATED_AT, DSL.currentInstant())
-            .execute();
+    /** The skip count recorded when the destination's watermark was created. */
+    public long skippedAtStart(String destination) {
+        Long n = dsl.select(SW_SKIPPED_AT_START).from(SIEM_WATERMARK).where(SW_DESTINATION.eq(destination))
+            .fetchOne(SW_SKIPPED_AT_START);
+        return n == null ? 0 : n;
     }
 
-    /** The newest settled positions: a destination configured to start at the latest event begins here. */
-    public Watermark latest(Duration settle) {
-        Record v = dsl.select(INGESTED_AT, EVENT_ID).from(VERDICT_EVENT).where(settled(INGESTED_AT, settle))
-            .orderBy(INGESTED_AT.desc(), EVENT_ID.desc()).limit(1).fetchOne();
-        Long audit = dsl.select(DSL.max(AUDIT_ID)).from(AUDIT_EVENT).where(settled(AUDIT_OCCURRED_AT, settle))
-            .fetchOne(0, Long.class);
-        return new Watermark(v == null ? null : new VerdictPosition(v.get(INGESTED_AT), v.get(EVENT_ID)),
-            audit == null ? 0 : audit);
-    }
-
-    /** Settled verdict events after {@code after} (null: from the first), oldest first, at most {@code limit}. */
-    public List<ExportVerdict> verdictsAfter(VerdictPosition after, Duration settle, int limit) {
-        Condition c = settled(INGESTED_AT, settle);
-        if (after != null) {
-            c = c.and(DSL.row(INGESTED_AT, EVENT_ID).gt(after.ingestedAt(), after.eventId()));
+    /**
+     * A {@code latest} start for verdict events only: the newest visible verdict event and how many visible events lie
+     * at or before it (one statement, one snapshot). Ledger rows are never skipped (PO decision Q-SIEM-1).
+     */
+    public Start latestVerdicts() {
+        Field<String> tx = text(VERDICT_TX_ID, "tx");
+        Field<Integer> total = DSL.count().over().as("visible_total");
+        Record r = dsl.select(tx, EVENT_ID, total).from(VERDICT_EVENT).where(VERDICT_VISIBLE)
+            .orderBy(VERDICT_TX_ID.desc(), EVENT_ID.desc()).limit(1).fetchOne();
+        if (r == null) {
+            return new Start(Watermark.START, 0);
         }
+        return new Start(new Watermark(new VerdictPosition(Long.parseLong(r.get(tx)), r.get(EVENT_ID)), null),
+            r.get(total));
+    }
+
+    /**
+     * Creates the destination's watermark once, in a transaction under {@code audit}, so the start (and a skip) is a
+     * ledger row that is itself exported. False when the row already existed (nothing changed).
+     */
+    public boolean createWatermark(String destination, Start start, String startFrom, AuditContext audit) {
+        return dsl.transactionResult(cfg -> {
+            DSLContext tx = DSL.using(cfg);
+            audit.apply(tx);
+            Watermark w = start.watermark();
+            // Plain SQL with typed binds: jOOQ has no xid8 type (the columns are cast from their text form).
+            return tx.execute("INSERT INTO siem_watermark (destination, verdict_tx_id, verdict_event_id, audit_tx_id, "
+                    + "audit_id, start_from, skipped_at_start) VALUES ({0}, cast({1} as xid8), {2}, cast({3} as xid8), "
+                    + "{4}, {5}, {6}) ON CONFLICT (destination) DO NOTHING",
+                DSL.val(destination, SQLDataType.CLOB), verdictTx(w), verdictId(w), auditTx(w), auditId(w),
+                DSL.val(startFrom, SQLDataType.CLOB), DSL.val(start.skippedVerdicts(), SQLDataType.BIGINT)) == 1;
+        });
+    }
+
+    /** Moves an existing watermark (system bookkeeping, not ledgered). */
+    public void saveWatermark(String destination, Watermark w) {
+        int n = dsl.execute("UPDATE siem_watermark SET verdict_tx_id = cast({0} as xid8), verdict_event_id = {1}, "
+                + "audit_tx_id = cast({2} as xid8), audit_id = {3}, updated_at = now() WHERE destination = {4}",
+            verdictTx(w), verdictId(w), auditTx(w), auditId(w), DSL.val(destination, SQLDataType.CLOB));
+        if (n != 1) {
+            throw new IllegalStateException("no watermark row for the destination");
+        }
+    }
+
+    /** Visible verdict events after {@code after} (null: from the first), in export order, at most {@code limit}. */
+    public List<ExportVerdict> verdictsAfter(VerdictPosition after, int limit) {
+        Field<String> tx = text(VERDICT_TX_ID, "tx");
         List<Field<?>> fields = new ArrayList<>(VerdictQueries.eventFields());
         fields.add(INGESTED_AT);
-        List<Record> rows = dsl.select(fields).from(VERDICT_EVENT).where(c).orderBy(INGESTED_AT, EVENT_ID).limit(limit)
-            .fetch();
+        fields.add(tx);
+        List<Record> rows = dsl.select(fields).from(VERDICT_EVENT).where(VERDICT_VISIBLE.and(after(after)))
+            .orderBy(VERDICT_TX_ID, EVENT_ID).limit(limit).fetch();
         Map<UUID, List<FindingCount>> findings = new VerdictQueries(dsl).findings(
             rows.stream().map(r -> r.get(EVENT_ID)).toList());
         return rows.stream().map(r -> new ExportVerdict(
-            VerdictQueries.toEvent(r, findings.getOrDefault(r.get(EVENT_ID), List.of())), r.get(INGESTED_AT))).toList();
+            VerdictQueries.toEvent(r, findings.getOrDefault(r.get(EVENT_ID), List.of())), r.get(INGESTED_AT),
+            Long.parseLong(r.get(tx)))).toList();
     }
 
-    /** Settled ledger rows with an id above {@code afterId}, in id order, at most {@code limit}. */
-    public List<LedgerRow> ledgerAfter(long afterId, Duration settle, int limit) {
-        return dsl.select(AUDIT_ID, AUDIT_OCCURRED_AT, AUDIT_ACTOR, AUDIT_ACTION, AUDIT_REASON, AUDIT_CORRELATION,
+    /** Visible ledger rows after {@code after} (null: from the first), in export order, at most {@code limit}. */
+    public List<LedgerRow> ledgerAfter(AuditPosition after, int limit) {
+        Field<String> tx = text(AUDIT_TX_ID, "tx");
+        return dsl.select(AUDIT_ID, tx, AUDIT_OCCURRED_AT, AUDIT_ACTOR, AUDIT_ACTION, AUDIT_REASON, AUDIT_CORRELATION,
                 AUDIT_TABLE, AUDIT_OPERATION, AUDIT_ROW_KEY)
-            .from(AUDIT_EVENT).where(AUDIT_ID.gt(afterId).and(settled(AUDIT_OCCURRED_AT, settle)))
-            .orderBy(AUDIT_ID).limit(limit)
-            .fetch(r -> new LedgerRow(r.get(AUDIT_ID), r.get(AUDIT_OCCURRED_AT), r.get(AUDIT_ACTOR), r.get(AUDIT_ACTION),
-                r.get(AUDIT_REASON), r.get(AUDIT_CORRELATION), r.get(AUDIT_TABLE), r.get(AUDIT_OPERATION),
-                r.get(AUDIT_ROW_KEY)));
+            .from(AUDIT_EVENT).where(AUDIT_VISIBLE.and(after(after)))
+            .orderBy(AUDIT_TX_ID, AUDIT_ID).limit(limit)
+            .fetch(r -> new LedgerRow(r.get(AUDIT_ID), Long.parseLong(r.get(tx)), r.get(AUDIT_OCCURRED_AT),
+                r.get(AUDIT_ACTOR), r.get(AUDIT_ACTION), r.get(AUDIT_REASON), r.get(AUDIT_CORRELATION),
+                r.get(AUDIT_TABLE), r.get(AUDIT_OPERATION), r.get(AUDIT_ROW_KEY)));
     }
 
-    /** How many settled rows lie beyond the watermark (the backlog on the health screen). */
-    public long backlog(Watermark w, Duration settle) {
-        Condition v = settled(INGESTED_AT, settle);
-        if (w.verdict() != null) {
-            v = v.and(DSL.row(INGESTED_AT, EVENT_ID).gt(w.verdict().ingestedAt(), w.verdict().eventId()));
-        }
-        return (long) dsl.fetchCount(VERDICT_EVENT, v)
-            + dsl.fetchCount(AUDIT_EVENT, AUDIT_ID.gt(w.auditId()).and(settled(AUDIT_OCCURRED_AT, settle)));
+    /**
+     * Committed rows beyond the watermark, visible or still held behind the barrier by a running transaction's xmin
+     * (the backlog on the health screen and in the metrics).
+     */
+    public long backlog(Watermark w) {
+        return (long) dsl.fetchCount(VERDICT_EVENT, after(w.verdict()))
+            + dsl.fetchCount(AUDIT_EVENT, after(w.audit()));
     }
 
-    private static Condition settled(Field<Instant> at, Duration settle) {
-        return DSL.condition("{0} < now() - ({1} * interval '1 millisecond')", at, DSL.val(settle.toMillis()));
+    private static Condition after(VerdictPosition p) {
+        return p == null ? DSL.trueCondition()
+            : DSL.condition("({0}, {1}) > (cast({2} as xid8), {3})", VERDICT_TX_ID, EVENT_ID,
+                DSL.val(Long.toString(p.txId())), DSL.val(p.eventId(), SQLDataType.UUID));
+    }
+
+    private static Condition after(AuditPosition p) {
+        return p == null ? DSL.trueCondition()
+            : DSL.condition("({0}, {1}) > (cast({2} as xid8), {3})", AUDIT_TX_ID, AUDIT_ID,
+                DSL.val(Long.toString(p.txId())), DSL.val(p.auditId(), SQLDataType.BIGINT));
+    }
+
+    private static Condition visible(Field<Object> txId) {
+        return DSL.condition("{0} < pg_snapshot_xmin(pg_current_snapshot())", txId);
+    }
+
+    private static Field<String> text(Field<Object> xid8, String alias) {
+        return DSL.field("{0}::text", SQLDataType.CLOB, xid8).as(alias);
+    }
+
+    private static Field<String> verdictTx(Watermark w) {
+        return DSL.val(w.verdict() == null ? null : Long.toString(w.verdict().txId()), SQLDataType.CLOB);
+    }
+
+    private static Field<UUID> verdictId(Watermark w) {
+        return DSL.val(w.verdict() == null ? null : w.verdict().eventId(), SQLDataType.UUID);
+    }
+
+    private static Field<String> auditTx(Watermark w) {
+        return DSL.val(w.audit() == null ? null : Long.toString(w.audit().txId()), SQLDataType.CLOB);
+    }
+
+    private static Field<Long> auditId(Watermark w) {
+        return DSL.val(w.audit() == null ? null : w.audit().auditId(), SQLDataType.BIGINT);
     }
 }

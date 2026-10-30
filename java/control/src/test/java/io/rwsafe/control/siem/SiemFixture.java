@@ -20,6 +20,7 @@ final class SiemFixture {
     final Database db;
     final Pseudonymiser pseudonymiser;
     final IngestionService ingestion;
+    final PrivacyKeys keys;
     final SiemRecords records;
 
     SiemFixture() throws Exception {
@@ -27,15 +28,15 @@ final class SiemFixture {
         ControlProperties props = new ControlProperties(null, null, new ControlProperties.Privacy(
             ControlTestEnvironment.dir().resolve("key"), ControlTestEnvironment.dir().resolve("dictionary.txt")), null,
             null, null, null);
-        PrivacyKeys keys = new PrivacyKeys(props);
+        keys = new PrivacyKeys(props);
         pseudonymiser = new Pseudonymiser(keys);
         ingestion = new IngestionService(db, keys, pseudonymiser);
-        records = new SiemRecords(pseudonymiser::user);
+        records = new SiemRecords(pseudonymiser::user, key -> pseudonymiser.token("KEY", key), keys.estateTerms());
     }
 
     static SiemExporter.Settings settings(int capacity, int page, int batch, boolean latest) {
-        return new SiemExporter.Settings(Duration.ofMillis(20), Duration.ZERO, capacity, page, batch,
-            Duration.ofMillis(20), Duration.ofMillis(160), latest);
+        return new SiemExporter.Settings(Duration.ofMillis(20), capacity, page, batch, Duration.ofMillis(20),
+            Duration.ofMillis(160), latest, Duration.ZERO);
     }
 
     /** Ingests {@code n} synthetic events (one batch) and returns their ids in order. */

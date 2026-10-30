@@ -38,6 +38,8 @@ public final class HecSink implements SiemSink {
 
     public HecSink(String url, Path tokenFile, SSLContext tls, String host, String index, Duration timeout) {
         this.endpoint = endpoint(url);
+        // The token first: a refused construction creates no HTTP client (and no selector thread) to leak (D-9).
+        this.token = readToken(tokenFile);
         this.tokenFile = tokenFile;
         this.host = host;
         this.index = index == null || index.isBlank() ? null : index;
@@ -47,7 +49,6 @@ public final class HecSink implements SiemSink {
         p.setEndpointIdentificationAlgorithm("HTTPS");
         this.client = HttpClient.newBuilder().sslContext(tls).sslParameters(p).connectTimeout(timeout)
             .followRedirects(HttpClient.Redirect.NEVER).version(HttpClient.Version.HTTP_1_1).build();
-        this.token = readToken(tokenFile);
     }
 
     /** {@code https://host[:port][/path]}; without a path, the event endpoint. Anything else is refused. */

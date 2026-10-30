@@ -1,6 +1,7 @@
 package io.rwsafe.control.siem;
 
 import io.rwsafe.control.siem.SiemField.SiemStream;
+import io.rwsafe.persistence.SiemExportStore.AuditPosition;
 import io.rwsafe.persistence.SiemExportStore.VerdictPosition;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -12,14 +13,16 @@ import java.util.Set;
 /**
  * One event on its way to the SIEM, in a format-neutral shape: the fixed fields of {@link SiemField} with values that are
  * already cleaned (SR-SIEM-1) and length-capped per field. Built only by {@link SiemRecords}. The watermark position
- * travels with it ({@code verdictPosition} for a verdict event, {@code auditId} for a ledger row) and is never exported.
+ * travels with it ({@code verdictPosition} for a verdict event, {@code auditPosition} for a ledger row) and is never
+ * exported.
  *
  * @param eventClassId CEF Device Event Class ID and LEEF EventID, for example {@code verdict.BLOCK}
  * @param name         the CEF Name, a fixed sentence plus a vocabulary token
  * @param severity     0 to 10 (CEF); the syslog and LEEF severities derive from it
  */
 public record SiemRecord(SiemStream stream, String eventClassId, String name, int severity, Instant time,
-                         List<Value> values, VerdictPosition verdictPosition, long auditId) {
+                         List<Value> values, VerdictPosition verdictPosition,
+                         AuditPosition auditPosition) {
 
     static final int MAX_CLASS_ID = 96;
     static final int MAX_NAME = 128;
@@ -37,8 +40,9 @@ public record SiemRecord(SiemStream stream, String eventClassId, String name, in
         if (severity < 0 || severity > 10) {
             throw new IllegalArgumentException("severity is 0 to 10");
         }
-        if ((stream == SiemStream.VERDICT) != (verdictPosition != null)) {
-            throw new IllegalArgumentException("a verdict record carries its position, an audit record its id");
+        if ((stream == SiemStream.VERDICT) != (verdictPosition != null)
+            || (stream == SiemStream.AUDIT) != (auditPosition != null)) {
+            throw new IllegalArgumentException("a record carries the position of its own stream only");
         }
         eventClassId = nonEmpty(SiemText.clean(eventClassId, MAX_CLASS_ID), "unknown");
         name = nonEmpty(SiemText.clean(name, MAX_NAME), "rwsafe event");

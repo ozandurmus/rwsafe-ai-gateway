@@ -20,7 +20,8 @@ import org.junit.jupiter.api.Test;
 class SiemFormatsTest {
 
     private static SiemRecord audit(String eventClass, Value... values) {
-        return new SiemRecord(SiemStream.AUDIT, eventClass, "Audit test", 3, Rows.AT, List.of(values), null, 7);
+        return new SiemRecord(SiemStream.AUDIT, eventClass, "Audit test", 3, Rows.AT, List.of(values), null,
+            new io.rwsafe.persistence.SiemExportStore.AuditPosition(1, 7));
     }
 
     @Test
@@ -66,7 +67,7 @@ class SiemFormatsTest {
     void leefValuesCannotSplitOnTabsAndTheHeaderIsEscaped() {
         SiemRecord r = new SiemRecord(SiemStream.VERDICT, "verdict.A|B", "n", 5, Rows.AT,
             List.of(new Value(SiemField.REASON, "x\tusrName=forged\tsev=10"), new Value(SiemField.USER, "USR-0123456789")),
-            Rows.verdict(Verdict.WARN, "openai", null).position(), 0);
+            Rows.verdict(Verdict.WARN, "openai", null).position(), null);
         String line = SiemFormats.leef(r, "1");
         assertTrue(line.startsWith("LEEF:1.0|rwsafe|ai-gateway|1|verdict.A\\|B|devTime="), line);
         String attributes = line.substring(line.indexOf("|devTime=") + 1);
@@ -77,11 +78,12 @@ class SiemFormatsTest {
         }
         assertEquals(List.of("devTime", "devTimeFormat", "cat", "sev", "reason", "usrName"), keys,
             "a tab inside a value never makes a new attribute");
-        assertTrue(pairs.contains("reason=xusrName=forgedsev=10"));
+        assertTrue(pairs.contains("reason=xusrName\\=forgedsev\\=10"), pairs.toString());
         assertTrue(pairs.contains("sev=5"));
         assertTrue(pairs.contains("devTime=2026-10-30T09:15:30.123Z"));
         assertTrue(pairs.contains("devTimeFormat=" + SiemFormats.LEEF_TIME_PATTERN));
         assertEquals("ab", SiemFormats.leefValue("a\tb"));
+        assertEquals("a\\=b\\\\c", SiemFormats.leefValue("a=b\\c"), "equals and backslash escaped (D-5)");
     }
 
     @Test
@@ -113,6 +115,16 @@ class SiemFormatsTest {
         assertEquals(5, n.get("event").get("severity").asInt());
         assertFalse(SiemFormats.hec(Rows.RECORDS.ledger(Rows.ledger(4, "login_record", "4")), "h", null)
             .contains("\"index\""), "no index: the token's default");
+    }
+
+    @Test
+    void everyHeaderAndEnvelopeFieldIsCleaned() throws Exception {
+        SiemRecord r = Rows.RECORDS.verdict(Rows.verdict(Verdict.ALLOW, "openai", null));
+        assertTrue(SiemFormats.cef(r, "1\r\n|2\u001b[31m").startsWith("CEF:0|rwsafe|ai-gateway|1\\|2|"));
+        assertTrue(SiemFormats.leef(r, "\u0000").startsWith("LEEF:1.0|rwsafe|ai-gateway|dev|"));
+        JsonNode n = new ObjectMapper().readTree(SiemFormats.hec(r, "rw\r\nsafe", "idx\u0007"));
+        assertEquals("rwsafe", n.get("host").asText());
+        assertEquals("idx", n.get("index").asText());
     }
 
     @Test

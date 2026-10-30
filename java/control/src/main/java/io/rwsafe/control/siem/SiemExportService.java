@@ -1,11 +1,13 @@
 package io.rwsafe.control.siem;
 
 import io.rwsafe.control.config.ControlProperties;
+import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
 import io.rwsafe.control.siem.SiemDeliveryException.Reason;
 import io.rwsafe.control.siem.SiemField.SiemStream;
 import io.rwsafe.control.siem.SiemFormats.LineFormat;
 import io.rwsafe.persistence.Database;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,25 +20,35 @@ import org.springframework.stereotype.Component;
 
 /**
  * Starts one {@link SiemExporter} per configured destination after the context is up and stops it first at shutdown.
- * A destination whose configuration is incomplete or unsafe (no CA bundle, no token, a non-HTTPS URL, an unknown format)
- * is not started and shows on the health screen with the fixed reason: nothing is ever sent in clear or to an unverified
- * receiver (SR-SIEM-3, AGENTS.md 4.10).
+ * Fail closed (AGENTS.md 4.10, PR 23 review D-3): without rwsafe's privacy key or the estate dictionary no exporter
+ * starts, since row keys could be neither pseudonymised nor checked. A destination whose configuration is incomplete or
+ * unsafe (no CA bundle, no token, a non-HTTPS URL, an unknown format, a host name that is not a plain name) is not
+ * started either. Both show on the health screen as {@code DOWN} with the fixed reason: nothing is ever sent in clear,
+ * unmasked or to an unverified receiver (SR-SIEM-3).
+ *
+ * <p>Audit durability (PO decision Q-SIEM-2): both sinks are supported; only HEC acknowledges each batch, so a deployment
+ * that relies on the SIEM copy of the audit ledger uses HEC (alone or beside syslog). Syslog batches whose connection the
+ * receiver closed after the flush are counted as possibly lost and shown.
  */
 @Component
 public class SiemExportService implements SmartLifecycle {
 
+    static final Duration BACKLOG_INTERVAL = Duration.ofSeconds(30);
     private static final Logger LOG = LoggerFactory.getLogger(SiemExportService.class);
 
     private final ControlProperties.Siem config;
     private final Database database;
+    private final PrivacyKeys keys;
     private final Pseudonymiser pseudonymiser;
     private final List<SiemExporter> exporters = new ArrayList<>();
     private final Map<String, String> refused = new LinkedHashMap<>();
     private volatile boolean running;
 
-    public SiemExportService(ControlProperties properties, Database database, Pseudonymiser pseudonymiser) {
+    public SiemExportService(ControlProperties properties, Database database, PrivacyKeys keys,
+                             Pseudonymiser pseudonymiser) {
         this.config = properties.siem();
         this.database = database;
+        this.keys = keys;
         this.pseudonymiser = pseudonymiser;
     }
 
@@ -46,20 +58,40 @@ public class SiemExportService implements SmartLifecycle {
         if (!config.enabled()) {
             return;
         }
-        SiemRecords records = new SiemRecords(pseudonymiser::user);
-        SiemExporter.Settings settings = new SiemExporter.Settings(config.pollInterval(), config.settle(),
-            config.queueCapacity(), config.pageSize(), config.batchSize(), config.backoffInitial(),
-            config.backoffMax(), config.startFrom().equals("latest"));
+        if (!keys.keyAvailable() || !keys.maskingAvailable()) {
+            refuse("siem", "the privacy key or the estate dictionary is missing; nothing is exported");
+            return;
+        }
+        if (!config.syslog().configured() && !config.hec().configured()) {
+            refuse("siem", "export is enabled but no destination is set");
+            return;
+        }
+        String host = config.syslog().hostname();
+        if (!plainHostLabel(host)) {
+            refuse("siem", "the exporter host name is not a plain lower-case name");
+            return;
+        }
+        SiemRecords records = new SiemRecords(pseudonymiser::user, key -> pseudonymiser.token("KEY", key),
+            keys.estateTerms());
+        if (records.estate(host)) {
+            refuse("siem", "the exporter host name contains an estate term");
+            return;
+        }
+        SiemExporter.Settings settings = new SiemExporter.Settings(config.pollInterval(), config.queueCapacity(),
+            config.pageSize(), config.batchSize(), config.backoffInitial(), config.backoffMax(),
+            config.startFrom().equals("latest"), BACKLOG_INTERVAL);
         if (config.syslog().configured()) {
             build("syslog", () -> syslogSink(config.syslog()), records, settings);
         }
         if (config.hec().configured()) {
-            build("hec", () -> hecSink(config.hec(), config.syslog().hostname()), records, settings);
-        }
-        if (!config.syslog().configured() && !config.hec().configured()) {
-            refused.put("siem", "export is enabled but no destination is set");
+            build("hec", () -> hecSink(config.hec(), host), records, settings);
         }
         exporters.forEach(SiemExporter::start);
+    }
+
+    private void refuse(String destination, String reason) {
+        refused.put(destination, reason);
+        LOG.warn("SIEM export to {} is not started: {}", destination, reason);
     }
 
     private interface SinkFactory {
@@ -72,8 +104,7 @@ public class SiemExportService implements SmartLifecycle {
                 new SiemMetrics(destination, settings.queueCapacity())));
         } catch (IllegalStateException | IllegalArgumentException e) {
             // Our own fixed sentences only (SiemTls, HecSink, this class): no value, path or host is in them.
-            refused.put(destination, e.getMessage());
-            LOG.warn("SIEM export to {} is not started: {}", destination, e.getMessage());
+            refuse(destination, e.getMessage());
         }
     }
 
@@ -92,17 +123,25 @@ public class SiemExportService implements SmartLifecycle {
 
     static SiemSink hecSink(ControlProperties.Hec c, String host) {
         String index = c.index() == null ? "" : c.index().strip();
-        if (!index.isEmpty() && !SiemRecords.token(index, 80)) {
+        if (!index.isEmpty() && !SiemRecords.plain(index, 80)) {
             throw new IllegalArgumentException("the HEC index is not a plain name");
         }
         return new HecSink(c.url(), c.tokenFile(), SiemTls.clientContext(c.caFile()), host, index, c.timeout());
+    }
+
+    /** The RFC 5424 HOSTNAME and HEC {@code host} the exporter writes: a lower-case label, a product name. */
+    static boolean plainHostLabel(String s) {
+        return s != null && !s.isEmpty() && s.length() <= 63 && s.charAt(0) >= 'a' && s.charAt(0) <= 'z'
+            && s.chars().allMatch(c -> (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-');
     }
 
     /** The build's version, cleaned for a CEF/LEEF header; {@code dev} outside a packaged build. */
     static String productVersion() {
         String v = SiemExportService.class.getPackage().getImplementationVersion();
         String cleaned = SiemText.clean(v == null ? "dev" : v, 32);
-        return SiemRecords.token(cleaned, 32) ? cleaned : "dev";
+        boolean plain = !cleaned.isEmpty()
+            && cleaned.chars().allMatch(c -> Character.isLetterOrDigit(c) || c == '.' || c == '-' || c == '_');
+        return plain ? cleaned : "dev";
     }
 
     @Override
@@ -123,8 +162,9 @@ public class SiemExportService implements SmartLifecycle {
     }
 
     /**
-     * One health line: {@code UP}, {@code DEGRADED} (a destination is retrying after a failure), {@code DOWN} (a
-     * destination was refused at start) or {@code UNKNOWN} (export off), and a fixed-vocabulary detail.
+     * One health line: {@code UP}, {@code DEGRADED} (a destination's reader or sender is retrying after a failure),
+     * {@code DOWN} (export refused at start) or {@code UNKNOWN} (export off), and a fixed-vocabulary detail with the
+     * backlog, the queue, possibly lost syslog batches and a {@code latest} start's skip count.
      */
     public record Health(String state, String detail) {
     }
@@ -139,16 +179,31 @@ public class SiemExportService implements SmartLifecycle {
         refused.forEach((destination, reason) -> details.add(destination + ": not started, " + reason));
         for (SiemExporter e : exporters) {
             SiemMetrics m = e.metrics();
-            Reason failure = m.lastFailure();
-            long sent = m.exported(SiemStream.VERDICT) + m.exported(SiemStream.AUDIT);
-            if (failure != null) {
+            StringBuilder d = new StringBuilder(e.destination()).append(": ");
+            Reason read = m.readFailure();
+            Reason send = m.sendFailure();
+            if (read != null || send != null) {
                 degraded = true;
-                details.add(e.destination() + ": retrying after a failure (" + failure.name().toLowerCase(Locale.ROOT)
-                    + "), queue " + m.queueDepth() + "/" + m.queueCapacity());
-            } else {
-                details.add(e.destination() + ": " + sent + " events delivered, queue " + m.queueDepth() + "/"
-                    + m.queueCapacity());
+                d.append("retrying after a failure (");
+                if (read != null) {
+                    d.append("reader ").append(read.name().toLowerCase(Locale.ROOT));
+                }
+                if (send != null) {
+                    d.append(read != null ? ", " : "").append("sender ").append(send.name().toLowerCase(Locale.ROOT));
+                }
+                d.append("), ");
             }
+            d.append(m.exported(SiemStream.VERDICT) + m.exported(SiemStream.AUDIT)).append(" events delivered, backlog ")
+                .append(m.backlog() < 0 ? "not counted yet" : Long.toString(m.backlog())).append(", queue ")
+                .append(m.queueDepth()).append('/').append(m.queueCapacity());
+            if (m.possiblyLostBatches() > 0) {
+                d.append(", ").append(m.possiblyLostBatches()).append(" batches possibly lost (connection closed after "
+                    + "the flush)");
+            }
+            if (m.skippedAtStart() > 0) {
+                d.append(", ").append(m.skippedAtStart()).append(" verdict events skipped at a latest start");
+            }
+            details.add(d.toString());
         }
         return new Health(down ? "DOWN" : degraded ? "DEGRADED" : "UP", String.join("; ", details));
     }

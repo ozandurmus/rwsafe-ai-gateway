@@ -33,6 +33,10 @@ class SiemSchemaTest {
         "sizeBytes", "decisionMicros", "policySnapshotVersion");
     static final Set<String> AUDIT_EVENT_KEYS = Set.of("eventClass", "severity", "eventId", "stream", "action", "reason",
         "usrName", "auditedTable", "operation", "rowKey", "correlationId");
+    /** An e-mail-shaped synthetic value, assembled at runtime (AGENTS.md 4.5: no address literal in the tree). */
+    private static final String EMAIL = "first.last" + '@' + "example.test";
+    private static final io.rwsafe.persistence.SiemExportStore.AuditPosition POSITION =
+        new io.rwsafe.persistence.SiemExportStore.AuditPosition(1, 1);
     static final Set<String> HEC_ENVELOPE_KEYS = Set.of("time", "host", "source", "sourcetype", "index", "event");
 
     @Test
@@ -63,7 +67,8 @@ class SiemSchemaTest {
 
     @Test
     void theRecordHasNoFreeFormSlot() {
-        assertEquals(List.of("stream", "eventClassId", "name", "severity", "time", "values", "verdictPosition", "auditId"),
+        assertEquals(List.of("stream", "eventClassId", "name", "severity", "time", "values", "verdictPosition",
+                "auditPosition"),
             Arrays.stream(SiemRecord.class.getRecordComponents()).map(RecordComponent::getName).toList(),
             "every exported value is a SiemField value; the other components are fixed vocabulary or positions");
         assertEquals(List.of("field", "text"),
@@ -73,9 +78,10 @@ class SiemSchemaTest {
     @Test
     void aRecordRefusesAFieldOfTheOtherStreamOrATwiceSetField() {
         assertThrows(IllegalArgumentException.class, () -> new SiemRecord(SiemStream.AUDIT, "a", "n", 3, Rows.AT,
-            List.of(new SiemRecord.Value(SiemField.VERDICT, "BLOCK")), null, 1));
+            List.of(new SiemRecord.Value(SiemField.VERDICT, "BLOCK")), null, POSITION));
         assertThrows(IllegalArgumentException.class, () -> new SiemRecord(SiemStream.AUDIT, "a", "n", 3, Rows.AT,
-            List.of(new SiemRecord.Value(SiemField.REASON, "A"), new SiemRecord.Value(SiemField.REASON, "B")), null, 1));
+            List.of(new SiemRecord.Value(SiemField.REASON, "A"), new SiemRecord.Value(SiemField.REASON, "B")), null,
+            POSITION));
     }
 
     @Test
@@ -90,25 +96,66 @@ class SiemSchemaTest {
         assertEquals(AUDIT_EVENT_KEYS, keys(audit.get("event")));
     }
 
+    /**
+     * PR 23 review D-2: a row key leaves as written only in its table's exact shape; an account key becomes the
+     * account's USR- pseudonym, any other key (an e-mail address, a host name, an address, an account, an estate term)
+     * a keyed KEY- pseudonym, and a value that cannot be pseudonymised is withheld.
+     */
     @Test
-    void identityKeyedLedgerRowsArePseudonymisedAndOddKeysWithheld() {
-        SiemRecords records = new SiemRecords(account -> "USR-" + "ab".repeat(5));
-        assertEquals("USR-ababababab",
-            records.ledger(Rows.ledger(1, "local_account", "synthetic-glass")).value(SiemField.ROW_KEY));
-        assertEquals("class.TCKN@v2:security_admin",
-            records.ledger(Rows.ledger(2, "policy_approval", "class.TCKN@v2:security_admin")).value(SiemField.ROW_KEY));
-        assertEquals(SiemRecords.WITHHELD,
-            records.ledger(Rows.ledger(3, "some_table", "first last")).value(SiemField.ROW_KEY), "not a token");
-        assertEquals(SiemRecords.WITHHELD, records.ledger(Rows.ledger(4, "some_table",
-            io.rwsafe.control.support.Synthetic.tckn(4))).value(SiemField.ROW_KEY), "a detector hit");
+    void rowKeysLeaveOnlyInAllowListedShapesOtherwisePseudonymised() {
+        SiemRecords records = new SiemRecords(account -> "USR-" + "ab".repeat(5), key -> "KEY-" + "cd".repeat(2),
+            List.of("synthetic-estate"));
+        assertEquals("USR-ababababab", rowKey(records, "local_account", "synthetic-glass"));
+        assertEquals("class.TCKN@v2:security_admin", rowKey(records, "policy_approval", "class.TCKN@v2:security_admin"));
+        assertEquals("platform.openai@v3", rowKey(records, "policy_rule_version", "platform.openai@v3"));
+        assertEquals("42", rowKey(records, "login_record", "42"));
+        assertEquals("hec", rowKey(records, "siem_watermark", "hec"));
+        String[] identities = {EMAIL, "host-01.example.test", "192.0.2.10", "2001:db8::10",
+            "synthetic.account", "someaccount", "first last", io.rwsafe.control.support.Synthetic.tckn(4)};
+        for (String table : new String[] {"some_future_table", "login_record", "policy_snapshot"}) {
+            for (String key : identities) {
+                assertEquals("KEY-cdcd", rowKey(records, table, key), table + " with an identity-shaped key");
+            }
+        }
+        assertEquals("KEY-cdcd", rowKey(records, "policy_rule_version", "class.synthetic-estate@v1"),
+            "a key in its table's shape that holds an estate term is pseudonymised");
+        assertEquals("KEY-cdcd", rowKey(records, "siem_watermark", "udp"));
+
         SiemRecords keyMissing = new SiemRecords(account -> {
             throw new IllegalStateException("privacy key");
-        });
-        assertEquals(SiemRecords.WITHHELD,
-            keyMissing.ledger(Rows.ledger(5, "local_account", "synthetic-glass")).value(SiemField.ROW_KEY),
-            "without the privacy key the account name is withheld, never sent");
+        }, key -> {
+            throw new IllegalStateException("privacy key");
+        }, List.of());
+        assertEquals(SiemRecords.WITHHELD, rowKey(keyMissing, "local_account", "synthetic-glass"));
+        assertEquals(SiemRecords.WITHHELD, rowKey(keyMissing, "some_table", EMAIL));
         assertFalse(records.ledger(Rows.ledger(6, "local_account", "synthetic-glass")).toString()
             .contains("synthetic-glass"));
+    }
+
+    @Test
+    void everyOtherValueMustMatchItsShapeAndHoldNoEstateTerm() {
+        SiemRecords records = new SiemRecords(a -> "USR-" + "ab".repeat(5), k -> "KEY-cdcd", List.of("synthetic-estate"));
+        io.rwsafe.persistence.StoredVerdictEvent odd = new io.rwsafe.persistence.StoredVerdictEvent(
+            java.util.UUID.randomUUID(), Rows.AT, "reqmod", "synthetic-estate-chat", "web.example.test", "chat",
+            Verdict.BLOCK, EMAIL, List.of(), 1, 1, "first.last", "192.0.2.10",
+            "mtls_verified", 1, "host-01.example.test", "k1");
+        SiemRecord r = records.verdict(new io.rwsafe.persistence.SiemExportStore.ExportVerdict(odd, Rows.AT, 7));
+        for (SiemField f : List.of(SiemField.PLATFORM, SiemField.SURFACE, SiemField.REASON, SiemField.USER,
+            SiemField.CLIENT_SUBNET, SiemField.CORRELATION_ID)) {
+            assertEquals(SiemRecords.WITHHELD, r.value(f), f.name());
+        }
+        assertEquals("chat", r.value(SiemField.STEP));
+        io.rwsafe.persistence.SiemExportStore.LedgerRow ledger = new io.rwsafe.persistence.SiemExportStore.LedgerRow(
+            1, 2, Rows.AT, "first.last", "policy.synthetic-estate", "R", EMAIL, "local_account",
+            "INSERT", "x");
+        SiemRecord a = records.ledger(ledger);
+        assertEquals(SiemRecords.WITHHELD, a.value(SiemField.USER));
+        assertEquals(SiemRecords.WITHHELD, a.value(SiemField.ACTION));
+        assertEquals(SiemRecords.WITHHELD, a.value(SiemField.CORRELATION_ID));
+    }
+
+    private static String rowKey(SiemRecords records, String table, String key) {
+        return records.ledger(Rows.ledger(1, table, key)).value(SiemField.ROW_KEY);
     }
 
     private static Set<String> keys(JsonNode n) {

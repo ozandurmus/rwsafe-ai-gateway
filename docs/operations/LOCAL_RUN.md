@@ -149,7 +149,7 @@ to syslog over TLS (RFC 5425 octet framing, CEF or LEEF 1.0 payload) and/or Splu
 | Variable | Default | Meaning |
 |---|---|---|
 | `RWSAFE_SIEM_ENABLED` | `false` | turns the exporter on |
-| `RWSAFE_SIEM_START_FROM` | `earliest` | where a destination without a watermark starts: `earliest` (everything stored) or `latest` |
+| `RWSAFE_SIEM_START_FROM` | `earliest` | for a destination without a watermark: `earliest` (everything stored) or `latest` (skip the stored verdict events; ledger rows always export from the first one) |
 | `RWSAFE_SIEM_SYSLOG_HOST` | empty (off) | syslog receiver; with `RWSAFE_SIEM_SYSLOG_PORT` (default `6514`) |
 | `RWSAFE_SIEM_SYSLOG_FORMAT` | `cef` | `cef` or `leef` |
 | `RWSAFE_SIEM_SYSLOG_CA_FILE` | `/etc/rwsafe/siem/ca.crt` | PEM bundle the receiver's certificate must chain to |
@@ -158,30 +158,44 @@ to syslog over TLS (RFC 5425 octet framing, CEF or LEEF 1.0 payload) and/or Splu
 | `RWSAFE_SIEM_HEC_CA_FILE` | `/etc/rwsafe/siem/ca.crt` | PEM bundle for the HEC endpoint |
 | `RWSAFE_SIEM_HEC_INDEX` | empty | target index; empty uses the token's default |
 
-Tuning stays in `rwsafe.siem.*` (`poll-interval` 2 s, `settle` 15 s, `queue-capacity` 10000, `page-size` 500,
-`batch-size` 200, `backoff-initial` 1 s, `backoff-max` 2 min). In the cluster the real destinations, the index and the CA
-bundle live in the uncommitted ConfigMap `rwsafe-siem-destination` and the token in the Secret `rwsafe-siem-credentials`
-(`deploy/rwsafe/contracts/runtime-contracts.json`); the Deployment wiring and the NetworkPolicy egress to the SIEM follow
-in the deploy lane.
+Tuning stays in `rwsafe.siem.*` (`poll-interval` 2 s, `queue-capacity` 10000, `page-size` 500 (the queue holds at least
+two pages), `batch-size` 200, `backoff-initial` 1 s, `backoff-max` 2 min). In the cluster the real destinations, the
+index and the CA bundle live in the uncommitted ConfigMap `rwsafe-siem-destination` and the token in the Secret
+`rwsafe-siem-credentials` (`deploy/rwsafe/contracts/runtime-contracts.json`); the Deployment wiring and the NetworkPolicy
+egress to the SIEM follow in the deploy lane.
 
+- **Fail closed (AGENTS.md 4.10)**: without rwsafe's privacy key or the estate dictionary no exporter starts. A
+  destination with a missing CA bundle or token, a non-HTTPS URL, an unknown format or a host name that is not a plain
+  lower-case label is not started. The Health screen's `siem` row is `DOWN` and names the reason.
 - **Transport (SR-SIEM-3)**: TLS 1.3/1.2 only, trust exactly the configured CA bundle (never the JVM store), host name
-  verified. There is no UDP and no plain-TCP setting. A destination with a missing CA bundle or token, a non-HTTPS URL or
-  an unknown format is not started; the Health screen's `siem` row names the reason.
-- **Fields (SR-SIEM-1, SR-SIEM-2)**: the fixed set in `SiemField`; users are `USR-` pseudonyms or `system:` actors, the
-  client a masked /24 label, findings `CLASS:count`; a `local_account` ledger row key is pseudonymised, any other key
-  leaves only as a plain token no detector recognises, otherwise `[WITHHELD]`. Every string is stripped of control
-  characters and ANSI sequences and length-capped before formatting.
-- **Delivery**: at least once, in order per stream. The watermark (`siem_watermark`, one row per destination) moves only
-  after the destination acknowledged (syslog: written and flushed; HEC: HTTP 200); a restart resumes from it, so the last
-  batch can arrive twice (de-duplicate on `externalId`/`eventId`). Overflow: the queue is bounded; when it has no room for
-  a page the reader does not read (counted as a deferred read); nothing is dropped and ingestion never waits. Failures
-  back off from 1 s doubling to 2 min. Metrics (`rwsafe_siem_*`, labels destination, stream, reason only) are rendered by
-  `SiemExportService.prometheus()`; the metrics listener (9400) is not served yet.
-- **Residuals**: rows are read only once they are older than the settle window (database clock), because commit order is
-  not insertion order; a transaction open longer than the window could be overtaken and its rows skipped (ingestion and
-  ledger transactions are single short statements). RFC 5425 has no acknowledgement: a connection that dies after a
-  flush can lose that batch; a closed connection is detected before the next batch. UNVERIFIED (2026-10-30): LEEF header
-  escaping and `=` inside LEEF values in the corporate QRadar; send one test event per format before production.
+  verified. There is no UDP and no plain-TCP setting.
+- **Fields (SR-SIEM-1, SR-SIEM-2)**: the fixed set in `SiemField`. Each value must match its field's exact shape and
+  hold no estate term, otherwise it leaves as `[WITHHELD]`. Users are `USR-` pseudonyms or `system:` actors, the client
+  is a masked /24 label, findings are `CLASS:count`. A ledger row key leaves as written only for the listed audited
+  tables in their exact key shape (a number, a policy version key, a destination) with no detector hit or estate term.
+  An account key becomes the account's `USR-` pseudonym, any other key a keyed `KEY-` pseudonym. Every string is
+  stripped of control characters and ANSI sequences (bounded) and length-capped. LEEF values escape `\` and `=`.
+- **Order and delivery**: at least once, never a skip. Both exported tables carry `tx_id` (the writing transaction, Flyway
+  V7). The exporter reads only rows below the current snapshot's xmin, ordered by (tx_id, id), so a transaction that
+  commits late is never overtaken by the watermark; a long transaction pauses the export (backlog) instead. The
+  watermark (`siem_watermark`, one row per destination) moves only after the destination acknowledged (syslog: written
+  and flushed; HEC: HTTP 200). A restart resumes from it, so the last batch can arrive twice (de-duplicate on
+  `externalId`/`eventId`). Creating a destination's watermark is a ledger row (`siem_export.start`, reason
+  `START_FROM_EARLIEST` or `START_FROM_LATEST`), exported like every other; a `latest` start records how many verdict
+  events it skipped.
+- **Overflow and back-off**: the queue is bounded; the reader reads one page per stream only when the queue has room for
+  both, otherwise it counts a deferred read. Nothing is dropped and ingestion never waits. Failures back off from 1 s
+  doubling to 2 min.
+- **Health and metrics**: the `siem` row shows per destination the delivered count, the backlog (committed rows beyond
+  the watermark), the queue, the reader's and the sender's failure states separately (`DEGRADED`), the syslog batches
+  possibly lost and a `latest` start's skip count. Metrics `rwsafe_siem_*` (labels destination, stream, reason, thread
+  only) are rendered by `SiemExportService.prometheus()`; the metrics listener (9400) is not served yet.
+- **Audit durability (PO decision Q-SIEM-2)**: RFC 5425 has no acknowledgement. A watcher thread on each syslog
+  connection sees the receiver close it. The next batch then goes on a new connection, and a batch flushed on the closed
+  connection counts as possibly lost (`rwsafe_siem_batches_possibly_lost_total`, Health). A deployment that relies on the
+  SIEM copy of the audit ledger uses HEC, alone or beside syslog.
+- **UNVERIFIED (2026-10-30)**: LEEF header and value escaping in the corporate QRadar. Send one test event per format
+  before production.
 
 ## What the engine does not do yet
 
