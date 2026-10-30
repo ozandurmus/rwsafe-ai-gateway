@@ -132,6 +132,42 @@ class SiemSchemaTest {
             .contains("synthetic-glass"));
     }
 
+    /**
+     * PR 23 confirmation review D-13: vocabulary values (letters, digits, {@code _}, {@code -}) still cannot carry an
+     * identifier or a secret: a TCKN, an unspaced IBAN, a digits-only phone number, access-key and token shapes, all
+     * built at runtime; a {@code system:} actor holding an estate term is withheld too.
+     */
+    @Test
+    void vocabularyValuesCannotCarryIdentifiersOrSecrets() {
+        SiemRecords records = new SiemRecords(a -> "USR-" + "ab".repeat(5), k -> "KEY-cdcd", List.of("synthetic-estate"));
+        String phone = "5" + "3".repeat(2) + "1234567";
+        String[] shapes = {io.rwsafe.control.support.Synthetic.tckn(7), io.rwsafe.control.support.Synthetic.iban(7),
+            phone, "tel-" + phone, io.rwsafe.control.support.Synthetic.awsKey(),
+            io.rwsafe.control.support.Synthetic.githubToken()};
+        for (String shape : shapes) {
+            io.rwsafe.persistence.StoredVerdictEvent e = new io.rwsafe.persistence.StoredVerdictEvent(
+                java.util.UUID.randomUUID(), Rows.AT, "reqmod", shape, shape, shape, Verdict.BLOCK, shape, List.of(), 1,
+                1, "USR-0123456789", "241.7.9.0/24", "mtls_verified", 1, shape, "k1");
+            SiemRecord r = records.verdict(new io.rwsafe.persistence.SiemExportStore.ExportVerdict(e, Rows.AT, 7));
+            for (SiemField f : List.of(SiemField.PLATFORM, SiemField.SURFACE, SiemField.STEP, SiemField.REASON,
+                SiemField.CORRELATION_ID)) {
+                String v = r.value(f);
+                assertEquals(SiemRecords.WITHHELD, v == null ? SiemRecords.WITHHELD : v, f.name());
+            }
+            SiemRecord a = records.ledger(new io.rwsafe.persistence.SiemExportStore.LedgerRow(1, 2, Rows.AT,
+                "USR-0123456789", "policy.approve", shape, shape, "policy_approval", "INSERT", "x"));
+            assertEquals(SiemRecords.WITHHELD, a.value(SiemField.REASON));
+            assertEquals(SiemRecords.WITHHELD, a.value(SiemField.CORRELATION_ID));
+        }
+        SiemRecord ok = records.verdict(Rows.verdict(Verdict.ALLOW, "openai", "customer_data"));
+        assertEquals("openai", ok.value(SiemField.PLATFORM));
+        assertEquals("customer_data", ok.value(SiemField.REASON));
+        assertEquals("corr-1", ok.value(SiemField.CORRELATION_ID), "a short token with digits still leaves");
+        SiemRecord estateActor = records.ledger(new io.rwsafe.persistence.SiemExportStore.LedgerRow(1, 2, Rows.AT,
+            "system:synthetic-estate", "policy.approve", "R", null, "policy_approval", "INSERT", "x"));
+        assertEquals(SiemRecords.WITHHELD, estateActor.value(SiemField.USER));
+    }
+
     @Test
     void everyOtherValueMustMatchItsShapeAndHoldNoEstateTerm() {
         SiemRecords records = new SiemRecords(a -> "USR-" + "ab".repeat(5), k -> "KEY-cdcd", List.of("synthetic-estate"));

@@ -28,6 +28,8 @@ public final class SiemMetrics {
     private final LongAdder deferredReads = new LongAdder();
     private final LongAdder batches = new LongAdder();
     private final AtomicLong backlog = new AtomicLong(-1);
+    private final AtomicLong held = new AtomicLong();
+    private volatile boolean stalled;
     private final AtomicLong skippedAtStart = new AtomicLong();
     private final AtomicReference<Instant> lastDelivery = new AtomicReference<>();
     private final AtomicReference<Reason> readFailure = new AtomicReference<>();
@@ -85,8 +87,14 @@ public final class SiemMetrics {
         deferredReads.increment();
     }
 
-    void backlog(long rows) {
+    /** @param rows all committed rows beyond the watermark; {@code heldRows} of them behind an open transaction */
+    void backlog(long rows, long heldRows) {
         backlog.set(rows);
+        held.set(heldRows);
+    }
+
+    void stalled(boolean value) {
+        stalled = value;
     }
 
     void skippedAtStart(long rows) {
@@ -124,6 +132,16 @@ public final class SiemMetrics {
     /** Committed rows beyond the watermark at the last count; -1 before the first count. */
     public long backlog() {
         return backlog.get();
+    }
+
+    /** Committed rows beyond the watermark that a still-open transaction holds behind the visibility barrier. */
+    public long heldBehindOpenTransaction() {
+        return held.get();
+    }
+
+    /** True when a backlog has not moved the watermark for the configured stall time (D-11). */
+    public boolean stalled() {
+        return stalled;
     }
 
     /** Verdict events a {@code latest} start skipped (also a ledger row). */
@@ -168,6 +186,8 @@ public final class SiemMetrics {
         gauge(s, "rwsafe_siem_batches_possibly_lost_total", "counter", d, possiblyLostBatches());
         gauge(s, "rwsafe_siem_events_skipped_at_start_total", "counter", d, skippedAtStart());
         gauge(s, "rwsafe_siem_backlog_rows", "gauge", d, Math.max(0, backlog()));
+        gauge(s, "rwsafe_siem_backlog_held_rows", "gauge", d, heldBehindOpenTransaction());
+        gauge(s, "rwsafe_siem_stalled", "gauge", d, stalled ? 1 : 0);
         gauge(s, "rwsafe_siem_queue_depth", "gauge", d, queueDepth());
         gauge(s, "rwsafe_siem_queue_capacity", "gauge", d, queueCapacity);
         s.append("# TYPE rwsafe_siem_failing gauge\n");

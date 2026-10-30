@@ -229,7 +229,79 @@ class SiemExporterTest {
     @Test
     void theQueueHoldsAPageOfEachStream() {
         assertThrows(IllegalArgumentException.class, () -> new SiemExporter.Settings(Duration.ofMillis(20), 9, 5, 5,
-            Duration.ofMillis(20), Duration.ofMillis(160), false, Duration.ZERO), "fair paging needs two pages of room");
+            Duration.ofMillis(20), Duration.ofMillis(160), false, Duration.ZERO, Duration.ofSeconds(1)),
+            "fair paging needs two pages of room");
+    }
+
+    /**
+     * PR 23 confirmation review D-10: a delivered batch whose watermark cannot be saved is kept; the save is retried on
+     * its own (the batch is not sent again) and the cursor moves only when the save succeeds.
+     */
+    @Test
+    void aFailedWatermarkSaveKeepsTheBatchAndRetriesTheSaveAlone() throws Exception {
+        RecordingSink sink = new RecordingSink();
+        SiemExporter exporter = exporter(sink, SiemFixture.settings(100, 50, 50, false));
+        exporter.start();
+        SiemFixture.await("the start row is delivered and saved", 5_000,
+            () -> sink.of(SiemStream.AUDIT).size() == 1 && exporter.metrics().batches() == 1);
+        var before = exporter.delivered();
+
+        sql("ALTER TABLE siem_watermark RENAME TO siem_watermark_unavailable");
+        List<String> ids = fx.ingest(3);
+        SiemFixture.await("a batch is delivered", 5_000, () -> sink.count() >= 1);
+        SiemFixture.await("its save fails repeatedly", 5_000,
+            () -> exporter.metrics().sendFailure() == Reason.DATABASE && exporter.metrics().failures(Reason.DATABASE) >= 3);
+        assertEquals(before, exporter.delivered(), "the cursor does not move before the watermark is saved");
+        int delivered = sink.count();
+        int attempts = sink.attempts.size();
+        Thread.sleep(200);
+        assertEquals(attempts, sink.attempts.size(), "while the save fails, the batch is kept and not sent again");
+        assertEquals(delivered, sink.count());
+
+        sql("ALTER TABLE siem_watermark_unavailable RENAME TO siem_watermark");
+        SiemFixture.await("every event delivered", 5_000, () -> sink.count() == 3);
+        SiemFixture.await("the watermark is saved", 5_000, () -> fx.db.siemExport().watermark("hec")
+            .map(w -> w.verdict() != null && w.verdict().equals(exporter.delivered().verdict())).orElse(false));
+        SiemFixture.await("the sender recovers", 5_000, () -> exporter.metrics().sendFailure() == null);
+        assertEquals(sorted(ids), sink.ids(), "each event once: no batch was sent twice");
+        SiemFixture.await("the cursor reaches the last event", 5_000,
+            () -> sink.of(SiemStream.VERDICT).get(2).verdictPosition().equals(exporter.delivered().verdict()));
+    }
+
+    /**
+     * D-11 / Q-SIEM-3: rows committed after a transaction that is still open wait behind the barrier; they are counted
+     * as held, the export shows as stalled after the stall time, and it resumes when the transaction ends.
+     */
+    @Test
+    void rowsHeldBehindAnOpenTransactionAreCountedAndAStallIsShown() throws Exception {
+        RecordingSink sink = new RecordingSink();
+        SiemExporter exporter = exporter(sink, SiemFixture.settings(100, 50, 50, false, Duration.ofMillis(300)));
+        exporter.start();
+        SiemFixture.await("started", 5_000, () -> exporter.metrics().batches() == 1);
+        try (java.sql.Connection open = fx.dataSource.getConnection()) {
+            open.setAutoCommit(false);
+            try (java.sql.Statement s = open.createStatement()) {
+                s.execute("SELECT pg_current_xact_id()"); // the open transaction takes an id below everything after it
+            }
+            List<String> ids = fx.ingest(2);
+            SiemFixture.await("held rows counted", 5_000,
+                () -> exporter.metrics().heldBehindOpenTransaction() == 2 && exporter.metrics().backlog() == 2);
+            SiemFixture.await("stalled", 5_000, () -> exporter.metrics().stalled());
+            assertEquals(0, sink.count(), "nothing behind the barrier is exported");
+            assertTrue(exporter.metrics().prometheus().contains("rwsafe_siem_stalled{destination=\"hec\"} 1"));
+            open.rollback();
+            SiemFixture.await("resumed", 5_000, () -> sink.count() == 2);
+            assertEquals(sorted(ids), sink.ids());
+        }
+        SiemFixture.await("no longer stalled", 5_000,
+            () -> !exporter.metrics().stalled() && exporter.metrics().backlog() == 0);
+        assertEquals(0, exporter.metrics().heldBehindOpenTransaction());
+    }
+
+    private void sql(String statement) throws Exception {
+        try (java.sql.Connection c = fx.dataSource.getConnection(); java.sql.Statement s = c.createStatement()) {
+            s.execute(statement);
+        }
     }
 
     /** One ingestion batch is one transaction and is exported in event-id order. */

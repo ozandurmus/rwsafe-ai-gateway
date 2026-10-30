@@ -60,16 +60,18 @@ public final class SiemExporter {
      * @param pageSize           rows per read and stream
      * @param batchSize          records per delivery
      * @param verdictsFromLatest a destination without a watermark skips the stored verdict events (never ledger rows)
-     * @param backlogInterval    how often the reader counts the backlog behind the watermark
+     * @param backlogInterval    how often the reader counts the backlog behind the watermark while it drains
+     * @param stallAfter         a backlog that makes no progress for this long marks the export stalled (DEGRADED)
      */
     public record Settings(Duration pollInterval, int queueCapacity, int pageSize, int batchSize,
                            Duration backoffInitial, Duration backoffMax, boolean verdictsFromLatest,
-                           Duration backlogInterval) {
+                           Duration backlogInterval, Duration stallAfter) {
 
         public Settings {
             if (pageSize < 1 || queueCapacity < 2 * pageSize || batchSize < 1
                 || pollInterval.isNegative() || pollInterval.isZero() || backoffInitial.isNegative()
-                || backoffInitial.isZero() || backoffMax.compareTo(backoffInitial) < 0 || backlogInterval.isNegative()) {
+                || backoffInitial.isZero() || backoffMax.compareTo(backoffInitial) < 0 || backlogInterval.isNegative()
+                || stallAfter.isNegative()) {
                 throw new IllegalArgumentException("SIEM exporter settings out of range (the queue holds two pages)");
             }
         }
@@ -92,8 +94,14 @@ public final class SiemExporter {
     private AuditPosition readAudit;
     private long backlogCountedAt;
 
-    // Set by the reader before its first offer, then moved by the sender (the queue orders the hand-over).
+    // Set by the reader before its first offer, then moved by the sender only after the watermark is saved (D-10; the
+    // queue orders the hand-over).
     private volatile Watermark delivered;
+    /** When the persisted watermark last moved, or the backlog was last seen empty (stall detection, D-11). */
+    private volatile long progressAt = System.nanoTime();
+
+    /** What one read round found. */
+    enum Round { MORE, CAUGHT_UP, DEFERRED }
 
     public SiemExporter(SiemSink sink, SiemExportStore store, SiemRecords records, Settings settings,
                         SiemMetrics metrics) {
@@ -159,11 +167,11 @@ public final class SiemExporter {
                 if (!initialised) {
                     initialise();
                 }
-                boolean more = readOnce();
-                countBacklog(!more);
+                Round round = readOnce();
+                countBacklog(round == Round.CAUGHT_UP);
                 metrics.readSucceeded();
                 backoff = settings.backoffInitial();
-                if (!more) {
+                if (round != Round.MORE) {
                     pause(settings.pollInterval());
                 }
             } catch (RuntimeException e) {
@@ -199,11 +207,14 @@ public final class SiemExporter {
         initialised = true;
     }
 
-    /** One read of each stream, a page each; true when a page came back full (read again at once). */
-    boolean readOnce() {
+    /**
+     * One read of each stream, a page each: {@code MORE} when a page came back full (read again at once),
+     * {@code CAUGHT_UP} when both came back short, {@code DEFERRED} when the queue had no room (nothing read).
+     */
+    Round readOnce() {
         if (queue.remainingCapacity() < 2 * settings.pageSize()) {
             metrics.deferredRead();
-            return false;
+            return Round.DEFERRED;
         }
         List<LedgerRow> ledger = store.ledgerAfter(readAudit, settings.pageSize());
         for (LedgerRow row : ledger) {
@@ -215,21 +226,30 @@ public final class SiemExporter {
             enqueue(records.verdict(row));
             readVerdict = row.position();
         }
-        return ledger.size() == settings.pageSize() || verdicts.size() == settings.pageSize();
+        return ledger.size() == settings.pageSize() || verdicts.size() == settings.pageSize() ? Round.MORE
+            : Round.CAUGHT_UP;
     }
 
     /**
-     * The backlog is a count of the committed rows beyond the delivered watermark, an index range over (tx_id, id): cheap
-     * when the export has caught up, so it is counted on every idle round, and at most once per {@code backlogInterval}
-     * while a large backlog drains.
+     * The backlog is the committed rows beyond the persisted watermark, split by the same visibility barrier the reads use
+     * (D-11): exportable now, and held behind a transaction that is still open. It is an index range over (tx_id, id),
+     * cheap when the export has caught up, so it is counted on every caught-up round, and at most once per
+     * {@code backlogInterval} while a backlog drains or the queue is full (never a count per poll during an outage).
+     *
+     * <p>Stall: a backlog that has not moved the watermark for {@code stallAfter} marks the export stalled (Health
+     * DEGRADED, {@code rwsafe_siem_stalled}), whatever the cause, typically a transaction held open behind the barrier.
      */
-    private void countBacklog(boolean idle) {
+    private void countBacklog(boolean caughtUp) {
         long now = System.nanoTime();
-        if (!idle && metrics.backlog() >= 0 && now - backlogCountedAt < settings.backlogInterval().toNanos()) {
-            return;
+        if (caughtUp || metrics.backlog() < 0 || now - backlogCountedAt >= settings.backlogInterval().toNanos()) {
+            SiemExportStore.Backlog b = store.backlog(delivered);
+            metrics.backlog(b.visible() + b.held(), b.held());
+            backlogCountedAt = now;
+            if (b.visible() + b.held() == 0) {
+                progressAt = now;
+            }
         }
-        metrics.backlog(store.backlog(delivered));
-        backlogCountedAt = now;
+        metrics.stalled(metrics.backlog() > 0 && now - progressAt > settings.stallAfter().toNanos());
     }
 
     private void enqueue(SiemRecord r) {
@@ -241,8 +261,14 @@ public final class SiemExporter {
 
     // ---- sender ----
 
+    /**
+     * Takes a batch, delivers it, then saves the watermark past it. The batch is kept until both have succeeded (D-10):
+     * a failed delivery is retried with the same batch; a failed watermark save is retried on its own, with the same
+     * back-off and without sending the batch again, and the in-memory watermark moves only after the save.
+     */
     private void sendLoop() {
         List<SiemRecord> batch = new ArrayList<>(settings.batchSize());
+        boolean sent = false;
         Duration backoff = settings.backoffInitial();
         while (running) {
             try {
@@ -254,21 +280,33 @@ public final class SiemExporter {
                     batch.add(first);
                     queue.drainTo(batch, settings.batchSize() - 1);
                 }
-                try {
-                    sink.deliver(batch);
-                } catch (SiemDeliveryException e) {
-                    if (!running || Thread.currentThread().isInterrupted()) {
-                        return; // a stop, not a failure (D-9)
+                if (!sent) {
+                    try {
+                        sink.deliver(batch);
+                    } catch (SiemDeliveryException e) {
+                        if (!running || Thread.currentThread().isInterrupted()) {
+                            return; // a stop, not a failure (D-9)
+                        }
+                        metrics.sendFailed(e.reason());
+                        LOG.warn("SIEM export to {}: delivery failed ({}); the batch is retried after back-off",
+                            destination(), e.reason());
+                        sleep(backoff);
+                        backoff = doubled(backoff);
+                        continue;
                     }
-                    metrics.sendFailed(e.reason());
-                    LOG.warn("SIEM export to {}: delivery failed ({}); the batch is retried after back-off",
-                        destination(), e.reason());
+                    sent = true;
+                    countDelivered(batch);
+                }
+                if (!saveWatermark(batch)) {
+                    if (!running) {
+                        return;
+                    }
                     sleep(backoff);
                     backoff = doubled(backoff);
                     continue;
                 }
+                sent = false;
                 backoff = settings.backoffInitial();
-                acknowledge(batch);
                 batch.clear();
                 synchronized (wake) {
                     wake.notifyAll();
@@ -280,30 +318,38 @@ public final class SiemExporter {
         }
     }
 
-    private void acknowledge(List<SiemRecord> batch) {
+    private void countDelivered(List<SiemRecord> batch) {
+        long verdicts = batch.stream().filter(r -> r.stream() == SiemStream.VERDICT).count();
+        metrics.delivered(SiemStream.VERDICT, verdicts);
+        metrics.delivered(SiemStream.AUDIT, batch.size() - verdicts);
+    }
+
+    /** Saves the watermark past a delivered batch; true when saved (then, and only then, the cursor moves). */
+    private boolean saveWatermark(List<SiemRecord> batch) {
         Watermark w = delivered;
         VerdictPosition verdict = w.verdict();
         AuditPosition audit = w.audit();
-        long verdicts = 0;
         for (SiemRecord r : batch) {
             if (r.stream() == SiemStream.VERDICT) {
                 verdict = r.verdictPosition();
-                verdicts++;
             } else {
                 audit = r.auditPosition();
             }
         }
-        metrics.delivered(SiemStream.VERDICT, verdicts);
-        metrics.delivered(SiemStream.AUDIT, batch.size() - verdicts);
-        delivered = new Watermark(verdict, audit);
+        Watermark next = new Watermark(verdict, audit);
         try {
-            store.saveWatermark(destination(), delivered);
-            metrics.sendSucceeded(Instant.now());
+            store.saveWatermark(destination(), next);
         } catch (RuntimeException e) {
-            // Delivered but not recorded: the next save carries it, or a restart sends it again (at least once).
+            // Delivered but not recorded: retried on its own; a restart before it succeeds sends the batch again.
             metrics.sendFailed(Reason.DATABASE);
-            LOG.warn("SIEM export to {}: saving the watermark failed ({})", destination(), e.getClass().getSimpleName());
+            LOG.warn("SIEM export to {}: saving the watermark failed ({}); retrying after back-off", destination(),
+                e.getClass().getSimpleName());
+            return false;
         }
+        delivered = next;
+        progressAt = System.nanoTime();
+        metrics.sendSucceeded(Instant.now());
+        return true;
     }
 
     /** The acknowledged position (tests and the health screen). */

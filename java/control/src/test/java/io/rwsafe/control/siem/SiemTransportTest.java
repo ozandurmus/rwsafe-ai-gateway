@@ -336,6 +336,13 @@ class SiemTransportTest {
         badHost.start();
         assertTrue(badHost.health().detail().contains("not a plain lower-case name"));
         badHost.stop();
+
+        SiemExportService estateIndex = service(enabled(null, new ControlProperties.Hec("https://127.0.0.1:8088",
+            tokenFile(runtimeToken()), pki.writeCaBundle(dir), "synthetic-estate", null)), fx.keys);
+        estateIndex.start();
+        assertTrue(estateIndex.health().detail().contains("hec: not started, the HEC index contains an estate term"),
+            "D-13");
+        estateIndex.stop();
     }
 
     @Test

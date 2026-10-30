@@ -16,6 +16,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLException;
@@ -53,16 +54,27 @@ public final class SyslogTlsSink implements SiemSink {
     private final Duration connectTimeout;
     private final Duration writeTimeout;
     private final AtomicLong possiblyLost = new AtomicLong();
-    private Connection connection;
+    /** Written by the sender thread, read by {@link #close} from the stopping thread. */
+    private volatile Connection connection;
+    /** Set by {@link #close} (the sink is shut down): a connection opened afterwards is closed at once (D-12). */
+    private volatile boolean shutdown;
 
-    /** One TLS connection, its TCP socket and its watcher. */
+    /**
+     * One TLS connection, its TCP socket and its watcher.
+     *
+     * <p>Possibly-lost counting (Q-SIEM-2, PR 23 confirmation review D-12) is once per connection and cannot miss the
+     * first batch: the sender sets {@code acknowledged} after a flush and then reads {@code peerClosed}; the watcher sets
+     * {@code peerClosed} and then reads {@code acknowledged}. Both are volatile, so at least one side sees the other's
+     * write and counts; {@code counted} keeps it to one.
+     */
     private final class Connection {
         final SSLSocket ssl;
         final Socket raw;
         final OutputStream out;
+        final AtomicBoolean counted = new AtomicBoolean();
         volatile boolean peerClosed;
         volatile boolean closing;
-        volatile boolean flushed;
+        volatile boolean acknowledged;
 
         Connection(SSLSocket ssl, Socket raw) throws IOException {
             this.ssl = ssl;
@@ -84,21 +96,33 @@ public final class SyslogTlsSink implements SiemSink {
             } finally {
                 if (!closing) {
                     peerClosed = true;
-                    if (flushed) {
-                        possiblyLost.incrementAndGet();
+                    if (acknowledged) {
+                        countLossOnce();
                     }
                 }
             }
         }
 
-        /** The TLS socket first (close_notify), the TCP socket after; a stalled peer cannot hold the close. */
-        void close() {
+        /** A batch reported delivered on this connection may not have been read by the receiver. */
+        void countLossOnce() {
+            if (counted.compareAndSet(false, true)) {
+                possiblyLost.incrementAndGet();
+            }
+        }
+
+        /**
+         * Gracefully: the TLS socket first (close_notify), then the TCP socket, under a guard so a stalled peer cannot
+         * hold the close. After a write error or a peer close only the TCP socket is closed.
+         */
+        void close(boolean graceful) {
             closing = true;
-            ScheduledFuture<?> guard = WATCHDOG.schedule(() -> closeQuietly(raw), writeTimeout.toMillis(),
-                TimeUnit.MILLISECONDS);
-            closeQuietly(ssl);
+            if (graceful && !peerClosed) {
+                ScheduledFuture<?> guard = WATCHDOG.schedule(() -> closeQuietly(raw), writeTimeout.toMillis(),
+                    TimeUnit.MILLISECONDS);
+                closeQuietly(ssl);
+                guard.cancel(false);
+            }
             closeQuietly(raw);
-            guard.cancel(false);
         }
     }
 
@@ -127,14 +151,27 @@ public final class SyslogTlsSink implements SiemSink {
 
     @Override
     public void deliver(List<SiemRecord> batch) throws SiemDeliveryException {
-        if (connection != null && connection.peerClosed) {
-            close();
-        }
-        if (connection == null) {
-            connection = connect();
-        }
         Connection c = connection;
-        ScheduledFuture<?> watchdog = WATCHDOG.schedule(() -> closeQuietly(c.raw), writeTimeout.toMillis(),
+        if (c != null && c.peerClosed) {
+            if (c.acknowledged) {
+                c.countLossOnce();
+            }
+            c.close(false);
+            connection = null;
+            c = null;
+        }
+        if (c == null) {
+            c = connect();
+            connection = c;
+            if (shutdown) {
+                // close() ran while this thread was connecting: never leave a socket and a watcher behind.
+                c.close(false);
+                connection = null;
+                throw new SiemDeliveryException(Reason.IO, "the syslog sink is shut down");
+            }
+        }
+        Connection current = c;
+        ScheduledFuture<?> watchdog = WATCHDOG.schedule(() -> closeQuietly(current.raw), writeTimeout.toMillis(),
             TimeUnit.MILLISECONDS);
         try {
             for (SiemRecord r : batch) {
@@ -142,15 +179,25 @@ public final class SyslogTlsSink implements SiemSink {
                     r.stream().name().toLowerCase(Locale.ROOT), SiemFormats.line(format, r, productVersion)));
             }
             c.out.flush();
-            c.flushed = true;
         } catch (IOException e) {
-            close();
-            if (watchdog.isDone()) {
+            // Classify before closing: a slow close must not turn an I/O failure into a timeout.
+            boolean timedOut = watchdog.isDone();
+            watchdog.cancel(false);
+            if (c.acknowledged) {
+                c.countLossOnce(); // an earlier batch on this broken connection may not have been read
+            }
+            c.close(false);
+            connection = null;
+            if (timedOut) {
                 throw new SiemDeliveryException(Reason.TIMEOUT, "the syslog receiver did not drain within the write timeout");
             }
             throw new SiemDeliveryException(Reason.IO, "the syslog connection failed while writing");
         } finally {
             watchdog.cancel(false);
+        }
+        c.acknowledged = true;
+        if (c.peerClosed) {
+            c.countLossOnce(); // the receiver closed while or right after this batch was flushed
         }
     }
 
@@ -183,11 +230,14 @@ public final class SyslogTlsSink implements SiemSink {
         }
     }
 
+    /** Shuts the sink down: closes the open connection, and any connection a racing deliver opens after this. */
     @Override
     public void close() {
-        if (connection != null) {
-            connection.close();
+        shutdown = true;
+        Connection c = connection;
+        if (c != null) {
             connection = null;
+            c.close(true);
         }
     }
 

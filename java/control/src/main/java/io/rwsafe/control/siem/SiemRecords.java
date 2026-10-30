@@ -30,6 +30,7 @@ import java.util.function.Function;
 public final class SiemRecords {
 
     public static final String WITHHELD = "[WITHHELD]";
+    static final int MAX_DIGIT_RUN = 7;
     private static final DetectorSet DETECTORS = DetectorSet.standard();
 
     private final Function<String, String> accountPseudonym;
@@ -55,7 +56,7 @@ public final class SiemRecords {
         v.add(new Value(SiemField.STREAM, "verdict"));
         v.add(new Value(SiemField.VERDICT, e.verdict().name()));
         v.add(new Value(SiemField.REASON, e.reason() == null ? null : vocabulary(e.reason(), 64)));
-        v.add(new Value(SiemField.USER, e.userPseudonym() == null ? null : actor(e.userPseudonym())
+        v.add(new Value(SiemField.USER, e.userPseudonym() == null ? null : exportableActor(e.userPseudonym())
             ? e.userPseudonym() : WITHHELD));
         v.add(new Value(SiemField.CLIENT_SUBNET, e.clientSubnet() == null ? null : subnetLabel(e.clientSubnet())
             ? e.clientSubnet() : WITHHELD));
@@ -82,7 +83,7 @@ public final class SiemRecords {
         v.add(new Value(SiemField.STREAM, "audit"));
         v.add(new Value(SiemField.ACTION, action));
         v.add(new Value(SiemField.REASON, vocabulary(row.reasonCode(), 64)));
-        v.add(new Value(SiemField.USER, actor(row.actorFingerprint()) ? row.actorFingerprint() : WITHHELD));
+        v.add(new Value(SiemField.USER, exportableActor(row.actorFingerprint()) ? row.actorFingerprint() : WITHHELD));
         v.add(new Value(SiemField.AUDITED_TABLE, table));
         v.add(new Value(SiemField.OPERATION, oneOf(row.operation(), Set.of("INSERT", "UPDATE", "DELETE"))));
         v.add(new Value(SiemField.ROW_KEY, rowKey(row.tableName(), row.rowKey())));
@@ -163,8 +164,29 @@ public final class SiemRecords {
     }
 
     /** A vocabulary token as ingestion accepts it (letters, digits, {@code _}, {@code -}) without an estate term. */
+    /**
+     * A vocabulary token as ingestion accepts it (letters, digits, {@code _}, {@code -}) that holds no estate term, no
+     * Tier-1 detector finding (identifier or secret shape) and no run of {@value #MAX_DIGIT_RUN} or more digits (a phone
+     * number, an account or customer number no detector knows): PR 23 confirmation review D-13.
+     */
     private String vocabulary(String s, int max) {
-        return s != null && plain(s, max) && !estate(s) ? s : WITHHELD;
+        return s != null && plain(s, max) && !estate(s) && longestDigitRun(s) < MAX_DIGIT_RUN
+            && DETECTORS.scan(s).isEmpty() ? s : WITHHELD;
+    }
+
+    static int longestDigitRun(String s) {
+        int best = 0;
+        int run = 0;
+        for (int i = 0; i < s.length(); i++) {
+            run = Character.isDigit(s.charAt(i)) ? run + 1 : 0;
+            best = Math.max(best, run);
+        }
+        return best;
+    }
+
+    /** An exported actor: the ledger's actor shape and no estate term in a {@code system:} name. */
+    private boolean exportableActor(String s) {
+        return actor(s) && !estate(s);
     }
 
     private static String oneOf(String s, Set<String> allowed) {

@@ -34,6 +34,8 @@ import org.springframework.stereotype.Component;
 public class SiemExportService implements SmartLifecycle {
 
     static final Duration BACKLOG_INTERVAL = Duration.ofSeconds(30);
+    /** A backlog that moves no watermark for this long is a stall (D-11); above the 2 min back-off ceiling. */
+    static final Duration STALL_AFTER = Duration.ofMinutes(3);
     private static final Logger LOG = LoggerFactory.getLogger(SiemExportService.class);
 
     private final ControlProperties.Siem config;
@@ -79,12 +81,17 @@ public class SiemExportService implements SmartLifecycle {
         }
         SiemExporter.Settings settings = new SiemExporter.Settings(config.pollInterval(), config.queueCapacity(),
             config.pageSize(), config.batchSize(), config.backoffInitial(), config.backoffMax(),
-            config.startFrom().equals("latest"), BACKLOG_INTERVAL);
+            config.startFrom().equals("latest"), BACKLOG_INTERVAL, STALL_AFTER);
         if (config.syslog().configured()) {
             build("syslog", () -> syslogSink(config.syslog()), records, settings);
         }
         if (config.hec().configured()) {
-            build("hec", () -> hecSink(config.hec(), host), records, settings);
+            String index = config.hec().index();
+            if (index != null && !index.isBlank() && records.estate(index)) {
+                refuse("hec", "the HEC index contains an estate term");
+            } else {
+                build("hec", () -> hecSink(config.hec(), host), records, settings);
+            }
         }
         exporters.forEach(SiemExporter::start);
     }
@@ -182,6 +189,11 @@ public class SiemExportService implements SmartLifecycle {
             StringBuilder d = new StringBuilder(e.destination()).append(": ");
             Reason read = m.readFailure();
             Reason send = m.sendFailure();
+            if (m.stalled()) {
+                degraded = true;
+                d.append("stalled: no progress for over ").append(STALL_AFTER.toSeconds()).append(" s with ")
+                    .append(m.heldBehindOpenTransaction()).append(" rows held behind an open database transaction, ");
+            }
             if (read != null || send != null) {
                 degraded = true;
                 d.append("retrying after a failure (");

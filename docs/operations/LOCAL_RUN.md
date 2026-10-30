@@ -244,7 +244,8 @@ egress to the SIEM follow in the deploy lane.
 - **Transport (SR-SIEM-3)**: TLS 1.3/1.2 only, trust exactly the configured CA bundle (never the JVM store), host name
   verified. There is no UDP and no plain-TCP setting.
 - **Fields (SR-SIEM-1, SR-SIEM-2)**: the fixed set in `SiemField`. Each value must match its field's exact shape and
-  hold no estate term, otherwise it leaves as `[WITHHELD]`. Users are `USR-` pseudonyms or `system:` actors, the client
+  hold no estate term; a vocabulary token also holds no Tier-1 detector finding and no run of 7 or more digits.
+  Otherwise the value leaves as `[WITHHELD]`. Users are `USR-` pseudonyms or `system:` actors, the client
   is a masked /24 label, findings are `CLASS:count`. A ledger row key leaves as written only for the listed audited
   tables in their exact key shape (a number, a policy version key, a destination) with no detector hit or estate term.
   An account key becomes the account's `USR-` pseudonym, any other key a keyed `KEY-` pseudonym. Every string is
@@ -252,17 +253,27 @@ egress to the SIEM follow in the deploy lane.
 - **Order and delivery**: at least once, never a skip. Both exported tables carry `tx_id` (the writing transaction, Flyway
   V7). The exporter reads only rows below the current snapshot's xmin, ordered by (tx_id, id), so a transaction that
   commits late is never overtaken by the watermark; a long transaction pauses the export (backlog) instead. The
+  database start script sets `idle_in_transaction_session_timeout = 60s` for both application roles (`rwsafe_app`,
+  `rwsafe_migrate`; `deploy/rwsafe/base/db/rwsafe-roles.sql`), so an abandoned transaction is aborted and cannot hold
+  the export back for longer (Q-SIEM-3). Local runs and tests connect as the superuser, which this does not cover. The
   watermark (`siem_watermark`, one row per destination) moves only after the destination acknowledged (syslog: written
-  and flushed; HEC: HTTP 200). A restart resumes from it, so the last batch can arrive twice (de-duplicate on
-  `externalId`/`eventId`). Creating a destination's watermark is a ledger row (`siem_export.start`, reason
+  and flushed; HEC: HTTP 200) and the save succeeded. A delivered batch whose save fails is kept, and the save alone is
+  retried with back-off; the batch is not sent again. A restart resumes from the watermark, so the last batch can arrive
+  twice (de-duplicate on `externalId`/`eventId`). Creating a destination's watermark is a ledger row (`siem_export.start`, reason
   `START_FROM_EARLIEST` or `START_FROM_LATEST`), exported like every other; a `latest` start records how many verdict
   events it skipped.
 - **Overflow and back-off**: the queue is bounded; the reader reads one page per stream only when the queue has room for
   both, otherwise it counts a deferred read. Nothing is dropped and ingestion never waits. Failures back off from 1 s
   doubling to 2 min.
-- **Health and metrics**: the `siem` row shows per destination the delivered count, the backlog (committed rows beyond
-  the watermark), the queue, the reader's and the sender's failure states separately (`DEGRADED`), the syslog batches
-  possibly lost and a `latest` start's skip count. Metrics `rwsafe_siem_*` (labels destination, stream, reason, thread
+- **Health and metrics**: the `siem` row shows per destination:
+  - the delivered count and the queue;
+  - the backlog (committed rows beyond the watermark), with the rows held behind an open transaction counted separately
+    (`rwsafe_siem_backlog_held_rows`);
+  - the reader's and the sender's failure states, each separately (`DEGRADED`);
+  - a stall: a backlog that has not moved the watermark for 3 minutes (`DEGRADED`, `rwsafe_siem_stalled`);
+  - the syslog batches possibly lost and a `latest` start's skip count.
+
+  The backlog is recounted on every caught-up round, and at most every 30 s while the queue is full or a backlog drains. Metrics `rwsafe_siem_*` (labels destination, stream, reason, thread
   only) are rendered by `SiemExportService.prometheus()`; the metrics listener (9400) is not served yet.
 - **Audit durability (PO decision Q-SIEM-2)**: RFC 5425 has no acknowledgement. A watcher thread on each syslog
   connection sees the receiver close it. The next batch then goes on a new connection, and a batch flushed on the closed

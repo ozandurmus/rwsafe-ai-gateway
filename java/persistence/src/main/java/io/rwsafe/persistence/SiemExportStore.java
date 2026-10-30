@@ -183,12 +183,22 @@ public final class SiemExportStore {
     }
 
     /**
-     * Committed rows beyond the watermark, visible or still held behind the barrier by a running transaction's xmin
-     * (the backlog on the health screen and in the metrics).
+     * Committed rows beyond the watermark, split by the same visibility barrier the reads use (PR 23 confirmation review
+     * D-11): {@code visible} can be exported now; {@code held} committed after a transaction that is still open and
+     * waits behind the barrier until it ends.
      */
-    public long backlog(Watermark w) {
-        return (long) dsl.fetchCount(VERDICT_EVENT, after(w.verdict()))
-            + dsl.fetchCount(AUDIT_EVENT, after(w.audit()));
+    public record Backlog(long visible, long held) {
+    }
+
+    /** The backlog on the health screen and in the metrics; one statement per stream. */
+    public Backlog backlog(Watermark w) {
+        Field<Integer> v = DSL.count().filterWhere(VERDICT_VISIBLE).as("visible");
+        Field<Integer> vh = DSL.count().filterWhere(DSL.not(VERDICT_VISIBLE)).as("held");
+        Record verdicts = dsl.select(v, vh).from(VERDICT_EVENT).where(after(w.verdict())).fetchOne();
+        Field<Integer> a = DSL.count().filterWhere(AUDIT_VISIBLE).as("visible");
+        Field<Integer> ah = DSL.count().filterWhere(DSL.not(AUDIT_VISIBLE)).as("held");
+        Record audit = dsl.select(a, ah).from(AUDIT_EVENT).where(after(w.audit())).fetchOne();
+        return new Backlog((long) verdicts.get(v) + audit.get(a), (long) verdicts.get(vh) + audit.get(ah));
     }
 
     private static Condition after(VerdictPosition p) {

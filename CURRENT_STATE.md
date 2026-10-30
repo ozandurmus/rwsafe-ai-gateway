@@ -212,10 +212,13 @@ overtaken. Two threads per destination around a bounded queue, a page per stream
 queue has no room (nothing dropped, ingestion untouched). The sender retries with exponential back-off and moves the
 persisted watermark (`siem_watermark`) only after acknowledgement: at least once, restart from the watermark. Creating a
 watermark is a ledger row. Ledger rows always export from the first one; `latest` skips only verdict events and records
-the count (Q-SIEM-1). Backlog, separate reader and sender failure states, and possibly lost syslog batches are on Health
-and in fixed-label counters (`rwsafe_siem_*`). Audit durability relies on HEC (Q-SIEM-2). Tests run a local TLS syslog
-receiver and a HEC stub with certificates generated at runtime, and two concurrent transactions where the older commits
-last. Second review: `docs/reviews/PR23_2026_10_31_ARGON_SIEM_EXPORT.md`, answered in `PR23_2026_10_31_RESPONSE.md`.
+the count (Q-SIEM-1). A delivered batch whose watermark save fails is kept and only the save is retried. Health and
+fixed-label counters (`rwsafe_siem_*`) show the backlog (rows held behind an open transaction counted separately), a
+stall after 3 minutes without progress, separate reader and sender failure states and possibly lost syslog batches.
+Both application database roles abort a session idle in a transaction after 60 s (Q-SIEM-3). Audit durability relies on
+HEC (Q-SIEM-2). Tests run a local TLS syslog receiver and a HEC stub with certificates generated at runtime, and two
+concurrent transactions where the older commits last. Second review `docs/reviews/PR23_2026_10_31_ARGON_SIEM_EXPORT.md`
+and confirmation review `PR23_2026_10_31_ARGON_SIEM_EXPORT_RECHECK.md`, answered in `PR23_2026_10_31_RESPONSE.md`.
 Configuration and residuals: `docs/operations/LOCAL_RUN.md` "SIEM export". The runtime contract holds the ConfigMap
 `rwsafe-siem-destination` and the Secret `rwsafe-siem-credentials`.
 

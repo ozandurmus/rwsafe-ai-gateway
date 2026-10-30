@@ -89,8 +89,8 @@ class SiemExportStoreTest {
 
             assertTrue(store.verdictsAfter(cursor, 10).isEmpty(), "the newer, committed row waits behind the barrier");
             assertTrue(store.ledgerAfter(null, 10).isEmpty());
-            assertEquals(2, store.backlog(new Watermark(cursor, null)),
-                "the committed rows count as backlog (one verdict event, one ledger row)");
+            assertEquals(new SiemExportStore.Backlog(0, 2), store.backlog(new Watermark(cursor, null)),
+                "the committed rows are backlog, held behind the open transaction (one verdict event, one ledger row)");
 
             older.commit();
             List<ExportVerdict> next = store.verdictsAfter(cursor, 10);
@@ -125,7 +125,7 @@ class SiemExportStoreTest {
         db.verdictEvents().insert(List.of(event(base, "claude", Verdict.ALLOW, List.of()),
             event(base, "claude", Verdict.WARN, List.of())));
         db.loginRecords().record("USR-0123456789", "ldap", false);
-        assertEquals(3, store.backlog(Watermark.START));
+        assertEquals(new SiemExportStore.Backlog(3, 0), store.backlog(Watermark.START));
 
         Start latest = store.latestVerdicts();
         assertEquals(2, latest.skippedVerdicts());
@@ -135,7 +135,8 @@ class SiemExportStoreTest {
         assertFalse(store.createWatermark("hec", new Start(Watermark.START, 0), "earliest", START), "created once");
         assertEquals(latest.watermark(), store.watermark("hec").orElseThrow());
         assertEquals(2, store.skippedAtStart("hec"));
-        assertEquals(1 + 1, store.backlog(latest.watermark()), "the login row and the watermark's own ledger row");
+        assertEquals(new SiemExportStore.Backlog(2, 0), store.backlog(latest.watermark()),
+            "the login row and the watermark's own ledger row");
 
         LedgerRow started = store.ledgerAfter(null, 10).get(1);
         assertEquals("siem_watermark", started.tableName());
@@ -145,7 +146,7 @@ class SiemExportStoreTest {
         Watermark moved = new Watermark(latest.watermark().verdict(), started.position());
         store.saveWatermark("hec", moved);
         assertEquals(moved, store.watermark("hec").orElseThrow());
-        assertEquals(0, store.backlog(moved));
+        assertEquals(new SiemExportStore.Backlog(0, 0), store.backlog(moved));
         assertThrows(IllegalStateException.class, () -> store.saveWatermark("syslog", moved), "no row to move");
     }
 

@@ -17,6 +17,7 @@ import java.util.function.BooleanSupplier;
 /** A migrated database of its own, the real ingestion path and the privacy key of the test JVM. */
 final class SiemFixture {
 
+    final javax.sql.DataSource dataSource;
     final Database db;
     final Pseudonymiser pseudonymiser;
     final IngestionService ingestion;
@@ -24,7 +25,8 @@ final class SiemFixture {
     final SiemRecords records;
 
     SiemFixture() throws Exception {
-        db = Database.migrateAndOpen(ControlTestEnvironment.freshDataSource());
+        dataSource = ControlTestEnvironment.freshDataSource();
+        db = Database.migrateAndOpen(dataSource);
         ControlProperties props = new ControlProperties(null, null, new ControlProperties.Privacy(
             ControlTestEnvironment.dir().resolve("key"), ControlTestEnvironment.dir().resolve("dictionary.txt")), null,
             null, null, null);
@@ -35,8 +37,12 @@ final class SiemFixture {
     }
 
     static SiemExporter.Settings settings(int capacity, int page, int batch, boolean latest) {
+        return settings(capacity, page, batch, latest, Duration.ofSeconds(30));
+    }
+
+    static SiemExporter.Settings settings(int capacity, int page, int batch, boolean latest, Duration stallAfter) {
         return new SiemExporter.Settings(Duration.ofMillis(20), capacity, page, batch, Duration.ofMillis(20),
-            Duration.ofMillis(160), latest, Duration.ZERO);
+            Duration.ofMillis(160), latest, Duration.ZERO, stallAfter);
     }
 
     /** Ingests {@code n} synthetic events (one batch) and returns their ids in order. */
