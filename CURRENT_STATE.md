@@ -44,7 +44,9 @@ Public GitHub repository with branch protection; pull requests 1, 2 (decisions a
 ## Pending on the Product Owner
 
 Mark the three `validation` jobs (`privacy-gate`, `gitleaks`, `java-tests`) as required status checks on `main`
-(none is required today). Decisions Q-1..Q-29 and Q-37 (ask one at a time with the recommendation first). Lab tenant
+(none is required today). Decisions still open: Q-7, Q-8, Q-11, Q-12, Q-17..Q-29, Q-37 (ask one batch at a time with
+the recommendation first); the twelve MVP-blocking questions are decided
+(`docs/design/PO_DECISION_RECORD_2026_10_30_MVP_BLOCKING_QUESTIONS.md`). Lab tenant
 procurement (Q-34). Approvers and DPO identity (Q-5). Governance is settled: pull request 2 merged;
 `.claude/settings.json` committed; AGENTS.md section 1 (reviews as evidence) and section 9 (standing push/PR/merge
 authorisation) amended; the Git-authority decision record RATIFIED; `main` requires a pull request and zero approving
