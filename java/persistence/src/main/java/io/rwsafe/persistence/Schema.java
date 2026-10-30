@@ -102,6 +102,10 @@ final class Schema {
     static final Field<String[]> SN_APPROVERS = DSL.field(DSL.name("policy_snapshot", "approvers"),
         SQLDataType.CLOB.array());
 
+    static final Table<Record> NOTICE_VERSION = DSL.table(DSL.name("notice_version"));
+    static final Field<String> NV_VERSION = DSL.field(DSL.name("notice_version", "notice_version"), SQLDataType.CLOB);
+    static final Field<Instant> NV_ISSUED_AT = DSL.field(DSL.name("notice_version", "issued_at"), SQLDataType.INSTANT);
+
     static final Table<Record> NOTICE_ACK = DSL.table(DSL.name("notice_acknowledgement"));
     static final Field<Long> NA_ID = DSL.field(DSL.name("notice_acknowledgement", "acknowledgement_id"),
         SQLDataType.BIGINT);

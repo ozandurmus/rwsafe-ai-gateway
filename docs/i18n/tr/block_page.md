@@ -26,9 +26,9 @@ Bulunan bilginin kendisi bu sayfada gösterilmez ve kaydedilmez; yalnızca tür�
 
 ## `block.class.noexception`
 
-> LEGAL-REVIEW LR-6: the statement that no exception exists for these classes (PC-5, ADR-010) as an employee-facing promise.
+> LEGAL-REVIEW LR-6: the statement that no exception exists for the four fail-closed classes (PC-5, ADR-010, SR-DLP-1) as an employee-facing promise.
 
-Bu tür bilgiler için istisna tanınmaz: müşteri sırları, gizli bilgiler ve özel nitelikli kişisel veriler hiçbir yapay zeka platformuyla paylaşılamaz.
+Bu tür bilgiler için istisna tanınmaz: müşteri bilgileri, gizli bilgiler, özel nitelikli kişisel veriler ve kurum içi kimlik bilgileri hiçbir yapay zeka platformuyla paylaşılamaz.
 
 ## `block.uninspectable.body`
 

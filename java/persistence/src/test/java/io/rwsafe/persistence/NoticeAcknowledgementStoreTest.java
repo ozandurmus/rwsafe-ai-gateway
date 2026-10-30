@@ -26,6 +26,25 @@ class NoticeAcknowledgementStoreTest {
     @BeforeEach
     void open() {
         db = Database.migrateAndOpen(TestDatabase.fresh());
+        db.noticeAcknowledgements().issue(V1, Instant.parse("2026-09-01T00:00:00Z"));
+        db.noticeAcknowledgements().issue(V2, Instant.parse("2026-09-15T00:00:00Z"));
+    }
+
+    @Test
+    void versionsAreIssuedOnceAndAnUnissuedVersionCannotBeAcknowledged() {
+        NoticeAcknowledgementStore store = db.noticeAcknowledgements();
+        assertEquals(Instant.parse("2026-09-01T00:00:00Z"), store.issue(V1, Instant.parse("2026-10-30T00:00:00Z")),
+            "the first issue time stays");
+        assertEquals(java.util.Optional.empty(), store.issuedAt("tr-9-0a1b2c3d"));
+        assertThrows(DataAccessException.class,
+            () -> store.record(List.of(ack(USER, "tr-9-0a1b2c3d", "banner", "2026-10-01T08:00:00Z"))));
+        assertEquals(2, db.dsl().fetchCount(Schema.AUDIT_EVENT, Schema.AUDIT_TABLE.eq("notice_version")));
+        DataAccessException update = assertThrows(DataAccessException.class, () -> db.dsl().transaction(cfg -> {
+            var tx = DSL.using(cfg);
+            new AuditContext("system:test", "notice.change", "TEST", null).apply(tx);
+            tx.update(Schema.NOTICE_VERSION).set(Schema.NV_ISSUED_AT, Instant.EPOCH).execute();
+        }));
+        assertTrue(update.getMessage().contains("AUDIT_APPEND_ONLY"));
     }
 
     private static NoticeAcknowledgement ack(String user, String version, String source, String at) {

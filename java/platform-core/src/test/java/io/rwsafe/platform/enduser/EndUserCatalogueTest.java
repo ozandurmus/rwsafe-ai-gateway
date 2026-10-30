@@ -28,7 +28,7 @@ class EndUserCatalogueTest {
             assertFalse(TR.text(key).isBlank(), key);
             assertEquals(TR.text(key), TR.text(key).strip(), key + " has surrounding whitespace");
         }
-        assertEquals("tr-1", TR.version());
+        assertEquals("tr-2", TR.version());
     }
 
     @Test
@@ -72,14 +72,44 @@ class EndUserCatalogueTest {
         // named in full on first use and then "Kanun".
         List<String> banned = List.of("KVKK", "SIEM", "DLP", "proxy", "ICAP", "rwsafe", "vb.", "örn.", "vs.", "TCKN",
             "IBAN", "SSE", "API", "token", "redakte");
+        // PR 22 review D-08: Turkish casing folds İ and I differently, so the text is folded both ways and compared with
+        // the plain lower-case term (folding the term in Turkish too would turn "API" into "apı", which "yapın" holds).
+        Locale turkish = Locale.forLanguageTag("tr");
         for (String key : TR.keys()) {
             String t = TR.text(key);
             for (String b : banned) {
-                assertFalse(t.toLowerCase(Locale.ROOT).contains(b.toLowerCase(Locale.ROOT)), key + " uses " + b);
+                for (Locale l : List.of(Locale.ROOT, turkish)) {
+                    assertFalse(t.toLowerCase(l).contains(b.toLowerCase(Locale.ROOT)),
+                        key + " uses " + b + " (" + l + ")");
+                }
             }
         }
         assertTrue(TR.text("notice.intro").contains("6698 sayılı Kişisel Verilerin Korunması Kanunu"));
         assertTrue(TR.text("notice.basis.text").contains("açık rızanıza dayanmaz"), "Q-32: consent is not a basis");
+    }
+
+    @Test
+    void theWordingFollowsTheDecisionRecords() {
+        // D-01 (Q-32, Q-35): the acknowledgement and the HR record are never an approval; "onay" appears only in the
+        // sentence that says the record is not one.
+        String ack = TR.text("notice.acknowledge.text");
+        assertEquals(1, ack.split("onay", -1).length - 1, ack);
+        assertTrue(ack.contains("bir onay ya da rıza değildir"));
+        assertTrue(ack.contains("okuduğunuz kayda geçtiyse"));
+        // D-02 (AGENTS.md 4.13): the full-text tier is described as redacted, never as unmodified, and has a basis.
+        for (String key : TR.keys()) {
+            assertFalse(TR.text(key).contains("değiştirilmemiş"), key);
+        }
+        for (String key : List.of("notice.raw.text", "notice.basis.text", "notice.retention.text")) {
+            assertTrue(TR.text(key).contains("kişisel veriler çıkarıl"), key);
+            assertTrue(TR.text(key).contains("tam met"), key);
+        }
+        // D-04 (PC-5, SR-DLP-1): the no-exception sentence names all four fail-closed categories.
+        String noException = TR.text("block.class.noexception");
+        for (String category : List.of("müşteri bilgileri", "gizli bilgiler", "özel nitelikli kişisel veriler",
+            "kurum içi kimlik bilgileri")) {
+            assertTrue(noException.contains(category), category);
+        }
     }
 
     @Test

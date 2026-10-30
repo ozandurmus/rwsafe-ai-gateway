@@ -69,6 +69,8 @@ class NoticeAcknowledgementIntegrationTest {
     Pseudonymiser pseudonymiser;
     @Autowired
     DataSource dataSource;
+    @Autowired
+    io.rwsafe.persistence.Database database;
 
     private final HttpClient http = HttpClient.newHttpClient();
 
@@ -96,18 +98,21 @@ class NoticeAcknowledgementIntegrationTest {
     @Test
     void acknowledgementsOpenContentCaptureForTheCurrentVersionOnly() throws Exception {
         String current = notice.currentVersion().orElseThrow();
-        String older = "tr-0-0a1b2c3d";
-        String yesterday = Instant.now().minus(1, ChronoUnit.DAYS).toString();
+        // An earlier version this deployment showed a month ago (issued history), as the directory may still carry it.
+        String older = "tr-1-0a1b2c3d";
+        database.noticeAcknowledgements().issue(older, Instant.now().minus(30, ChronoUnit.DAYS));
+        String now = Instant.now().toString();
+        String lastWeek = Instant.now().minus(7, ChronoUnit.DAYS).toString();
         HttpResponse<String> r = intake(internal.port(), batch(
-            new String[] {ALICE, current, yesterday, "banner"},
-            new String[] {BORA, current, "2026-03-01T00:00:00Z", "directory_attribute"},
-            new String[] {CEM, older, yesterday, "ide_first_run"},
-            new String[] {ALICE, current, yesterday, "banner"}));
+            new String[] {ALICE, current, now, "banner"},
+            new String[] {BORA, current, now, "directory_attribute"},
+            new String[] {CEM, older, lastWeek, "directory_attribute"},
+            new String[] {ALICE, current, now, "banner"}));
         assertEquals(202, r.statusCode(), r.body());
         JsonNode result = JSON.readTree(r.body());
         assertEquals(3, result.get("accepted").asInt());
         assertEquals(1, result.get("duplicates").asInt());
-        assertEquals(0, JSON.readTree(intake(internal.port(), batch(new String[] {ALICE, current, yesterday,
+        assertEquals(0, JSON.readTree(intake(internal.port(), batch(new String[] {ALICE, current, now,
             "banner"})).body()).get("accepted").asInt(), "a retried record is stored once");
 
         String alice = pseudonymiser.user(ALICE);
@@ -159,7 +164,7 @@ class NoticeAcknowledgementIntegrationTest {
         assertEquals(200, n.status(), String.valueOf(n.body()));
         assertTrue(n.body().get("complete").asBoolean());
         String version = n.body().get("currentVersion").asText();
-        assertTrue(version.startsWith("tr-1-"), version);
+        assertTrue(version.startsWith("tr-2-"), version);
         assertEquals(0, n.body().get("missingParameters").size());
         assertTrue(n.raw().body().contains(CONTROLLER));
         assertTrue(n.raw().body().contains("sürüm " + version));
@@ -179,8 +184,21 @@ class NoticeAcknowledgementIntegrationTest {
         String current = notice.currentVersion().orElseThrow();
         String now = Instant.now().toString();
         String future = Instant.now().plus(1, ChronoUnit.DAYS).toString();
+        String older = "tr-1-0a1b2c3d";
+        database.noticeAcknowledgements().issue(older, Instant.now().minus(30, ChronoUnit.DAYS));
+        String beforeIssue = Instant.now().minus(1, ChronoUnit.HOURS).toString();
         String[][] bad = {
             {ALICE, "latest", now, "banner"},
+            // D-03: a well-shaped version this deployment never issued (precomputed), from any source.
+            {ALICE, "tr-9-0a1b2c3d", now, "banner"},
+            {ALICE, "tr-9-0a1b2c3d", now, "directory_attribute"},
+            // D-03: an interactive source records the current version only, never a stale one.
+            {ALICE, older, now, "banner"},
+            {ALICE, older, now, "ide_first_run"},
+            {ALICE, older, now, "gateway_credential_issue"},
+            // D-03: never dated before the version was issued (beyond the skew) nor in the future.
+            {ALICE, current, beforeIssue, "banner"},
+            {ALICE, current, beforeIssue, "directory_attribute"},
             {ALICE, current, future, "banner"},
             {ALICE, current, "2019-01-01T00:00:00Z", "directory_attribute"},
             {ALICE, current, "yesterday", "banner"},

@@ -73,10 +73,15 @@ public final class EndUserPages {
 
     private final EndUserCatalogue catalogue;
     private final EndUserParameters parameters;
+    /** Computed once: the catalogue and the values are immutable (PR 22 review D-06). */
+    private final Optional<String> noticeVersion;
+    private final Optional<List<Section>> noticeSections;
 
     public EndUserPages(EndUserCatalogue catalogue, EndUserParameters parameters) {
         this.catalogue = catalogue;
         this.parameters = parameters;
+        this.noticeVersion = computeNoticeVersion();
+        this.noticeSections = noticeVersion.map(this::sections);
     }
 
     public EndUserCatalogue catalogue() {
@@ -144,6 +149,10 @@ public final class EndUserPages {
      * value is missing: an incomplete notice is never shown and no acknowledgement can match it.
      */
     public Optional<String> noticeVersion() {
+        return noticeVersion;
+    }
+
+    private Optional<String> computeNoticeVersion() {
         if (!noticeMissingParameters().isEmpty()) {
             return Optional.empty();
         }
@@ -168,14 +177,14 @@ public final class EndUserPages {
 
     /** The notice as plain-text sections with its version filled in; empty while it is incomplete. */
     public Optional<List<Section>> noticeSections() {
-        return noticeVersion().map(this::sections);
+        return noticeSections;
     }
 
     /** The notice as a page; empty while it is incomplete. */
     public Optional<String> noticeHtml() {
-        return noticeVersion().map(version -> {
+        return noticeSections.map(all -> {
             StringBuilder body = new StringBuilder(4096);
-            for (Section s : sections(version)) {
+            for (Section s : all) {
                 if (s.heading() != null) {
                     body.append("<h2>");
                     Html.escape(body, s.heading());

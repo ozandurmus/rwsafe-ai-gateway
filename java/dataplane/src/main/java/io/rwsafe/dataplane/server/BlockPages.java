@@ -116,7 +116,7 @@ final class BlockPages {
 
     static byte[] json(String reason, String ref) {
         return ("{\"error\":{\"type\":\"rwsafe_blocked\",\"reason\":\"" + jsonSafe(reason == null ? "policy" : reason)
-            + "\",\"message\":" + jsonString(PAGES.apiMessage(kind(reason))) + ",\"ref\":\"" + jsonSafe(ref) + "\"}}")
+            + "\",\"message\":" + jsonString(PAGES.apiMessage(kind(reason))) + ",\"ref\":\"" + safeRef(ref) + "\"}}")
             .getBytes(StandardCharsets.UTF_8);
     }
 
@@ -126,9 +126,9 @@ final class BlockPages {
     }
 
     static byte[] sseTermination(String reason, String ref) {
-        return ("event: error\ndata: {\"type\":\"rwsafe_stream_terminated\",\"reason\":\"" + jsonSafe(reason)
-            + "\",\"message\":" + jsonString(PAGES.streamTerminatedText(streamLabel(reason), safeRef(ref)))
-            + ",\"ref\":\"" + jsonSafe(ref) + "\"}\n\n").getBytes(StandardCharsets.UTF_8);
+        return ("event: error\ndata: {\"type\":\"rwsafe_stream_terminated\",\"reason\":\""
+            + jsonSafe(reason == null ? "policy" : reason) + "\",\"message\":" + jsonString(PAGES.streamTerminatedText(streamLabel(reason), safeRef(ref)))
+            + ",\"ref\":\"" + safeRef(ref) + "\"}\n\n").getBytes(StandardCharsets.UTF_8);
     }
 
     static byte[] terminatedText(String reason, String ref) {

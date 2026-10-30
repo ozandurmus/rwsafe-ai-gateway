@@ -102,6 +102,19 @@ class BlockPagesTest {
         assertEquals("\"a\\u003cb\\u003e\\\"\\\\\\u000a\"", BlockPages.jsonString("a<b>\"\\\n"));
     }
 
+    @Test
+    void theReferenceFieldAndTheMessageReferenceAgree() {
+        // PR 22 review D-07: one sanitised reference in every answer, and a default reason.
+        String longRef = "a".repeat(100);
+        String sse = text(BlockPages.sseTermination(null, longRef));
+        assertTrue(sse.contains("\"reason\":\"policy\""));
+        assertTrue(sse.contains("Referans: " + "a".repeat(64) + "\""));
+        assertTrue(sse.contains("\"ref\":\"" + "a".repeat(64) + "\"}"));
+        assertFalse(sse.contains("a".repeat(65)));
+        assertTrue(text(BlockPages.json("secret", null)).endsWith("\"ref\":\"-\"}}"));
+        assertTrue(text(BlockPages.json("secret", "<x>")).endsWith("\"ref\":\"x\"}}"));
+    }
+
     private static String text(byte[] b) {
         return new String(b, StandardCharsets.UTF_8);
     }

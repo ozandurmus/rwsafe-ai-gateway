@@ -4,11 +4,25 @@
 -- updated, and deleted only by retention (scope + 400 days) or an erasure, which the ledger records as well.
 -- (V3 and V4 are reserved by open branches.)
 
+-- Every notice version the control plane has shown, with the time it was first issued (PR 22 review D-03): an
+-- acknowledgement names an issued version and is never dated before its issue. Append-only and ledgered.
+CREATE TABLE notice_version (
+    -- <language>-<catalogue version>-<8 hex of the rendered notice> (docs/i18n/README.md, PC-1).
+    notice_version  text        PRIMARY KEY CHECK (notice_version ~ '^[a-z]{2}-[0-9]{1,4}-[0-9a-f]{8}$'),
+    issued_at       timestamptz NOT NULL
+);
+
+CREATE TRIGGER notice_version_audit AFTER INSERT ON notice_version
+    FOR EACH ROW EXECUTE FUNCTION rwsafe_audit_row('notice_version');
+CREATE TRIGGER notice_version_no_update_or_delete BEFORE UPDATE OR DELETE ON notice_version
+    FOR EACH ROW EXECUTE FUNCTION rwsafe_audit_append_only();
+CREATE TRIGGER notice_version_no_truncate BEFORE TRUNCATE ON notice_version
+    FOR EACH STATEMENT EXECUTE FUNCTION rwsafe_audit_append_only();
+
 CREATE TABLE notice_acknowledgement (
     acknowledgement_id  bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_pseudonym      text        NOT NULL CHECK (user_pseudonym ~ '^USR-[0-9a-f]{10}$'),
-    -- <language>-<catalogue version>-<8 hex of the rendered notice> (docs/i18n/README.md, PC-1).
-    notice_version      text        NOT NULL CHECK (notice_version ~ '^[a-z]{2}-[0-9]{1,4}-[0-9a-f]{8}$'),
+    notice_version      text        NOT NULL REFERENCES notice_version (notice_version),
     acknowledged_at     timestamptz NOT NULL,
     source              text        NOT NULL CHECK (source IN ('banner', 'ide_first_run', 'directory_attribute',
                                                                'gateway_credential_issue')),

@@ -7,7 +7,7 @@ The product renders these texts from its catalogue
 `java/platform-core/src/main/resources/io/rwsafe/platform/enduser/end-user-tr.properties` (`EndUserCatalogue`,
 `EndUserPages`). The files under `tr/` are the review copies for the Product Owner, the data protection officer and legal:
 each heading is a catalogue key and `EndUserCatalogueDocsTest` fails when a copy and the catalogue differ. Change both
-together and bump `catalogue.version` (currently `tr-1`) with every text change.
+together and bump `catalogue.version` (currently `tr-2`) with every text change.
 
 | File | Where it is shown |
 |---|---|
@@ -17,7 +17,7 @@ together and bump `catalogue.version` (currently `tr-1`) with every text change.
 | `tr/coaching_warn.md` | the coaching page shown after a WARN verdict (out of band) |
 | `tr/stream_terminated.md` | the message delivered when a streamed response is aborted |
 | `tr/labels.md` | the class and reason labels inserted into the texts above |
-| `tr/exception_request.md` | the justification form text; not in the product catalogue yet (the exception workflow for non-fail-closed rules is not built) |
+| `tr/exception_request.md` | draft justification form text (English title, Turkish body); not in the product catalogue yet, never offered for fail-closed classes (PC-5) |
 
 ## Placeholders
 
@@ -35,13 +35,17 @@ and no script, link or external resource.
 ## Notice version and acknowledgement (PC-1, C12)
 
 The notice version is `catalogue.version` plus the first 8 hex digits of SHA-256 over the rendered notice without its
-own version (for example `tr-1-0a1b2c3d`), so a change to a text or to a configured value is a new version and every
-user acknowledges again. While a configured value is missing the notice has no version, is not shown, and no
-acknowledgement can match it: content capture stays off for everyone (SR-PRIV-10).
+own version (for example `tr-2-0a1b2c3d`), so a change to a text or to a configured value is a new version and every
+user acknowledges again. While a configured value is missing the notice has no version, is not shown, and nothing can
+be acknowledged: content capture stays off for everyone (SR-PRIV-10). The control plane records the time it first
+issues a version (`notice_version`); an acknowledgement names an issued version only.
 
 An acknowledgement (C12) records the user's pseudonym, the notice version, the date and the source (`banner`,
-`ide_first_run`, `directory_attribute` for the HR policy acknowledgement imported from the directory with its version
-and date (Q-35), `gateway_credential_issue`). It is proof that the duty to inform was met, never consent (Q-32).
+`ide_first_run`, `directory_attribute` for the HR record imported from the directory with its version and date (Q-35),
+`gateway_credential_issue`). It is proof that the duty to inform was met, never approval or consent (Q-32). The
+interactive sources (banner, IDE first run, credential issue) record the current version only; the directory may also
+carry an earlier issued version, which is kept as history and does not open content capture. The date is never before
+the version's issue time (5 minutes of clock skew allowed) nor more than 5 minutes in the future.
 
 ## Review items (Product Owner and data protection officer)
 
@@ -49,10 +53,10 @@ The catalogue marks these with `LEGAL-REVIEW LR-n`; the wording is in use until 
 
 | Id | Key | What to confirm |
 |---|---|---|
-| LR-1 | `notice.raw.text` | the unmodified-content clause matches the capture mode approved per platform and group (Q-4, Q-5) |
-| LR-2 | `notice.basis.text` | the legal basis per data class (art. 5/2-ç, 5/2-f) and that explicit consent is not a basis (Q-32) |
+| LR-1 | `notice.raw.text` | the full-text tier (detected secrets and personal data removed before storage, AGENTS.md 4.13) matches the capture mode approved per platform and group (Q-4, Q-5) |
+| LR-2 | `notice.basis.text` | the legal basis per data class (art. 5/2-ç; 5/2-f for masked content and the full-text tier) and that explicit consent is not a basis (Q-32) |
 | LR-3 | `notice.transfer.text` | the cross-border transfer wording and the art. 9 instrument per vendor (Q-33) |
 | LR-4 | `notice.retention.text` | the configured retention figures (Q-5) and the deletion statement |
 | LR-5 | `notice.rights.text` | the art. 11 rights wording, the application channel and the effect of an objection |
-| LR-6 | `block.class.noexception` | that no exception exists for fail-closed classes (PC-5, ADR-010), as a promise to employees |
-| LR-7 | `notice.acknowledge.text` | the acknowledgement is proof of notice, not consent (Q-32); the HR acknowledgement with the same version counts (Q-35) |
+| LR-6 | `block.class.noexception` | that no exception exists for the four fail-closed classes, internal identity included (PC-5, ADR-010), as a promise to employees |
+| LR-7 | `notice.acknowledge.text` | the acknowledgement is proof of notice, not approval or consent (Q-32); the HR record that this version was read counts (Q-35) |

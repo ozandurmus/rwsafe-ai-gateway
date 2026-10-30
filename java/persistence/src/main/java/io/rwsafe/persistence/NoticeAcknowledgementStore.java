@@ -2,7 +2,9 @@ package io.rwsafe.persistence;
 
 import static io.rwsafe.persistence.Schema.*;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.jooq.DSLContext;
 import org.jooq.impl.DSL;
@@ -20,6 +22,27 @@ public final class NoticeAcknowledgementStore {
 
     NoticeAcknowledgementStore(DSLContext dsl) {
         this.dsl = dsl;
+    }
+
+    /**
+     * Records that {@code version} is shown from {@code at} on, unless it was issued before; returns the stored issue
+     * time (the first one stays).
+     */
+    public Instant issue(String version, Instant at) {
+        AuditContext audit = new AuditContext("system:notice-catalogue", "notice.issue_version", "NOTICE_VERSION_ISSUED",
+            UUID.randomUUID().toString());
+        return dsl.transactionResult(cfg -> {
+            DSLContext tx = DSL.using(cfg);
+            audit.apply(tx);
+            tx.insertInto(NOTICE_VERSION, NV_VERSION, NV_ISSUED_AT).values(version, at).onConflict(NV_VERSION)
+                .doNothing().execute();
+            return tx.select(NV_ISSUED_AT).from(NOTICE_VERSION).where(NV_VERSION.eq(version)).fetchOne(NV_ISSUED_AT);
+        });
+    }
+
+    /** When {@code version} was first issued; empty for a version this deployment never showed. */
+    public Optional<Instant> issuedAt(String version) {
+        return dsl.select(NV_ISSUED_AT).from(NOTICE_VERSION).where(NV_VERSION.eq(version)).fetchOptional(NV_ISSUED_AT);
     }
 
     /** Inserts the batch in one transaction and returns how many records were new. */

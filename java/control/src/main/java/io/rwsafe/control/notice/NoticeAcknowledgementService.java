@@ -9,35 +9,46 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 /**
  * The notice acknowledgement gate (ADR-009 C12, SR-PRIV-10, PC-2, PC-3): records who acknowledged which notice version,
  * when and from which source, under the user's pseudonym only, and answers whether content may be captured for a user.
- * An acknowledgement is proof of notice, never consent (Q-32); the directory's HR acknowledgement counts when it carries
- * the version and the date (Q-35). A batch is all-or-nothing; a missing privacy key refuses it (nothing is stored raw).
+ * An acknowledgement is proof of notice, never approval or consent (Q-32); the directory's HR record that the version
+ * was read counts when it carries the version and the date (Q-35). A batch is all-or-nothing; a missing privacy key
+ * refuses it (nothing is stored raw); an incomplete notice refuses it (nothing was shown).
  */
 @Service
 public class NoticeAcknowledgementService {
 
     public static final int MAX_BATCH = 1000;
+    private static final Logger LOG = LoggerFactory.getLogger(NoticeAcknowledgementService.class);
     public static final Set<String> SOURCES =
         Set.of("banner", "ide_first_run", "directory_attribute", "gateway_credential_issue");
+    /** The record of the employee's own action: they can only acknowledge the notice they are shown now (D-03). */
+    static final Set<String> INTERACTIVE = Set.of("banner", "ide_first_run", "gateway_credential_issue");
+    /** Clock difference tolerated between the reporting surface and the control plane, both ways. */
     static final Duration MAX_SKEW = Duration.ofMinutes(5);
-    /** No acknowledgement predates the product's notices; an older date is a mistaken import. */
-    static final Instant EARLIEST = Instant.parse("2026-01-01T00:00:00Z");
 
     private final Database database;
     private final PrivacyKeys keys;
     private final Pseudonymiser pseudonymiser;
     private final NoticeCatalogue notice;
     private final Clock clock;
+    private volatile Instant currentIssuedAt;
 
     @Autowired
     public NoticeAcknowledgementService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser,
@@ -57,6 +68,16 @@ public class NoticeAcknowledgementService {
     public record Result(int accepted, int duplicates) {
     }
 
+    /** The version shown from now on is issued at startup; an intake retries it when the database was not ready. */
+    @EventListener(ApplicationReadyEvent.class)
+    void issueAtStartup() {
+        try {
+            issueCurrent();
+        } catch (RuntimeException e) {
+            LOG.warn("the current notice version could not be issued yet: {}", e.getClass().getSimpleName());
+        }
+    }
+
     public Result record(List<AcknowledgementPayload> batch) {
         if (batch == null || batch.isEmpty()) {
             throw new BadRequest("INVALID_ACKNOWLEDGEMENT", "The body must be a non-empty JSON array.");
@@ -65,11 +86,17 @@ public class NoticeAcknowledgementService {
             throw new BadRequest("INVALID_ACKNOWLEDGEMENT", "A batch holds at most " + MAX_BATCH + " records.");
         }
         String keyId = keys.keyId();
+        String current = notice.currentVersion().orElseThrow(() -> new BadRequest("NOTICE_INCOMPLETE",
+            "The notice is incomplete and is not shown, so nothing can be acknowledged; configure every "
+                + "RWSAFE_ENDUSER_ value."));
+        Instant currentIssuedAt = issueCurrent().orElseThrow();
+        Map<String, Optional<Instant>> issued = new HashMap<>();
+        issued.put(current, Optional.of(currentIssuedAt));
         Instant now = clock.instant();
         List<NoticeAcknowledgement> rows = new ArrayList<>(batch.size());
         Set<String> seen = new HashSet<>();
         for (int i = 0; i < batch.size(); i++) {
-            NoticeAcknowledgement row = validate(i, batch.get(i), now, keyId);
+            NoticeAcknowledgement row = validate(i, batch.get(i), now, keyId, current, issued);
             if (seen.add(row.userPseudonym() + "|" + row.noticeVersion() + "|" + row.source())) {
                 rows.add(row);
             }
@@ -105,7 +132,30 @@ public class NoticeAcknowledgementService {
         return notice.currentVersion().map(v -> database.noticeAcknowledgements().usersAcknowledged(v)).orElse(0L);
     }
 
-    private NoticeAcknowledgement validate(int i, AcknowledgementPayload p, Instant now, String keyId) {
+    /**
+     * Records the current version's issue time once (the first one stays across restarts) and caches it; empty while the
+     * notice is incomplete. Called at startup and before every intake.
+     */
+    public Optional<Instant> issueCurrent() {
+        Optional<String> version = notice.currentVersion();
+        if (version.isEmpty()) {
+            return Optional.empty();
+        }
+        Instant at = currentIssuedAt;
+        if (at == null) {
+            at = database.noticeAcknowledgements().issue(version.get(), clock.instant().truncatedTo(ChronoUnit.MICROS));
+            currentIssuedAt = at;
+        }
+        return Optional.of(at);
+    }
+
+    /**
+     * D-03: every record names a version this deployment issued and is dated from that issue (less the skew) to now (plus
+     * the skew). An interactive source records the current version only; the directory import may carry an earlier
+     * issued version, kept as history (it does not open content capture).
+     */
+    private NoticeAcknowledgement validate(int i, AcknowledgementPayload p, Instant now, String keyId, String current,
+                                           Map<String, Optional<Instant>> issued) {
         if (p == null) {
             throw invalid(i, "record");
         }
@@ -122,11 +172,19 @@ public class NoticeAcknowledgementService {
         } catch (DateTimeParseException e) {
             throw invalid(i, "acknowledgedAt");
         }
-        if (at.isBefore(EARLIEST) || at.isAfter(now.plus(MAX_SKEW))) {
-            throw invalid(i, "acknowledgedAt");
-        }
         if (p.source() == null || !SOURCES.contains(p.source())) {
             throw invalid(i, "source");
+        }
+        if (INTERACTIVE.contains(p.source()) && !p.noticeVersion().equals(current)) {
+            throw invalid(i, "noticeVersion");
+        }
+        Optional<Instant> issuedAt = issued.computeIfAbsent(p.noticeVersion(),
+            v -> database.noticeAcknowledgements().issuedAt(v));
+        if (issuedAt.isEmpty()) {
+            throw invalid(i, "noticeVersion");
+        }
+        if (at.isBefore(issuedAt.get().minus(MAX_SKEW)) || at.isAfter(now.plus(MAX_SKEW))) {
+            throw invalid(i, "acknowledgedAt");
         }
         String user = pseudonymiser.user(claim);
         if (user == null) {

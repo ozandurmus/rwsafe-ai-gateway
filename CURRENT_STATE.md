@@ -180,11 +180,17 @@ Nothing applied; build and apply commands in `DEPLOY_AND_SHARED_HOST_RUNBOOK.md`
   `IcapConnectionHandler` is unchanged.
 - Notice acknowledgement (C12): Flyway `V5__notice_acknowledgement.sql` (V3 and V4 are reserved by open branches; merge
   them first or the database must be fresh), pseudonym only, idempotent per user, version and source, ledgered, never
-  updated. Intake `POST /internal/v1/notice-acknowledgements` on the capture sink (banner, IDE first run, directory HR
-  acknowledgement with version and date (Q-35), gateway credential issue); `GET /api/v1/notice` and
+  updated; `notice_version` records when each version was first issued, and an acknowledgement must name an issued
+  version. Intake `POST /internal/v1/notice-acknowledgements` on the capture sink: refused while the notice is
+  incomplete; the interactive sources (banner, IDE first run, gateway credential issue) record the current version
+  only; the directory HR record (version and date, Q-35) may carry an earlier issued version as history; the date lies
+  between the version's issue time and now (5 minutes of skew each way). `GET /api/v1/notice` and
   `GET /api/v1/notice/acknowledgements?user=USR-…` for every role, masked through the funnel (the masked notice omits the
   configured values). `NoticeAcknowledgementService.contentCaptureAllowed` is the SR-PRIV-10 gate for the C3 capture
   store (fails closed without the current version's record).
+- Second review (Argon, `docs/reviews/PR22_2026_10_31_ARGON_END_USER_NOTICES.md`): D-01 to D-08 fixed and PO-Q1 to
+  PO-Q3 taken as recommended (`PR22_2026_10_31_RESPONSE.md`); catalogue `tr-2`; the LR markers stay for the PO and the
+  data protection officer.
 - Open: the banner and IDE first-run surfaces that show the notice and post the acknowledgement, the directory import
   job, the `RWSAFE_ENDUSER_*` ConfigMap contract in `deploy/rwsafe/contracts`, a call site for the coaching page, and
   the data plane reasons `PLATFORM_NOT_ALLOWED`, `VENDOR_INSTRUMENT_MISSING` and `PERSONAL_ACCOUNT` (their pages exist).

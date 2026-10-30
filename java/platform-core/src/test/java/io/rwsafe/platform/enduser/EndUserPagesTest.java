@@ -109,11 +109,14 @@ class EndUserPagesTest {
 
         EndUserPages complete = pages(configured());
         String version = complete.noticeVersion().orElseThrow();
-        assertTrue(version.startsWith("tr-1-") && version.length() == "tr-1-".length() + 8, version);
+        assertTrue(version.startsWith("tr-2-") && version.length() == "tr-2-".length() + 8, version);
         assertEquals(version, complete.noticeVersion().orElseThrow(), "deterministic");
         assertTrue(complete.noticeHtml().orElseThrow().contains("sürüm " + version));
         assertEquals(Set.of(), complete.noticeMissingParameters());
         assertEquals(11, complete.noticeSections().orElseThrow().size());
+        // PR 22 review D-06: computed once, not per call.
+        org.junit.jupiter.api.Assertions.assertSame(complete.noticeSections().orElseThrow(),
+            complete.noticeSections().orElseThrow());
     }
 
     @Test

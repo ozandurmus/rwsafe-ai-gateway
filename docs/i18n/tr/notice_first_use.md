@@ -1,4 +1,4 @@
-# First-use notice (aydınlatma metni)
+# First-use notice (KVKK article 10)
 
 Shown at the first use of an AI platform through the gateway (web banner, IDE first-run notification) and rendered by `EndUserPages.noticeHtml`. Section order: introduction, then each heading with its text (`notice.raw.text` follows `notice.data.text`), then `page.policy`, then `notice.acknowledge.text`.
 
@@ -30,9 +30,9 @@ Hangi yapay zeka platformunu, hangi araçla, hangi kurumsal hesapla ve ne zaman 
 
 ## `notice.raw.text`
 
-> LEGAL-REVIEW LR-1: the unmodified-content clause must match the capture mode approved per platform and group (Q-4, Q-5).
+> LEGAL-REVIEW LR-1: the full-text tier (detected secrets and personal data removed before storage, AGENTS.md 4.13) must match the capture mode approved per platform and group (Q-4, Q-5).
 
-İçeriğin değiştirilmemiş hâli yalnızca kurumun ayrıca onayladığı durumlarda saklanır. Bu içerik yalnızca bir güvenlik olayı incelenirken, biri kişisel verilerin korunmasından sorumlu yetkili olmak üzere iki yetkilinin onayıyla açılabilir ve her erişim kayıt altına alınır.
+Kurumun ayrıca izin verdiği durumlarda, tespit edilen gizli bilgiler ve kişisel veriler çıkarıldıktan sonra içeriğin tam metni de saklanabilir. Bu metin yalnızca bir güvenlik olayı incelenirken, biri kişisel verilerin korunmasından sorumlu yetkili olmak üzere iki yetkilinin izniyle açılabilir ve her erişim kayıt altına alınır.
 
 ## `notice.purpose.heading`
 
@@ -48,9 +48,9 @@ Hukuki sebep
 
 ## `notice.basis.text`
 
-> LEGAL-REVIEW LR-2: the legal basis per data class (art. 5/2-ç and 5/2-f, REGULATORY_MAPPING) and the sentence that explicit consent is not a basis (Q-32).
+> LEGAL-REVIEW LR-2: the legal basis per data class (art. 5/2-ç; 5/2-f for masked content and the full-text tier, REGULATORY_MAPPING) and the sentence that explicit consent is not a basis (Q-32).
 
-Kullanım kayıtları ve güvenlik kararları, kurumun bilgi sistemleri güvenliğine ilişkin hukuki yükümlülüğü nedeniyle (Kanun'un 5. maddesinin 2. fıkrasının (ç) bendi); maskelenmiş içerik, kurumun meşru menfaati nedeniyle (Kanun'un 5. maddesinin 2. fıkrasının (f) bendi) işlenir. Bu işleme açık rızanıza dayanmaz; bu nedenle sizden rıza istenmez.
+Kullanım kayıtları ve güvenlik kararları, kurumun bilgi sistemleri güvenliğine ilişkin hukuki yükümlülüğü nedeniyle (Kanun'un 5. maddesinin 2. fıkrasının (ç) bendi); maskelenmiş içerik ve saklandığında gizli bilgiler ve kişisel veriler çıkarılmış tam metin, kurumun meşru menfaati nedeniyle (Kanun'un 5. maddesinin 2. fıkrasının (f) bendi) işlenir. Bu işleme açık rızanıza dayanmaz; bu nedenle sizden rıza istenmez.
 
 ## `notice.transfer.heading`
 
@@ -70,7 +70,7 @@ Ne kadar saklanıyor?
 
 > LEGAL-REVIEW LR-4: the configured retention figures (Q-5) and the deletion statement.
 
-Kullanım kayıtları ve güvenlik kararları {{retention_metadata}} gün, maskelenmiş içerik {{retention_redacted}} gün, içeriğin değiştirilmemiş hâli saklandıysa {{retention_raw}} gün saklanır. Süresi dolan bilgiler silinir ve silme işlemi kayıt altına alınır.
+Kullanım kayıtları ve güvenlik kararları {{retention_metadata}} gün, maskelenmiş içerik {{retention_redacted}} gün, gizli bilgiler ve kişisel veriler çıkarılmış tam metin saklandıysa {{retention_raw}} gün saklanır. Süresi dolan bilgiler silinir ve silme işlemi kayıt altına alınır.
 
 ## `notice.rights.heading`
 
@@ -92,6 +92,6 @@ Kurum ağında yapay zeka araçlarına kişisel hesapla giriş engellenir. Engel
 
 ## `notice.acknowledge.text`
 
-> LEGAL-REVIEW LR-7: the acknowledgement is proof of notice, not consent (Q-32), and the HR policy acknowledgement with the same version counts (Q-35).
+> LEGAL-REVIEW LR-7: the acknowledgement is proof of notice, not approval or consent (Q-32); the HR record that this version was read counts (Q-35).
 
-Devam ettiğinizde bu metni okuduğunuz kaydedilir (sürüm {{notice_version}}). Bu kayıt bir onay ya da rıza değildir; yalnızca bilgilendirildiğinizi gösterir. Kurumun insan kaynakları politikasını bu sürümle onayladıysanız o kayıt da aynı anlamı taşır.
+Devam ettiğinizde bu metni okuduğunuz kaydedilir (sürüm {{notice_version}}). Bu kayıt bir onay ya da rıza değildir; yalnızca bilgilendirildiğinizi gösterir. Kurumun insan kaynakları politikası kapsamında bu sürümü okuduğunuz kayda geçtiyse o kayıt da aynı anlamı taşır.

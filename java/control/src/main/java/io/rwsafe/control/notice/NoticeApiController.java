@@ -5,6 +5,8 @@ import io.rwsafe.control.notice.NoticeViews.AcknowledgementView;
 import io.rwsafe.control.notice.NoticeViews.NoticeView;
 import io.rwsafe.control.notice.NoticeViews.SectionView;
 import io.rwsafe.control.notice.NoticeViews.UserAcknowledgementsView;
+import io.rwsafe.persistence.NoticeAcknowledgement;
+import io.rwsafe.persistence.NoticeAcknowledgementStore;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -45,8 +47,14 @@ public class NoticeApiController {
             throw new BadRequest("INVALID_USER_FILTER",
                 "The user filter takes a USR- pseudonym only; real names are never searchable here.");
         }
-        return new UserAcknowledgementsView(user, notice.currentVersion().orElse(null),
-            acknowledgements.contentCaptureAllowed(user),
-            acknowledgements.forUser(user).stream().map(AcknowledgementView::of).toList());
+        Optional<String> current = notice.currentVersion();
+        List<NoticeAcknowledgement> records = acknowledgements.forUser(user);
+        // One round trip (PR 22 review D-06); the exact gate query only when the page is full without a match.
+        boolean acknowledged = current.isPresent()
+            && (records.stream().anyMatch(r -> r.noticeVersion().equals(current.get()))
+                || (records.size() >= NoticeAcknowledgementStore.MAX_PER_USER
+                    && acknowledgements.contentCaptureAllowed(user)));
+        return new UserAcknowledgementsView(user, current.orElse(null), acknowledged,
+            records.stream().map(AcknowledgementView::of).toList());
     }
 }

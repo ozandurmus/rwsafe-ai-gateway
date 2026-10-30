@@ -22,6 +22,12 @@ import org.junit.jupiter.api.Test;
 class EndUserCatalogueDocsTest {
 
     private static final String MARKER = "LEGAL-REVIEW ";
+    /** Review copies that are not in the product catalogue yet (no key sections). */
+    private static final Set<String> DRAFTS = Set.of("exception_request.md");
+
+    private static boolean ascii(String s) {
+        return s.chars().allMatch(c -> c < 128);
+    }
 
     @Test
     void theReviewCopiesMirrorTheCatalogue() throws Exception {
@@ -29,7 +35,18 @@ class EndUserCatalogueDocsTest {
         Set<String> docMarkers = new TreeSet<>();
         try (Stream<Path> files = Files.list(i18n().resolve("tr"))) {
             for (Path f : files.filter(p -> p.toString().endsWith(".md")).sorted().toList()) {
+                int before = docs.size();
                 read(f, docs, docMarkers);
+                String name = f.getFileName().toString();
+                List<String> lines = Files.readAllLines(f, StandardCharsets.UTF_8);
+                // PR 22 review D-05: a file the test cannot read as key sections fails, unless it is the named draft;
+                // titles are English (AGENTS.md section 3).
+                assertTrue(lines.get(0).startsWith("# ") && ascii(lines.get(0)), name + ": an English # title first");
+                if (DRAFTS.contains(name)) {
+                    assertEquals(before, docs.size(), name + " is a draft and has no key sections");
+                } else {
+                    assertTrue(docs.size() > before, name + " defines no ## `key` section");
+                }
             }
         }
         EndUserCatalogue tr = EndUserCatalogue.turkish();
