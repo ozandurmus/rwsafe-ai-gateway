@@ -1,0 +1,93 @@
+# Validation workflow (ROADMAP phase 0 "Repository and CI"; AGENTS.md sections 4.15, 10 and 14).
+# Runs on every pull request and on main: the repository privacy gate, gitleaks over the tree and the history, and the
+# Java unit and ArchUnit tests. Every job prints the commit it tested. No secrets, no deploy, nothing reaches HOST-A.
+# Actions are pinned by commit digest; the tag in the trailing comment is for humans only.
+name: validation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+jobs:
+  privacy-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Commit under test
+        run: &print-commit |
+          tested=$(git rev-parse HEAD)
+          line="tested commit ${tested}"
+          if [ -n "${PR_HEAD_SHA}" ]; then line="${line} (merge of PR head ${PR_HEAD_SHA} onto base ${PR_BASE_SHA})"; fi
+          echo "${line}"
+          echo "${GITHUB_JOB}: ${line}" >> "${GITHUB_STEP_SUMMARY}"
+      - name: Repository privacy gate
+        run: python3 tools/privacy/repository_privacy_check.py .
+
+  gitleaks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Commit under test
+        run: *print-commit
+      - name: Install gitleaks (checksum verified)
+        run: |
+          dir="${RUNNER_TEMP}/gitleaks"
+          mkdir -p "${dir}"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "${dir}/${archive}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${dir}/${archive}" | sha256sum --check --strict
+          tar -xzf "${dir}/${archive}" -C "${dir}" gitleaks
+          echo "${dir}" >> "${GITHUB_PATH}"
+      - name: gitleaks on the tree
+        run: gitleaks dir . --config .gitleaks.toml --redact --no-banner --exit-code 1
+      - name: gitleaks on the history
+        run: gitleaks git . --config .gitleaks.toml --redact --no-banner --exit-code 1
+
+  java-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Commit under test
+        run: *print-commit
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            java/**/*.gradle.kts
+            java/**/gradle.lockfile
+            java/gradle/libs.versions.toml
+            java/gradle/verification-metadata.xml
+            java/gradle/wrapper/gradle-wrapper.properties
+      - name: Unit and architecture tests
+        run: ./java/gradlew -p java --no-daemon --stacktrace --dependency-verification strict unitTest architectureTest

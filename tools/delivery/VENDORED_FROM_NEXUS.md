@@ -16,3 +16,9 @@ Status at design freeze: **nothing vendored yet**; the first implementation move
 | `run_build.sh` | `deploy/ui2-image-build/run_build.sh` | everything above plus the shared build lock |
 
 Rule: a neXus engine fix is ported here or declined explicitly, with a row in this file.
+
+## Copied outside the engine
+
+| File | neXus source | Change |
+|---|---|---|
+| `java/gradlew`, `java/gradlew.bat`, `java/gradle/wrapper/gradle-wrapper.{jar,properties}` | `ui2/` at commit `6c8a1f11` (2026-10-30) | none: the stock Gradle 8.14.3 wrapper; CI validates the jar against Gradle's published checksums (`gradle/actions/wrapper-validation`) |
