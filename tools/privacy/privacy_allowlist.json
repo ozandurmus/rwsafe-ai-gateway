@@ -14,20 +14,6 @@
       "reason": "Unaltered external review (AGENTS.md 11) names the gitleaks inline-allow marker in prose (finding D-04); no secret",
       "owner": "orchestrating ENGINEER session",
       "review_date": "2027-01-31"
-    },
-    {
-      "rule": "TR_MOBILE_NUMBER",
-      "path": "java/gradle/verification-metadata.xml",
-      "reason": "Generated Gradle dependency-verification file: sha256 digests of public Maven artifacts whose decimal digit runs match the shape; no identifier",
-      "owner": "control-plane ENGINEER session",
-      "review_date": "2027-01-31"
-    },
-    {
-      "rule": "TCKN_WITH_VALID_CHECKSUM",
-      "path": "java/gradle/verification-metadata.xml",
-      "reason": "Generated Gradle dependency-verification file: sha256 digests of public Maven artifacts whose decimal digit runs match the shape; no identifier",
-      "owner": "control-plane ENGINEER session",
-      "review_date": "2027-01-31"
     }
   ]
 }

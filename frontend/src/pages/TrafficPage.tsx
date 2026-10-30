@@ -171,6 +171,7 @@ export function TrafficPage() {
           />
         </Box>
       </Box>
+      {platforms.error !== null && <ErrorPanel error={platforms.error} />}
       {error !== null && <ErrorPanel error={error} />}
       <Card variant="outlined">
         <TableContainer>

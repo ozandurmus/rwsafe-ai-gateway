@@ -46,6 +46,8 @@ class ControlPlaneIntegrationTest {
     DataSource dataSource;
     @Autowired
     IngestionService ingestion;
+    @org.springframework.beans.factory.annotation.Value("${rwsafe.identity.break-glass.initial-password-file}")
+    String breakGlassFile;
 
     private ApiClient admin() {
         return new ApiClient(port);
@@ -211,7 +213,7 @@ class ControlPlaneIntegrationTest {
         ApiClient.Response traffic = aiview.get("/api/v1/traffic?limit=5");
         assertEquals(200, traffic.status());
         assertEquals("true", traffic.raw().headers().firstValue("X-RWSAFE-Masked").orElse(""));
-        assertEquals("rwmask-v1", traffic.raw().headers().firstValue("X-RWSAFE-Mask-Rules").orElse(""));
+        assertEquals("rwmask-v1-slice1", traffic.raw().headers().firstValue("X-RWSAFE-Mask-Rules").orElse(""));
         assertEquals(403, aiview.post("/api/v1/policies", "{}", true).status());
         assertEquals(204, aiview.post("/api/v1/auth/logout", "", true).status());
         assertEquals(401, aiview.get("/api/v1/traffic").status());
@@ -219,10 +221,8 @@ class ControlPlaneIntegrationTest {
 
     @Test
     void breakGlassIsCreatedOnceOwnerOnlyAndLedgered() throws Exception {
-        java.nio.file.Path file;
-        try (var files = Files.list(ControlTestEnvironment.dir())) {
-            file = files.filter(p -> p.getFileName().toString().endsWith("-break-glass")).findFirst().orElseThrow();
-        }
+        java.nio.file.Path file = java.nio.file.Path.of(breakGlassFile);
+        assertFalse(Files.exists(file.resolveSibling(file.getFileName() + ".staged")));
         if (!System.getProperty("os.name").toLowerCase().contains("win")) {
             assertEquals(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
                 Files.getPosixFilePermissions(file));
@@ -236,5 +236,47 @@ class ControlPlaneIntegrationTest {
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM audit_event WHERE table_name = 'local_account' AND "
             + "action_id = 'local_account.create' AND actor_fingerprint = 'system:bootstrap'", Integer.class));
         assertTrue(jdbc.queryForObject("SELECT password_hash FROM local_account", String.class).startsWith("$2"));
+        assertTrue(jdbc.queryForObject("SELECT count(*) FROM audit_event WHERE table_name = 'login_record' AND "
+            + "reason_code = 'BREAK_GLASS_LOGIN' AND actor_fingerprint LIKE 'USR-%'", Integer.class) >= 1);
+    }
+
+    @Test
+    void aUserInTheMaskedGroupIsSignedInMaskedOnlyAndLedgered() throws Exception {
+        ApiClient dual = signedIn("synthetic-dual");
+        JsonNode me = dual.get("/api/v1/auth/me").body();
+        assertTrue(me.get("masked").asBoolean());
+        assertEquals(1, me.get("roles").size());
+        assertEquals("replay_viewer", me.get("roles").get(0).asText());
+        assertEquals(403, dual.post("/api/v1/policies", "{}", true).status());
+        assertTrue(new JdbcTemplate(dataSource).queryForObject("SELECT count(*) FROM audit_event WHERE action_id = "
+            + "'session.activate_masked'", Integer.class) >= 1);
+    }
+
+    @Test
+    void bodiesAreBoundedAsTheyAreRead() throws Exception {
+        ApiClient c = admin();
+        c.get("/api/v1/auth/csrf");
+        ApiClient.Response big = c.post("/api/v1/auth/login", "{\"loginName\":\"" + "a".repeat(100_000) + "\"}", true);
+        assertEquals(413, big.status());
+        StringBuilder many = new StringBuilder("[");
+        for (int i = 0; i <= IngestionService.MAX_BATCH; i++) {
+            many.append(i == 0 ? "" : ",").append("{}");
+        }
+        ApiClient.Response tooMany = internalClient().post("/internal/v1/verdict-events", many.append(']').toString(),
+            false);
+        assertEquals(400, tooMany.status());
+        assertTrue(tooMany.body().get("message").asText().contains("at most 1000"));
+        assertEquals(400, internalClient().post("/internal/v1/verdict-events", "{}", false).status());
+    }
+
+    @Test
+    void reasonsAndCorrelationIdsCannotCarryValues() throws Exception {
+        ObjectNode dotted = event("claude", "BLOCK", null, null).put("reason", "synthetic.example.test");
+        assertEquals(400, internalClient().post("/internal/v1/verdict-events", batch(dotted), false).status());
+        ObjectNode tckn = event("claude", "BLOCK", null, null)
+            .put("correlationId", io.rwsafe.control.support.Synthetic.tckn(3));
+        ApiClient.Response r = internalClient().post("/internal/v1/verdict-events", batch(tckn), false);
+        assertEquals(400, r.status());
+        assertTrue(r.body().get("message").asText().contains("correlationId"));
     }
 }

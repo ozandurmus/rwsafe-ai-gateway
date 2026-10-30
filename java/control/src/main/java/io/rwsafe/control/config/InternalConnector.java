@@ -17,7 +17,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 /**
  * A second Tomcat connector for the data plane's internal routes ({@code /internal/**}, port 8092). The internal routes
  * answer only on it and the admin routes never do: each side sees the other as 404, before Spring Security runs. An
- * internal body must declare its length and stay within {@link #MAX_BODY_BYTES}, checked before a byte is read.
+ * internal body must declare its length; {@link BodyLimitFilter} bounds it to {@link #MAX_BODY_BYTES} as it is read.
  */
 @Configuration(proxyBeanMethods = false)
 public class InternalConnector {
@@ -58,10 +58,6 @@ public class InternalConnector {
                     long length = request.getContentLengthLong();
                     if (length < 0) {
                         response.setStatus(HttpServletResponse.SC_LENGTH_REQUIRED);
-                        return;
-                    }
-                    if (length > MAX_BODY_BYTES) {
-                        response.setStatus(HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE);
                         return;
                     }
                 }

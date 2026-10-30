@@ -49,6 +49,9 @@ public class MaskingFunnel implements ResponseBodyAdvice<Object> {
             response.setStatusCode(HttpStatus.SERVICE_UNAVAILABLE);
             return ApiError.of("MASKING_UNAVAILABLE", "The masking key or dictionary is missing; nothing is served.");
         }
+        if (body == null) {
+            return null;
+        }
         if (body instanceof MaskedView view) {
             return view.masked(masking.masker());
         }

@@ -25,6 +25,8 @@ spring:
 
 server:
   port: ${RWSAFE_HTTP_PORT:8080}
+  # The client address behind the ingress (trusted internal proxies only); used by the login throttle, never stored.
+  forward-headers-strategy: native
   address: ${RWSAFE_HTTP_BIND:127.0.0.1}
   error:
     include-message: never

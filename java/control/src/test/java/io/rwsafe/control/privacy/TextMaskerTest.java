@@ -62,6 +62,24 @@ class TextMaskerTest {
     }
 
     @Test
+    void aTurkishDottedCapitalBeforeATermNeitherThrowsNorLeaks() {
+        String out = m.mask("\u0130STANBUL-synthetic-estate and synthetic-estate-x");
+        assertFalse(out.toLowerCase().contains("synthetic-estate"), out);
+        assertTrue(out.startsWith("\u0130STANBUL-EST-"), out);
+    }
+
+    @Test
+    void oneMobileNumberIsOneTokenWhateverItsPrefix() {
+        String digits = "532" + "1234567";
+        String a = m.mask("+90 " + digits.substring(0, 3) + " " + digits.substring(3));
+        String b = m.mask("0" + digits);
+        String c = m.mask(digits);
+        assertEquals(a, b);
+        assertEquals(b, c);
+        assertTrue(a.startsWith("TEL-"), a);
+    }
+
+    @Test
     void withoutTheDictionaryTheMaskedRoleIsRefused() {
         byte[] key = new byte[32];
         PrivacyKeys noDictionary = new PrivacyKeys(key, null);

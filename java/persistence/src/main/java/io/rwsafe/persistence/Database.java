@@ -50,6 +50,10 @@ public final class Database {
         return new LocalAccountStore(dsl);
     }
 
+    public LoginRecordStore loginRecords() {
+        return new LoginRecordStore(dsl);
+    }
+
     /** True when a trivial query answers (health screen). */
     public boolean reachable() {
         try {

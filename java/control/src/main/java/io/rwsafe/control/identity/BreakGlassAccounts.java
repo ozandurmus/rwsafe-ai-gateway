@@ -9,6 +9,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.SecureRandom;
@@ -52,19 +53,35 @@ public final class BreakGlassAccounts implements Authenticator {
         }
         char[] password = generate(24);
         String hash = encoder.encode(new String(password));
-        writeOwnerOnly(file, password);
-        boolean created = database.localAccounts().createIfAbsent(
-            new LocalAccount(BREAK_GLASS, hash, List.of(Roles.SECURITY_ADMIN), true),
-            new AuditContext("system:bootstrap", "local_account.create", "BREAK_GLASS_FIRST_START",
-                UUID.randomUUID().toString()));
-        if (created) {
-            LOG.info("break-glass account created; its initial password is in the configured file");
+        // Written beside the target first and moved into place only after the account row commits, so the file never
+        // names a password the database does not hold (PR 12 review D-09).
+        Path staged = file.resolveSibling(file.getFileName() + ".staged");
+        writeOwnerOnly(staged, password);
+        boolean created;
+        try {
+            created = database.localAccounts().createIfAbsent(
+                new LocalAccount(BREAK_GLASS, hash, List.of(Roles.SECURITY_ADMIN), true),
+                new AuditContext("system:bootstrap", "local_account.create", "BREAK_GLASS_FIRST_START",
+                    UUID.randomUUID().toString()));
+            if (created) {
+                Files.move(staged, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                LOG.info("break-glass account created; its initial password is in the configured file");
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("the break-glass initial password file cannot be moved into place", e);
+        } finally {
+            try {
+                Files.deleteIfExists(staged);
+            } catch (IOException e) {
+                LOG.warn("the staged break-glass password file could not be removed");
+            }
         }
         return created;
     }
 
     @Override
     public Optional<AuthenticatedUser> authenticate(String loginName, char[] password) {
+        // The break-glass name is fixed and public, so answering other names at once reveals nothing (D-09).
         if (!BREAK_GLASS.equals(loginName)) {
             return Optional.empty();
         }

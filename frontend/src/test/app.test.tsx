@@ -73,8 +73,36 @@ describe('app', () => {
       }),
     });
     renderApp('/');
-    expect(await screen.findByText('Masked view · rwmask-v1')).toBeInTheDocument();
+    expect(await screen.findByText('Masked view')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('MASKING_UNAVAILABLE'));
+  });
+
+  it('stays signed in and shows the reason when the sign-out fails', async () => {
+    fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: viewer }),
+      'GET /api/v1/health': () => ({
+        status: 200,
+        body: { checkedAt: '2026-10-30T09:00:00Z', components: [], eventsLastFiveMinutes: 0, totalEvents: 0, latestEventAt: null },
+      }),
+      'POST /api/v1/auth/logout': () => ({
+        status: 403,
+        body: { reason: 'CSRF_TOKEN_INVALID', message: 'The request lacks a valid CSRF token; reload the page.' },
+      }),
+    });
+    renderApp('/health');
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign out' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('CSRF_TOKEN_INVALID');
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+  });
+
+  it('shows the reason when the platform list fails', async () => {
+    fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: viewer }),
+      'GET /api/v1/platforms': () => ({ status: 503, body: { reason: 'DATABASE_UNAVAILABLE', message: 'No answer.' } }),
+      'GET /api/v1/traffic': () => ({ status: 200, body: { items: [], nextCursor: null } }),
+    });
+    renderApp('/traffic');
+    expect(await screen.findByRole('alert')).toHaveTextContent('DATABASE_UNAVAILABLE');
   });
 
   it('renders the overview', async () => {

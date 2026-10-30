@@ -108,15 +108,19 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
   contract (unknown or missing fields refuse the batch, values never echoed), idempotent on `eventId`; the identity claim
   becomes `USR-<10 hex>` and the client address a /24 label in 240/4 under rwsafe's own HMAC key before persistence, 503
   when the key is missing. Identity: LDAP/AD search-and-bind (Q-9) behind the `Authenticator` seam, a generated
-  break-glass account (owner-only initial password file, ledgered), login throttling, session + CSRF cookies, roles
+  break-glass account (owner-only initial password file, ledgered), every sign-in ledgered under a pseudonym, login
+  throttling per name and client, request bodies bounded as read, session + CSRF cookies, roles
   `security_admin`, `viewer`, `replay_viewer` (read-only, masked). The masking funnel (`ResponseBodyAdvice`) serves the
-  masked role only `MaskedView` bodies through the `rwmask-v1` text layers, with `X-RWSAFE-Masked`, and 503
+  masked role (exclusive, read-only) only `MaskedView` bodies through the `rwmask-v1-slice1` text layers, with
+  `X-RWSAFE-Masked`, and 503
   `MASKING_UNAVAILABLE` without the key or the estate dictionary; `FunnelCoverageTest` proves every API route has a masked
   projection. Read API: overview, traffic (keyset pages, pseudonym-only user filter), event detail, platforms, health
   (stub). Synthetic sample events (dev profile) through the real ingestion path; `:control:runDev` starts everything
   locally with an embedded PostgreSQL and a synthetic LDAP directory.
 - `frontend/` (React 18, TypeScript, MUI 5, Vite 7, Vitest 5): Overview, Traffic, Event detail, Health; errors show the
   server's reason class and sentence. CI job `frontend` (tsc, Vitest, build).
+- Second review: Argon `docs/reviews/PR12_2026_10_30_ARGON_CONTROL_PLANE.md`, answered by ID in
+  `PR12_2026_10_30_RESPONSE.md`.
 - Verified end to end locally: the ICAP engine's replay scenarios reach the control plane and appear in the UI.
 - Local run: `docs/operations/LOCAL_RUN.md` "Control plane and admin UI".
 

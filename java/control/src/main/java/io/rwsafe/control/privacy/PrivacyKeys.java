@@ -131,6 +131,8 @@ public class PrivacyKeys {
                     terms.add(term.toLowerCase(Locale.ROOT));
                 }
             }
+            // Longest first, so a term that contains a shorter one is masked whole (PR 12 review D-01).
+            terms.sort(java.util.Comparator.comparingInt(String::length).reversed());
             return terms;
         } catch (IOException e) {
             return null;

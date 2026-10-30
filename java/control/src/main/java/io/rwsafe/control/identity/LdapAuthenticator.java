@@ -99,6 +99,13 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
             return pool;
         }
         LDAPURL url = new LDAPURL(config.url());
+        // Credentials never cross the network in clear text: plain LDAP only to a loopback test directory (D-08).
+        if (!"ldaps".equals(url.getScheme()) && !loopback(url.getHost())) {
+            throw new LDAPException(ResultCode.CONFIDENTIALITY_REQUIRED, "the directory URL must be ldaps");
+        }
+        if (config.bindDn() == null || config.bindDn().isBlank()) {
+            throw new LDAPException(ResultCode.PARAM_ERROR, "the directory bind DN is missing");
+        }
         LDAPConnectionOptions options = new LDAPConnectionOptions();
         options.setConnectTimeoutMillis(5_000);
         options.setResponseTimeoutMillis(10_000);
@@ -116,15 +123,28 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
         }
         connection.bind(config.bindDn(), bindPassword());
         pool = new LDAPConnectionPool(connection, 1, 2);
+        pool.setRetryFailedOperationsDueToInvalidConnections(true);
         return pool;
     }
 
+    /** An empty service password would be an anonymous bind (D-08). */
     private String bindPassword() throws LDAPException {
+        String password;
         try {
-            return Files.readString(config.bindPasswordFile(), StandardCharsets.UTF_8).strip();
+            password = Files.readString(config.bindPasswordFile(), StandardCharsets.UTF_8).strip();
         } catch (IOException | RuntimeException e) {
             throw new LDAPException(ResultCode.PARAM_ERROR, "the directory bind password file is unreadable");
         }
+        if (password.isEmpty()) {
+            throw new LDAPException(ResultCode.PARAM_ERROR, "the directory bind password file is empty");
+        }
+        return password;
+    }
+
+    /** A literal loopback address or {@code localhost}; no name is resolved. */
+    static boolean loopback(String host) {
+        return "localhost".equalsIgnoreCase(host) || host.startsWith("127.") || "::1".equals(host)
+            || "[::1]".equals(host);
     }
 
     @Override

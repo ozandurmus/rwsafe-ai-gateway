@@ -17,7 +17,12 @@ import java.util.function.Function;
  */
 public final class TextMasker {
 
-    public static final String RULE_SET = "rwmask-v1";
+    /**
+     * The rule-set version on every masked page. Slice 1 implements layers 1, 2, 3, the identifier part of 4 and 6 of
+     * {@code rwmask-v1}; the Turkish name dictionary (layer 4) and the free-text heuristics (layer 5) arrive before any
+     * free-text column (C3, C15) exists, and the version then becomes {@code rwmask-v1} (PR 12 review Q-2).
+     */
+    public static final String RULE_SET = "rwmask-v1-slice1";
 
     private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+");
     private static final Pattern IPV4 = Pattern.compile("\\b\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\b");
@@ -41,7 +46,7 @@ public final class TextMasker {
         s = replace(s, EMAIL, pseudonymiser::user);
         s = replace(s, IPV4, ip -> Pseudonymiser.ipv4(ip) == null ? ip : pseudonymiser.subnet(ip));
         s = replace(s, IPV6, v6 -> looksLikeIpv6(v6) ? Pseudonymiser.REDACTED_IP : v6);
-        s = replace(s, TR_MOBILE, phone -> pseudonymiser.token("TEL", phone.replace(" ", "").replace("+90", "0")));
+        s = replace(s, TR_MOBILE, phone -> pseudonymiser.token("TEL", subscriber(phone)));
         return estate(s);
     }
 
@@ -80,6 +85,17 @@ public final class TextMasker {
         };
     }
 
+    /** The ten subscriber digits, whatever the prefix ({@code +90}, {@code 0} or none): one number, one token (D-10). */
+    static String subscriber(String phone) {
+        StringBuilder digits = new StringBuilder();
+        for (int i = 0; i < phone.length(); i++) {
+            if (Character.isDigit(phone.charAt(i))) {
+                digits.append(phone.charAt(i));
+            }
+        }
+        return digits.length() > 10 ? digits.substring(digits.length() - 10) : digits.toString();
+    }
+
     /** At least two colons and either {@code ::} or a hex letter: a time of day is neither. */
     private static boolean looksLikeIpv6(String candidate) {
         if (candidate.contains("::")) {
@@ -116,24 +132,25 @@ public final class TextMasker {
         return out.toString();
     }
 
-    /** Every occurrence of a term that starts and ends on the token's edges or on a {@code ._:-} separator. */
+    /**
+     * Every occurrence of a term that starts and ends on the token's edges or on a {@code ._:-} separator. Matching is
+     * case-insensitive per character on the original token, so a case mapping that changes length (a Turkish dotted
+     * capital I lower-cases to two characters) cannot shift the offsets (PR 12 review D-01). Terms come longest first.
+     */
     private String estateToken(String token) {
-        String lower = token.toLowerCase(Locale.ROOT);
         for (String term : estateTerms) {
-            int from = 0;
-            int at;
-            while (!term.isEmpty() && (at = lower.indexOf(term, from)) >= 0) {
+            int at = 0;
+            while (!term.isEmpty() && at + term.length() <= token.length()) {
                 int end = at + term.length();
-                boolean edges = (at == 0 || isSeparator(lower.charAt(at - 1)))
-                    && (end == lower.length() || isSeparator(lower.charAt(end)));
-                if (!edges) {
-                    from = at + 1;
-                    continue;
+                boolean edges = (at == 0 || isSeparator(token.charAt(at - 1)))
+                    && (end == token.length() || isSeparator(token.charAt(end)));
+                if (edges && token.regionMatches(true, at, term, 0, term.length())) {
+                    String replacement = pseudonymiser.token("EST", term);
+                    token = token.substring(0, at) + replacement + token.substring(end);
+                    at += replacement.length();
+                } else {
+                    at++;
                 }
-                String replacement = pseudonymiser.token("EST", term);
-                token = token.substring(0, at) + replacement + token.substring(end);
-                lower = lower.substring(0, at) + replacement.toLowerCase(Locale.ROOT) + lower.substring(end);
-                from = at + replacement.length();
             }
         }
         return token;

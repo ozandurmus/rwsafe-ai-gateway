@@ -1,5 +1,6 @@
 package io.rwsafe.control.api;
 
+import io.rwsafe.control.config.BodyLimitFilter;
 import io.rwsafe.control.privacy.MaskingUnavailableException;
 import org.jooq.exception.DataAccessException;
 import org.slf4j.Logger;
@@ -43,8 +44,19 @@ public class ApiExceptionHandler {
             "The parameter '" + e.getParameterName() + "' is required."));
     }
 
-    @ExceptionHandler(HttpMessageNotReadableException.class)
-    ResponseEntity<ApiError> unreadable(HttpMessageNotReadableException e) {
+    @ExceptionHandler(BodyLimitFilter.BodyTooLargeException.class)
+    ResponseEntity<ApiError> tooLarge(BodyLimitFilter.BodyTooLargeException e) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(ApiError.of("BODY_TOO_LARGE",
+            "The request body is larger than this route accepts."));
+    }
+
+    @ExceptionHandler({HttpMessageNotReadableException.class, com.fasterxml.jackson.core.JacksonException.class})
+    ResponseEntity<ApiError> unreadable(Exception e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof BodyLimitFilter.BodyTooLargeException tooLarge) {
+                return tooLarge(tooLarge);
+            }
+        }
         return ResponseEntity.badRequest().body(ApiError.of("INVALID_JSON",
             "The request body is not the expected JSON (unknown, missing or mistyped fields are refused)."));
     }

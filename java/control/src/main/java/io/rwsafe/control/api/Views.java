@@ -78,7 +78,7 @@ public final class Views {
         public EventView masked(TextMasker m) {
             return new EventView(eventId, receivedAt, m.mask(service), m.mask(platform), m.mask(surface), m.mask(step),
                 verdict, m.mask(reason), findings, bodyBytes, decisionMicros, user, clientSubnet,
-                m.mask(transport), snapshotVersion, correlationId, pseudonymKeyId);
+                m.mask(transport), snapshotVersion, m.mask(correlationId), pseudonymKeyId);
         }
     }
 

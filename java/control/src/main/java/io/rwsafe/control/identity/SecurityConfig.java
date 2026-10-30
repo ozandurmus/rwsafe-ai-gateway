@@ -10,9 +10,11 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfException;
@@ -45,18 +47,27 @@ public class SecurityConfig {
         return http.build();
     }
 
+    /** One CSRF cookie repository, shared with the login controller so it can rotate the token (PR 12 review D-09). */
     @Bean
-    @Order(2)
-    SecurityFilterChain adminChain(HttpSecurity http, ControlProperties properties, ObjectMapper json) throws Exception {
+    CookieCsrfTokenRepository csrfTokenRepository(ControlProperties properties) {
         CookieCsrfTokenRepository csrfCookies = CookieCsrfTokenRepository.withHttpOnlyFalse();
         csrfCookies.setCookieCustomizer(c -> c.sameSite("Strict").secure(properties.identity().cookieSecure()).path("/"));
+        return csrfCookies;
+    }
+
+    @Bean
+    @Order(2)
+    SecurityFilterChain adminChain(HttpSecurity http, CookieCsrfTokenRepository csrfCookies, ObjectMapper json)
+        throws Exception {
         http.authorizeHttpRequests(a -> a
                 .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll()
                 .requestMatchers("/api/v1/auth/**").authenticated()
                 .requestMatchers(HttpMethod.GET, "/api/v1/**")
                     .hasAnyRole(Roles.SECURITY_ADMIN, Roles.VIEWER, Roles.REPLAY_VIEWER)
-                .requestMatchers("/api/**").hasRole(Roles.SECURITY_ADMIN)
+                // Mutations: security_admin, and never a masked session, whatever else it holds (PR 12 review D-02).
+                .requestMatchers("/api/**").access((auth, context) -> new AuthorizationDecision(
+                    hasRole(auth.get(), Roles.SECURITY_ADMIN) && !hasRole(auth.get(), Roles.REPLAY_VIEWER)))
                 .requestMatchers(HttpMethod.GET, "/**").permitAll()
                 .anyRequest().denyAll())
             .csrf(c -> c.csrfTokenRepository(csrfCookies).csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))
@@ -80,6 +91,11 @@ public class SecurityConfig {
                         ? ApiError.of("CSRF_TOKEN_INVALID", "The request lacks a valid CSRF token; reload the page.")
                         : ApiError.of("FORBIDDEN", "Your role does not allow this action."))));
         return http.build();
+    }
+
+    private static boolean hasRole(Authentication auth, String role) {
+        return auth != null && auth.isAuthenticated() && auth.getAuthorities().stream()
+            .anyMatch(a -> Roles.authority(role).equals(a.getAuthority()));
     }
 
     private static void write(HttpServletResponse response, ObjectMapper json, int status, ApiError error)

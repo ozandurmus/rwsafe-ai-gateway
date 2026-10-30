@@ -48,8 +48,8 @@ export function App() {
             ))}
           </Tabs>
           {me.masked && (
-            <Tooltip title="Masked session: every page passes the masking funnel (rule set rwmask-v1)">
-              <Chip label="Masked view · rwmask-v1" color="warning" size="small" variant="outlined" />
+            <Tooltip title="Masked session: every page passes the server's masking funnel">
+              <Chip label="Masked view" color="warning" size="small" variant="outlined" />
             </Tooltip>
           )}
           <Chip label={`${me.displayName} · ${me.roles.join(', ')}`} size="small" />
@@ -59,6 +59,11 @@ export function App() {
         </Toolbar>
       </AppBar>
       <Container maxWidth="xl" sx={{ py: 3 }}>
+        {error !== null && (
+          <Box mb={2}>
+            <ErrorPanel error={error} />
+          </Box>
+        )}
         <Routes>
           <Route path="/" element={<OverviewPage />} />
           <Route path="/traffic" element={<TrafficPage />} />

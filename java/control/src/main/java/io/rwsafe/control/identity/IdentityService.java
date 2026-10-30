@@ -45,20 +45,38 @@ public class IdentityService implements ApplicationRunner, DisposableBean {
         }
     }
 
-    public Result login(String loginName, char[] password) {
-        if (throttle.locked(loginName)) {
+    /**
+     * @param source the client the attempt came from, for the throttle only (never stored or logged)
+     */
+    public Result login(String loginName, char[] password, String source) {
+        if (throttle.locked(loginName, source)) {
             return new Result(Outcome.THROTTLED, null);
         }
         for (Authenticator front : fronts) {
             Optional<AuthenticatedUser> user = front.authenticate(loginName, password);
             if (user.isPresent()) {
-                throttle.success(loginName);
-                return user.get().roles().isEmpty() ? new Result(Outcome.NO_ROLE, user.get())
-                    : new Result(Outcome.AUTHENTICATED, user.get());
+                if (user.get().roles().isEmpty()) {
+                    // Counted as a failure, so the gateway cannot be used to test directory passwords (PR 12 review Q-1).
+                    throttle.failure(loginName, source);
+                    return new Result(Outcome.NO_ROLE, user.get());
+                }
+                throttle.success(loginName, source);
+                return new Result(Outcome.AUTHENTICATED, exclusive(user.get()));
             }
         }
-        throttle.failure(loginName);
+        throttle.failure(loginName, source);
         return new Result(Outcome.INVALID, null);
+    }
+
+    /**
+     * The masked role is an exclusive session mode (MASKING_AND_PRIVACY B1): a user who holds it is signed in with it
+     * alone, whatever other groups the directory names (PR 12 review D-02).
+     */
+    static AuthenticatedUser exclusive(AuthenticatedUser user) {
+        if (user.roles().contains(Roles.REPLAY_VIEWER) && user.roles().size() > 1) {
+            return new AuthenticatedUser(user.loginName(), java.util.Set.of(Roles.REPLAY_VIEWER), user.source());
+        }
+        return user;
     }
 
     @Override

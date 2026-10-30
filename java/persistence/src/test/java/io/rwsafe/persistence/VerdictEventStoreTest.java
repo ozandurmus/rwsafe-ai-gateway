@@ -51,6 +51,21 @@ class VerdictEventStoreTest {
     }
 
     @Test
+    void aRawAddressOrAFreeTextReasonCannotBeStored() {
+        StoredVerdictEvent e = event(base, "claude", Verdict.ALLOW, List.of());
+        for (String subnet : new String[] {"192.0.2.10", "2001:db8::1", "240.1.2.7/24"}) {
+            StoredVerdictEvent raw = new StoredVerdictEvent(UUID.randomUUID(), e.receivedAt(), e.service(), e.platform(),
+                e.surface(), e.step(), e.verdict(), e.reason(), e.findings(), e.bodyBytes(), e.decisionMicros(),
+                e.userPseudonym(), subnet, e.transport(), e.snapshotVersion(), e.correlationId(), e.pseudonymKeyId());
+            assertThrows(RuntimeException.class, () -> db.verdictEvents().insert(List.of(raw)), subnet);
+        }
+        StoredVerdictEvent dotted = new StoredVerdictEvent(UUID.randomUUID(), e.receivedAt(), e.service(), e.platform(),
+            e.surface(), e.step(), Verdict.BLOCK, "host.example.test", e.findings(), e.bodyBytes(), e.decisionMicros(),
+            e.userPseudonym(), e.clientSubnet(), e.transport(), e.snapshotVersion(), e.correlationId(), e.pseudonymKeyId());
+        assertThrows(RuntimeException.class, () -> db.verdictEvents().insert(List.of(dotted)));
+    }
+
+    @Test
     void overviewCountsVerdictsPlatformsHoursAndFindingClasses() {
         db.verdictEvents().insert(List.of(
             event(base, "claude", Verdict.ALLOW, List.of()),

@@ -3,6 +3,7 @@ package io.rwsafe.control.ingest;
 import io.rwsafe.control.api.ReadApiController;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
+import io.rwsafe.detect.DetectorSet;
 import io.rwsafe.persistence.Database;
 import io.rwsafe.persistence.FindingCount;
 import io.rwsafe.persistence.StoredVerdictEvent;
@@ -31,6 +32,7 @@ public class IngestionService {
     static final Duration MAX_AGE = Duration.ofDays(30);
     static final Duration MAX_SKEW = Duration.ofMinutes(5);
     private static final Set<String> TRANSPORTS = Set.of("plain_allowlisted", "mtls_verified");
+    private static final DetectorSet DETECTORS = DetectorSet.standard();
 
     private final Database database;
     private final PrivacyKeys keys;
@@ -179,19 +181,22 @@ public class IngestionService {
         }
     }
 
-    /** Reason classes and correlation ids: letters, digits and {@code _ . : -}. */
+    /**
+     * Reason classes and correlation ids: letters, digits, {@code _} and {@code -} (no dot or colon, so no address or
+     * host name fits), and nothing a Tier-1 detector recognises (an identifier or a secret shape), so neither field can
+     * carry a value into storage (PR 12 review D-05).
+     */
     private static boolean token(String s, int max) {
         if (s.isEmpty() || s.length() > max) {
             return false;
         }
         for (int k = 0; k < s.length(); k++) {
             char c = s.charAt(k);
-            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.'
-                || c == ':' || c == '-')) {
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) {
                 return false;
             }
         }
-        return true;
+        return DETECTORS.scan(s).isEmpty();
     }
 
     private static boolean dataClass(String s) {

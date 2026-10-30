@@ -99,6 +99,9 @@ public final class ControlTestEnvironment {
         user("synthetic-viewer", "viewer");
         user("synthetic-aiview", "replay_viewer");
         user("synthetic-norole", null);
+        user("synthetic-dual", "replay_viewer");
+        ldap.modify("uid=synthetic-dual," + PEOPLE, new com.unboundid.ldap.sdk.Modification(
+            com.unboundid.ldap.sdk.ModificationType.ADD, "memberOf", "cn=rwsafe-security_admin," + GROUPS));
         ldap.startListening();
     }
 

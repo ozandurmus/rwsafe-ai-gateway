@@ -16,6 +16,21 @@ public record AuditContext(String actorFingerprint, String actionId, String reas
         Objects.requireNonNull(actorFingerprint, "actorFingerprint");
         Objects.requireNonNull(actionId, "actionId");
         Objects.requireNonNull(reasonCode, "reasonCode");
+        if (!actor(actorFingerprint) || actionId.isBlank() || reasonCode.isBlank()) {
+            // The trigger refuses the same; failing here names the defect before a round trip (PR 12 review D-07).
+            throw new IllegalArgumentException("an audit context needs a USR- or system: actor, an action and a reason");
+        }
+    }
+
+    /** {@code USR-<10 hex>} or {@code system:<name>}: never a raw name. */
+    static boolean actor(String s) {
+        if (s.startsWith("system:")) {
+            String name = s.substring("system:".length());
+            return !name.isEmpty() && name.length() <= 32 && name.chars().allMatch(c -> (c >= 'a' && c <= 'z') || c == '_'
+                || c == '-');
+        }
+        return s.length() == 14 && s.startsWith("USR-")
+            && s.substring(4).chars().allMatch(c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
     }
 
     /** Must run inside the transaction whose mutations it describes ({@code set_config(..., true)} is local to it). */

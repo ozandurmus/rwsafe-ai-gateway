@@ -48,6 +48,11 @@ final class Schema {
     static final Field<String[]> ROLES = DSL.field(DSL.name("local_account", "roles"), SQLDataType.CLOB.array());
     static final Field<Boolean> ENABLED = DSL.field(DSL.name("local_account", "enabled"), SQLDataType.BOOLEAN);
 
+    static final Table<Record> LOGIN_RECORD = DSL.table(DSL.name("login_record"));
+    static final Field<String> LOGIN_ACTOR = DSL.field(DSL.name("login_record", "actor_fingerprint"), SQLDataType.CLOB);
+    static final Field<String> LOGIN_SOURCE = DSL.field(DSL.name("login_record", "source"), SQLDataType.CLOB);
+    static final Field<Boolean> LOGIN_MASKED = DSL.field(DSL.name("login_record", "masked"), SQLDataType.BOOLEAN);
+
     static final Table<Record> AUDIT_EVENT = DSL.table(DSL.name("audit_event"));
     static final Field<String> AUDIT_ACTOR = DSL.field(DSL.name("audit_event", "actor_fingerprint"), SQLDataType.CLOB);
     static final Field<String> AUDIT_ACTION = DSL.field(DSL.name("audit_event", "action_id"), SQLDataType.CLOB);

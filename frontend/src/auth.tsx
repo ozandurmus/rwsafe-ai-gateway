@@ -38,11 +38,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMe(await api.login(loginName, password));
   }, []);
 
+  // Signed out only when the server says so (or the session is already gone); otherwise its reason is shown.
   const logout = useCallback(async () => {
     try {
       await api.logout();
-    } finally {
       setMe(null);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        setMe(null);
+      } else {
+        setError(e);
+      }
     }
   }, []);
 
