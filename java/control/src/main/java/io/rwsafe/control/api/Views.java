@@ -113,7 +113,7 @@ public final class Views {
         @Override
         public MaskedView masked(TextMasker m) {
             return new HealthView(checkedAt, components.stream().map(c -> new ComponentView(c.component(), c.state(),
-                m.mask(c.detail()))).toList(), eventsLastFiveMinutes, totalEvents, latestEventAt);
+                m.maskFreeText(c.detail()))).toList(), eventsLastFiveMinutes, totalEvents, latestEventAt);
         }
     }
 

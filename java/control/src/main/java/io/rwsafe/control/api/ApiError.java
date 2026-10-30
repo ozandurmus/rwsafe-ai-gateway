@@ -15,6 +15,6 @@ public record ApiError(String reason, String message) implements MaskedView {
 
     @Override
     public MaskedView masked(TextMasker masker) {
-        return new ApiError(reason, masker.mask(message));
+        return new ApiError(reason, masker.maskFreeText(message));
     }
 }

@@ -161,9 +161,23 @@ public final class Canaries {
     public List<io.rwsafe.probefixture.CanaryFixtureController.Field> fixtureFields() {
         List<io.rwsafe.probefixture.CanaryFixtureController.Field> f = new ArrayList<>();
         java.util.function.BiConsumer<String, String> maskable = (cls, v) ->
-            f.add(new io.rwsafe.probefixture.CanaryFixtureController.Field(cls, v, true));
+            f.add(new io.rwsafe.probefixture.CanaryFixtureController.Field(cls, v, true, false));
         java.util.function.BiConsumer<String, String> withheld = (cls, v) ->
-            f.add(new io.rwsafe.probefixture.CanaryFixtureController.Field(cls, v, false));
+            f.add(new io.rwsafe.probefixture.CanaryFixtureController.Field(cls, v, false, false));
+        java.util.function.BiConsumer<String, String> freeText = (cls, v) ->
+            f.add(new io.rwsafe.probefixture.CanaryFixtureController.Field(cls, v, true, true));
+        // Free text (MASKING_AND_PRIVACY B2 layers 4 and 5): a person's name in sentences, with a case ending, family
+        // name first in capitals; numbers glued to letters; a domain account.
+        Locale tr = Locale.forLanguageTag("tr");
+        for (Person p : List.of(admin, adminTwo, officer, viewer, masked, claimants.get(0), claimants.get(1))) {
+            freeText.accept(TURKISH_NAME, "talep " + p.displayName() + " tarafından açıldı");
+            freeText.accept(TURKISH_NAME, p.displayName() + "'nin onayı bekleniyor");
+            freeText.accept(TURKISH_NAME, p.family().toUpperCase(tr) + " " + p.given().toUpperCase(tr) + " onayladı");
+        }
+        tckns.forEach(t -> freeText.accept(TCKN, "musteri ref" + t + " icin"));
+        for (Person p : claimants) {
+            freeText.accept(DOMAIN_ACCOUNT, "oturum " + domainAccount(p) + " ile acildi");
+        }
         for (String t : tckns) {
             maskable.accept(TCKN, "kimlik " + t);
             withheld.accept(TCKN, "ref" + t);

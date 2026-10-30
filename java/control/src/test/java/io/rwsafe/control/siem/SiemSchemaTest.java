@@ -3,6 +3,7 @@ package io.rwsafe.control.siem;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -193,6 +194,44 @@ class SiemSchemaTest {
         assertEquals(SiemRecords.WITHHELD, a.value(SiemField.USER));
         assertEquals(SiemRecords.WITHHELD, a.value(SiemField.ACTION));
         assertEquals(SiemRecords.WITHHELD, a.value(SiemField.CORRELATION_ID));
+    }
+
+    /**
+     * The one free-text value of the ledger (a retirement or withdrawal reason) leaves only through the free-text masker
+     * (MASKING_AND_PRIVACY B2): names, hosts and identifiers as tokens; without the masker it is withheld.
+     */
+    @Test
+    void aFreeTextLedgerReasonLeavesOnlyThroughTheFreeTextMasker(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir)
+        throws java.io.IOException {
+        byte[] key = new byte[32];
+        new java.security.SecureRandom().nextBytes(key);
+        java.nio.file.Files.write(dir.resolve("key"), key);
+        java.nio.file.Files.writeString(dir.resolve("dictionary.txt"), "synthetic-estate\n");
+        io.rwsafe.control.privacy.PrivacyKeys keys = new io.rwsafe.control.privacy.PrivacyKeys(
+            new io.rwsafe.control.config.ControlProperties(null, null, new io.rwsafe.control.config.ControlProperties
+                .Privacy(dir.resolve("key"), dir.resolve("dictionary.txt")), null, null, null, null, null));
+        io.rwsafe.control.privacy.Pseudonymiser p = new io.rwsafe.control.privacy.Pseudonymiser(keys);
+        io.rwsafe.control.privacy.TextMasker masker = new io.rwsafe.control.privacy.Masking(keys, p).masker();
+        SiemRecords records = new SiemRecords(p::user, k -> p.token("KEY", k), keys.estateTerms(),
+            masker::maskFreeText);
+        String tckn = io.rwsafe.control.support.Synthetic.tckn(3);
+        for (String[] c : new String[][] {
+            {"Ayşe Yılmaz asked, see node7.example.com", "NAME-[A-Z]{8} asked, see HST-[0-9a-f]{4}"},
+            {"moved off synthetic-estate", "moved off EST-[0-9a-f]{4}"},
+            {"customer " + tckn, "customer TCKN-[0-9a-f]{4}"},
+            // PR 26 confirmation review N-02: a masked address (a subnet label) is the masker's token, not a number.
+            {"moved off 192.0.2.10", "moved off 2[45][0-9]\\.[0-9]{1,3}\\.[0-9]{1,3}\\.0/24"},
+            {"APPROVAL_SECURITY_ADMIN", "APPROVAL_SECURITY_ADMIN"}}) {
+            io.rwsafe.persistence.SiemExportStore.LedgerRow row = new io.rwsafe.persistence.SiemExportStore.LedgerRow(
+                1, 2, Rows.AT, "USR-0123456789", "policy.platform_retire", c[0], "corr-2", "policy_rule_version",
+                "UPDATE", "platform.github@v1");
+            String reason = records.ledger(row).value(SiemField.REASON);
+            assertTrue(reason.matches(c[1]), reason);
+            if (!c[0].equals(c[1])) {
+                assertEquals(SiemRecords.WITHHELD, Rows.RECORDS.ledger(row).value(SiemField.REASON),
+                    "without the free-text masker a sentence is withheld");
+            }
+        }
     }
 
     private static String rowKey(SiemRecords records, String table, String key) {

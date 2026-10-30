@@ -25,6 +25,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 import org.junit.jupiter.api.Test;
@@ -173,7 +174,8 @@ class MaskedRoleLeakProbeTest {
         assertTrue(masked.size() >= 40, "the walk made " + masked.size() + " requests");
 
         // Captured content (PR 25): refused to the masked role on the read route, and nowhere else on its walk; the
-        // positive control is a security_admin read with a reason, which does show the seeded name.
+        // positive control is a security_admin read with a reason, which shows the stored text: the seeded person as
+        // the NAME-<WORD> token the free-text layers wrote at persistence (SR-PRIV-15, PR 26), never the name.
         for (Probed p : masked) {
             if (p.endpoint().equals("POST /api/v1/captures/{}/read")) {
                 assertEquals(403, p.response().status());
@@ -184,8 +186,9 @@ class MaskedRoleLeakProbeTest {
             JSON.createObjectNode().put("reasonCode", "INCIDENT_INVESTIGATION").put("caseId", "CASE-PROBE").toString(),
             true);
         assertEquals(200, read.status(), String.valueOf(read.body()));
-        assertTrue(probe.scan("capture read", read.body()).stream()
-            .anyMatch(h -> h.canaryClass().equals(Canaries.TURKISH_NAME)), "the stored capture holds the seeded name");
+        assertTrue(probe.scan("capture read", read.body()).isEmpty(), "the stored capture holds a seeded value");
+        assertTrue(read.body().toString().matches("(?s).*NAME-[A-Z]{8} asks about.*"),
+            "the stored capture holds the masked person");
 
         // Positive control (PR 24 review D-03): the same walk unmasked must see every canary class, so the masked
         // walk's zero hits mean the masking held, not that the probe was blind. Classes no real viewer surface holds
@@ -213,14 +216,21 @@ class MaskedRoleLeakProbeTest {
         // The masked fixture: every maskable form came back masked, every other one withheld.
         Probed fixture = masked.stream().filter(p -> p.endpoint().startsWith(FIXTURE)).findFirst().orElseThrow();
         int maskedFields = 0;
+        int maskedNames = 0;
         for (JsonNode field : fixture.response().body().get("fields")) {
             if (!field.get("maskable").asBoolean()) {
                 assertEquals(TextMasker.WITHHELD, field.get("value").asText());
             } else {
                 maskedFields++;
             }
+            if (field.get("freeText").asBoolean() && Canaries.TURKISH_NAME.equals(field.get("canaryClass").asText())) {
+                // Layer 4: the person reads as one NAME-<WORD> token; the rest of the sentence stays.
+                assertTrue(field.get("value").asText().matches(".*NAME-[A-Z]{8}.*"), "a free-text name field");
+                maskedNames++;
+            }
         }
         assertTrue(maskedFields >= 15, "the fixture masked " + maskedFields + " fields");
+        assertTrue(maskedNames >= 21, "the fixture masked " + maskedNames + " free-text name fields");
     }
 
     private static final String FIXTURE = "GET " + io.rwsafe.probefixture.CanaryFixtureController.PATH;
@@ -393,8 +403,8 @@ class MaskedRoleLeakProbeTest {
             "not on the snapshot feed");
 
         // Redacted capture (PR 25): REDACT events of acknowledged claimants carry text with a claimant's Turkish name
-        // (no Tier-1 detector and no slice-1 masking layer touches a name, so it is stored as it is); the walk then
-        // proves the masked role and the viewer never reach it, and the admin's read proves it is there.
+        // (the free-text layers mask it at persistence, PR 26); the walk then proves the masked role and the viewer
+        // never reach the text, and the admin's read proves it is stored with the person masked.
         List<ObjectNode> captured = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
             ObjectNode e = event("claude", "REDACT", claims.get(i), canaries.addresses.get(0));
@@ -471,8 +481,9 @@ class MaskedRoleLeakProbeTest {
         assertEquals(200, officer.post(approvals, role("privacy_officer"), true).status());
 
         // A group-scoped class version (PO decision Q-39) naming the estate's directory groups, activated, then a
-        // withdrawal request and a platform retirement (Q-40, Q-41) whose free-text reasons name a person and carry a
-        // number glued to letters: the registry's free values that reach the screens.
+        // withdrawal request and a platform retirement (Q-40, Q-41) with free-text reasons: the registry's free values
+        // that reach the screens. A reason that names a person (masking layer 4) or carries a number glued to letters is
+        // refused before it is stored, so the stored reasons are plain sentences, withheld from the masked role anyway.
         ObjectNode scoped = JSON.createObjectNode().put("action", "BLOCK").put("mode", "enforce")
             .put("reasonCode", "SYNTHETIC_SCOPE");
         ObjectNode scope = scoped.putObject("scope").put("kind", "GROUPS");
@@ -486,16 +497,20 @@ class MaskedRoleLeakProbeTest {
         assertEquals(200, admin.post(scopedApprovals, role("security_admin"), true).status());
         assertEquals(200, officer.post(scopedApprovals, role("privacy_officer"), true).status());
         Person named = canaries.claimants.get(1);
-        String withdrawalReason = "Talep " + named.displayName() + " kapsam bitti";
+        String withdrawalReason = "Talep sahibi kapsamın bittiğini bildirdi";
         ApiClient.Response withdrawal = admin.post("/api/v1/policy/rules/class.TR_IBAN/versions/" + scopedVersion
             + "/withdrawal", JSON.createObjectNode().put("reason", withdrawalReason).toString(), true);
         assertEquals(201, withdrawal.status(), String.valueOf(withdrawal.body()));
-        String retirementReason = named.given() + " " + named.family() + " istedi";
-        // A reason with a number glued to letters is refused before it is stored, for every role.
-        for (String gluedReason : List.of("kayıt ref" + canaries.tckns.get(0), "arayan tel" + canaries.mobiles.get(0))) {
+        String retirementReason = "Platform artık kullanılmıyor";
+        // A reason with a person's name or a number glued to letters is refused before it is stored, for every role.
+        for (String gluedReason : List.of("kayıt ref" + canaries.tckns.get(0), "arayan tel" + canaries.mobiles.get(0),
+            "Talep " + named.displayName() + " kapsam bitti", named.given() + " " + named.family() + "'in isteği",
+            named.family().toUpperCase(Locale.forLanguageTag("tr")) + " "
+                + named.given().toUpperCase(Locale.forLanguageTag("tr")) + " istedi")) {
             ApiClient.Response r = admin.post("/api/v1/policy/rules/platform.devin/retirement",
                 JSON.createObjectNode().put("reason", gluedReason).toString(), true);
-            assertEquals(400, r.status(), "a reason with a glued number");
+            assertEquals(400, r.status(), "a reason with a name or a glued number");
+            assertEquals("REASON_HOLDS_IDENTIFIER", r.body().get("reason").asText());
             assertTrue(canaries.probe().scan("reason refusal", r.body()).isEmpty(), "the refusal echoed the reason");
         }
         ApiClient.Response retirement = admin.post("/api/v1/policy/rules/platform.windsurf/retirement",

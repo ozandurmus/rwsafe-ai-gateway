@@ -77,8 +77,8 @@ public final class PolicyViews {
 
         @Override
         public VersionView masked(TextMasker m) {
-            return new VersionView(m.mask(ruleId), version, action, enforceFailClosed, mask(m, hostSuffixes),
-                mask(m, apiHosts), mask(m, loginHosts), mode, rolloutStage, scope.masked(m), status, source, author,
+            return new VersionView(m.mask(ruleId), version, action, enforceFailClosed, vendorHosts(m, hostSuffixes),
+                vendorHosts(m, apiHosts), vendorHosts(m, loginHosts), mode, rolloutStage, scope.masked(m), status, source, author,
                 m.mask(reasonCode), createdAt, activatedAt, supersededAt, retirement == null ? null
                     : new RetirementView(retirement.retiredAt(), retirement.retiredBy(), withheld(retirement.reason())),
                 withdrawal == null ? null : new WithdrawalView(withdrawal.withdrawsVersion(),
@@ -189,5 +189,10 @@ public final class PolicyViews {
 
     private static List<String> mask(TextMasker m, List<String> values) {
         return values == null ? null : values.stream().map(m::mask).toList();
+    }
+
+    /** A platform row's vendor endpoints: public, so a bare host stays; every other layer (estate terms) applies. */
+    private static List<String> vendorHosts(TextMasker m, List<String> values) {
+        return values == null ? null : values.stream().map(m::maskVendorHost).toList();
     }
 }
