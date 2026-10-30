@@ -1,10 +1,11 @@
 {
-  "_comment": "Accepted security findings. JSON syntax (a YAML 1.2 subset) so the summarizer needs only the standard library. Every entry: tool, exact rule or CVE, exact normalized location, reason, owner, inclusive review_date. Expired entries stop suppressing. Never fuzzy-match. Mirrors neXus security/baseline.yaml; empty at design freeze.",
+  "_comment": "Accepted security findings. JSON syntax (a YAML 1.2 subset) so the summarizer needs only the standard library. Every entry: tool, exact rule or CVE, exact normalized location, reason, owner, inclusive review_date. Expired entries stop suppressing. Never fuzzy-match. Mirrors neXus security/baseline.yaml; empty at design freeze. tools/security/baseline_gate.py applies it in CI: Trivy findings at blocks_rollout and Semgrep findings at semgrep_blocks fail unless accepted.",
   "policy": {
     "review_cadence_days": 1,
     "max_acceptance_days_no_fix_available": 90,
     "base_image_update_cadence_days": 14,
     "blocks_rollout": ["HIGH", "CRITICAL"],
+    "semgrep_blocks": ["ERROR", "WARNING"],
     "requires": ["tool", "rule", "location", "reason", "owner", "review_date"]
   },
   "accepted": []

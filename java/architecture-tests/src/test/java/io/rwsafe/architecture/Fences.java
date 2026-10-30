@@ -3,6 +3,7 @@ package io.rwsafe.architecture;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.methods;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
+import static com.tngtech.archunit.library.Architectures.layeredArchitecture;
 import static com.tngtech.archunit.library.GeneralCodingRules.ACCESS_STANDARD_STREAMS;
 
 import com.tngtech.archunit.base.DescribedPredicate;
@@ -16,6 +17,7 @@ import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
+import com.tngtech.archunit.library.Architectures.LayeredArchitecture;
 import io.rwsafe.platform.content.BodyBearing;
 import io.rwsafe.platform.content.BodyContent;
 import java.io.File;
@@ -39,6 +41,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.file.Files;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Scanner;
 import java.util.Set;
@@ -145,6 +148,28 @@ final class Fences {
             .should(printNoContent())
             .because("request and response bodies never reach a log (AGENTS.md 4.14)")
             .allowEmptyShould(true);
+    }
+
+    /**
+     * PR 4 review D-06, ARCHITECTURE.md §9: the module graph. A module depends only on the modules it lists (the data plane
+     * never on persistence, the control plane, the worker or the CLI) and every imported class belongs to a module. The
+     * Gradle project graph holds the same edges at compile time; this rule holds the packages to them whatever a build
+     * file says.
+     */
+    static ArchRule moduleGraph(Map<String, String> modulePackages, Map<String, Set<String>> mayDependOn) {
+        LayeredArchitecture graph = layeredArchitecture().consideringOnlyDependenciesInLayers()
+            .ensureAllClassesAreContainedInArchitecture();
+        for (Map.Entry<String, String> module : modulePackages.entrySet()) {
+            graph = graph.layer(module.getKey()).definedBy(module.getValue());
+        }
+        for (String module : modulePackages.keySet()) {
+            Set<String> allowed = mayDependOn.getOrDefault(module, Set.of());
+            graph = allowed.isEmpty()
+                ? graph.whereLayer(module).mayNotAccessAnyLayer()
+                : graph.whereLayer(module).mayOnlyAccessLayers(allowed.toArray(String[]::new));
+        }
+        return graph.because("the inline path stays free of the control plane and the module graph stays acyclic "
+            + "(AGENTS.md section 5, ARCHITECTURE.md §9)");
     }
 
     /** Server code logs through the structured logger only; the CLI is the one module that prints. */

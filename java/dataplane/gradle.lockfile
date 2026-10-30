@@ -1,6 +1,9 @@
 # This is a Gradle generated file for dependency locking.
 # Manual edits can break the build and are not advised.
 # This file is expected to be part of source control.
+com.code-intelligence:jazzer-api:0.24.0=testCompileClasspath,testRuntimeClasspath
+com.code-intelligence:jazzer-junit:0.24.0=testCompileClasspath,testRuntimeClasspath
+com.code-intelligence:jazzer:0.24.0=testRuntimeClasspath
 com.google.re2j:re2j:1.8=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.apiguardian:apiguardian-api:1.1.2=testCompileClasspath
 org.junit.jupiter:junit-jupiter-api:5.10.3=testCompileClasspath,testRuntimeClasspath

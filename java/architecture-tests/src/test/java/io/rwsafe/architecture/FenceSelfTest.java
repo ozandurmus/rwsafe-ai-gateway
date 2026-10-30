@@ -34,6 +34,15 @@ import io.rwsafe.architecture.fixtures.inline.StringMatchesInspector;
 import io.rwsafe.architecture.fixtures.inline.StringMatchesReferenceInspector;
 import io.rwsafe.architecture.fixtures.inline.StringSplitInspector;
 import io.rwsafe.architecture.fixtures.inline.controlplane.SnapshotClient;
+import io.rwsafe.architecture.fixtures.modules.control.ControlService;
+import io.rwsafe.architecture.fixtures.modules.core.CoreCallingInline;
+import io.rwsafe.architecture.fixtures.modules.core.CoreVocabulary;
+import io.rwsafe.architecture.fixtures.modules.inline.InlineCallingControl;
+import io.rwsafe.architecture.fixtures.modules.inline.InlineInspector;
+import io.rwsafe.architecture.fixtures.modules.stray.StrayClass;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /** Proves every fence catches its violation and lets the compliant shape through, so a passing fence means something. */
@@ -55,6 +64,25 @@ class FenceSelfTest {
         assertTrue(violates(rule, StringMatchesReferenceInspector.class));
         assertTrue(violates(rule, StringSplitInspector.class));
         assertFalse(violates(rule, Re2jInspector.class));
+    }
+
+    @Test
+    void moduleGraphFence() {
+        String root = "io.rwsafe.architecture.fixtures.modules.";
+        ArchRule rule = Fences.moduleGraph(
+            Map.of("core", root + "core..", "inline", root + "inline..", "control", root + "control.."),
+            Map.of("core", Set.of(), "inline", Set.of("core"), "control", Set.of("core")));
+        Class<?>[] compliant = {CoreVocabulary.class, InlineInspector.class, ControlService.class};
+        assertFalse(violates(rule, compliant));
+        assertTrue(violates(rule, with(compliant, InlineCallingControl.class)));
+        assertTrue(violates(rule, with(compliant, CoreCallingInline.class)));
+        assertTrue(violates(rule, with(compliant, StrayClass.class)));
+    }
+
+    private static Class<?>[] with(Class<?>[] classes, Class<?> extra) {
+        Class<?>[] all = Arrays.copyOf(classes, classes.length + 1);
+        all[classes.length] = extra;
+        return all;
     }
 
     @Test

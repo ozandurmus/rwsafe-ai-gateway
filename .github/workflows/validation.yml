@@ -1,7 +1,9 @@
 # Validation workflow (ROADMAP phase 0 "Repository and CI"; AGENTS.md sections 4.15, 10 and 14).
 # Runs on every pull request and on main: the repository privacy gate (its self-test, the tree, and on a pull request every
-# commit the pull request adds), gitleaks over the tree and the history with a planted-key self-test, and the Java unit
-# and ArchUnit tests. Every job prints the commit it tested. No secrets, no deploy, nothing reaches HOST-A.
+# commit the pull request adds), gitleaks over the tree and the history with a planted-key self-test, the Java unit and
+# ArchUnit tests with the Jazzer regression corpus and a bounded fuzzing run, the Maven-portability smoke build
+# (ADR-011 §4), and Trivy (filesystem, lockfiles, configuration; SR-SC-2) and Semgrep (Java) judged against
+# security/baseline.yaml. Every job prints the commit it tested. No secrets, no deploy, nothing reaches HOST-A.
 # Actions are pinned by commit digest; the tag in the trailing comment is for humans only.
 name: validation
 
@@ -148,5 +150,90 @@ jobs:
             java/gradle/libs.versions.toml
             java/gradle/verification-metadata.xml
             java/gradle/wrapper/gradle-wrapper.properties
-      - name: Unit and architecture tests
+      - name: Unit and architecture tests (includes the Jazzer regression corpus)
         run: ./java/gradlew -p java --no-daemon --stacktrace --dependency-verification strict unitTest architectureTest
+      # SR-DP-4: each @FuzzTest fuzzes for the duration it declares; a crash or timeout fails the job.
+      - name: Fuzz the parsers (Jazzer fuzzing mode)
+        run: ./java/gradlew -p java --no-daemon --stacktrace --dependency-verification strict :dataplane:fuzzTest
+
+  maven-portability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Commit under test
+        run: *print-commit
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            java/**/*.gradle.kts
+            java/**/gradle.lockfile
+            java/gradle/libs.versions.toml
+            java/gradle/verification-metadata.xml
+            java/gradle/wrapper/gradle-wrapper.properties
+      - name: Generate the Maven build from the Gradle model (ADR-011 §4)
+        run: ./java/gradlew -p java --no-daemon --stacktrace --dependency-verification strict generateMavenSmokeBuild
+      # The runner image's Maven; the generated poms pin every dependency to the Gradle lock and every plugin version.
+      - name: Maven build and tests from the generated pom.xml
+        run: |
+          mvn --version
+          mvn --batch-mode --no-transfer-progress --strict-checksums -f java/build/maven-smoke/pom.xml verify
+
+  security-scans:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TRIVY_VERSION: 0.76.1
+      TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+      # semgrep/semgrep 1.181.0, multi-architecture index digest.
+      SEMGREP_IMAGE: semgrep/semgrep:1.181.0@sha256:81474464c1f07483ba0682a44787fd93c91397419762a04abe2bafaae396304b
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Commit under test
+        run: *print-commit
+      - name: Baseline gate self-test (blocking findings fail, exact acceptances suppress)
+        run: python3 -B tools/security/test_baseline_gate.py
+      - name: Install Trivy (checksum verified)
+        run: |
+          dir="${RUNNER_TEMP}/trivy"
+          mkdir -p "${dir}"
+          archive="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSfL -o "${dir}/${archive}" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${archive}"
+          echo "${TRIVY_SHA256}  ${dir}/${archive}" | sha256sum --check --strict
+          tar -xzf "${dir}/${archive}" -C "${dir}" trivy
+          echo "${dir}" >> "${GITHUB_PATH}"
+      # SR-SC-2: dependency vulnerabilities from the Gradle lockfiles and misconfigurations in the deploy manifests and
+      # any Containerfile. Secrets are gitleaks's job. The report is judged by the baseline gate, not by Trivy's exit code.
+      - name: Trivy filesystem, lockfile and configuration scan
+        run: |
+          trivy --version
+          trivy fs --scanners vuln,misconfig --format json --output "${RUNNER_TEMP}/trivy.json" --exit-code 0 \
+            --no-progress .
+      - name: Rules for Semgrep (semgrep-rules pinned by commit; Java rules only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: semgrep/semgrep-rules
+          ref: 16b9e6d45f10649f6a531ec4838ed9924372c3bc
+          path: .semgrep-rules
+          persist-credentials: false
+      # The scanner runs in the digest-pinned image with no network: local rules, no metrics, no version check.
+      - name: Semgrep on the Java sources
+        run: |
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "${GITHUB_WORKSPACE}:/src:ro" -v "${RUNNER_TEMP}:/out" -w /src "${SEMGREP_IMAGE}" \
+            semgrep scan --config /src/.semgrep-rules/java --metrics off --disable-version-check \
+              --json --output /out/semgrep.json java
+      - name: Findings above security/baseline.yaml fail
+        run: |
+          python3 -B tools/security/baseline_gate.py \
+            --trivy "${RUNNER_TEMP}/trivy.json" --semgrep "${RUNNER_TEMP}/semgrep.json"

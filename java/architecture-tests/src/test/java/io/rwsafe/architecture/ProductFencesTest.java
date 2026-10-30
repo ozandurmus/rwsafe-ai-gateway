@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
+import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /** Applies {@link Fences} to the product modules (production classes only). */
@@ -23,6 +25,20 @@ class ProductFencesTest {
     static final String[] CONTROL_PLANE_MODULES = {
         "io.rwsafe.persistence..", "io.rwsafe.control..", "io.rwsafe.worker..", "io.rwsafe.cli..",
     };
+    /** Module name to package, and the modules each may depend on (ARCHITECTURE.md §9, the Gradle project graph). */
+    static final Map<String, String> MODULES = Map.of(
+        "platform", "io.rwsafe.platform..", "detect", "io.rwsafe.detect..", "policy", "io.rwsafe.policy..",
+        "dataplane", "io.rwsafe.dataplane..", "persistence", "io.rwsafe.persistence..", "control", "io.rwsafe.control..",
+        "worker", "io.rwsafe.worker..", "cli", "io.rwsafe.cli..");
+    static final Map<String, Set<String>> MODULE_GRAPH = Map.of(
+        "platform", Set.of(),
+        "detect", Set.of("platform"),
+        "policy", Set.of("platform", "detect"),
+        "dataplane", Set.of("platform", "detect", "policy"),
+        "persistence", Set.of("platform"),
+        "control", Set.of("platform", "detect", "policy", "persistence"),
+        "worker", Set.of("platform", "detect", "policy", "persistence"),
+        "cli", Set.of("platform"));
     static final String[] PRODUCT = {"io.rwsafe.."};
     static final String[] SERVER = {
         "io.rwsafe.platform..", "io.rwsafe.detect..", "io.rwsafe.policy..", "io.rwsafe.dataplane..",
@@ -39,6 +55,11 @@ class ProductFencesTest {
             assertTrue(PRODUCT_CLASSES.stream().anyMatch(c -> c.getPackageName().startsWith(root)),
                 root + " has no class in the imported product classes, so no fence would see it");
         }
+    }
+
+    @Test
+    void modulesFollowTheModuleGraph() {
+        Fences.moduleGraph(MODULES, MODULE_GRAPH).check(PRODUCT_CLASSES);
     }
 
     @Test
