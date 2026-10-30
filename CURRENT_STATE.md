@@ -10,17 +10,18 @@ hook installer); read-only masked HOST-A inventory (non-root and the PO's root-o
 ARCHITECTURE, ICAP and streaming spec, ports and resources, capacity and SLO model, hardening exceptions, deploy and
 shared-host runbook; threat model, security requirements, masking and privacy, data classes and retention, raw content
 access, PIA, regulatory mapping, bypass catalogue, penetration test plan; platform matrix, out of scope, competitive
-reference, roadmap, open questions (Q-1..Q-29); council response (every P0 by ID); Turkish end-user texts; review scripts
-with the content guard; corporate stack reference.
+reference, roadmap, open questions (Q-1..Q-36); council response (every P0 by ID, plus section 7 for the freeze council);
+Turkish end-user texts; review scripts with the content guard; corporate stack reference. **Design-freeze council run**
+(three seats, all ACCEPT WITH CORRECTIONS) and both correction rounds applied; repository public on GitHub (main = baseline).
 
 ## Not done
 
-The design-freeze council run through `tools/review/` (needs the PO's go); PO decisions on Q-1..Q-29; phase 0
-measurements (every UNVERIFIED mark); the GitHub repository (created by the PO) and the first push; vendoring of the
-neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md` describes the plan).
+PO decisions on Q-1..Q-36; the freeze ratification decision record; PO-only edits to AGENTS.md (section 1 item 4, section 9)
+and .claude/settings.json; phase 0 measurements (every UNVERIFIED mark); vendoring of the neXus delivery scripts
+(`tools/delivery/VENDORED_FROM_NEXUS.md` describes the plan).
 
 ## Next
 
-1. PO reads OPEN_QUESTIONS and COUNCIL_RESPONSE; decides or asks.
-2. Council run (three seats) on the frozen set; architect answers; PO accepts the freeze by decision record.
+1. Merge branch `design/freeze-council-corrections` into main (PR).
+2. PO reads COUNCIL_RESPONSE section 7 and OPEN_QUESTIONS Q-30..Q-36; decides; ratifies the freeze by decision record.
 3. Hand-over to the implementation phase (Opus and subagents) with ROADMAP phase 0 as the first movement.

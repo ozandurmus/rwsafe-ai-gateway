@@ -24,7 +24,10 @@ called from the inline path (latency, data leaving the host, PRIV-3). Prompt bod
    - Turkish and sector identifiers: TCKN (checksum), TR IBAN (mod-97), TR phone, credit card (Luhn), customer-number
      formats supplied by the PO (digests of format rules, not samples), Turkish name dictionary (for the masking layer,
      not for blocking);
-   - estate names: hosts, domains, projects, users from the uncommitted estate dictionary (keyed digests at runtime);
+   - estate names: hosts, domains, projects, users from the uncommitted estate dictionary. **Matching is whole-token over
+     keyed digests** of normalised tokens (OFF2-9): the data plane never holds the plaintext dictionary in memory, so a
+     memory disclosure reveals digests only; the documented limitation is that a partial or concatenated name is not
+     detected inline, and the worker's full-text pass (which holds the dictionary) catches it after the fact;
    - internal addresses: RFC 1918 and the estate's ranges;
    - source-code exfiltration: language detection by token statistics, repository markers (license headers, package
      names, internal module prefixes from the estate dictionary), size thresholds per surface;
@@ -32,7 +35,12 @@ called from the inline path (latency, data leaving the host, PRIV-3). Prompt bod
    - normalisation before detection (SEC-4): Unicode NFKC, zero-width and tag-character stripping, homoglyph folding to
      ASCII for the Latin and Turkish alphabets, Base64/hex/URL decoding to depth 2, archive listing to depth 2;
    - prompt-injection **lexical** signals (instruction-override phrases, role-play jailbreak templates, delimiter floods,
-     encoded payload markers) with a conservative threshold: inline these only **warn** and tag, never block alone.
+     encoded payload markers): on ordinary prompts they **warn** and tag; on `tool_result`, function-result and fetched
+     web-content blocks of agentic surfaces (CLI, IDE, MCP) the high-confidence patterns may **block** at REQMOD and
+     **abort** at RESPMOD, policy-configurable, monitor first (OFF2-7, Q-31);
+   - client-chosen "metadata" fields (file names, tool and MCP server names, `model`, URL path and query, user agent, SSE
+     event names, upstream error messages, the coaching-page justification text) are **content-grade**: length-capped,
+     control characters stripped, untrusted framing applied in every view and digest-or-enum in the SIEM (OFF2-8);
 3. **Tier 2, asynchronous, ML** in `rwsafe-worker`: an ONNX-runtime classifier for prompt injection and jailbreak
    (candidates: open models in the ProtectAI/deberta-v3 family, UNVERIFIED licence and quality for Turkish), run on the
    **redacted** text after the response, bounded 200 ms per item, 2 threads, circuit breaker on queue depth 1000; its
@@ -40,12 +48,14 @@ called from the inline path (latency, data leaving the host, PRIV-3). Prompt bod
    the PO accepts the latency (OPEN Q-22). Model files: **safetensors or ONNX only, never pickle**; downloaded through
    the corporate proxy, hash-pinned in the repository, signed by the release pipeline, licence and provenance recorded
    (offensive P1 supply chain).
-4. **Policy registry** (AGENTS.md 6): YAML fixtures under `policy/` compiled into a signed snapshot by the control plane
-   (`policy_snapshot` table: version, hash, approver, mode); entry fields: id, platform, surface, step, class, action
-   (`allow|warn|redact|block`), mode (`monitor|enforce`), groups (AD group pseudonym ids), exceptions with expiry,
-   fail behaviour reference (ADR-010), source document pointer. Changes go through PR + approval in the UI (four eyes
-   for `enforce` changes on fail-closed classes) and are audited; the data plane loads only a snapshot whose signature
-   verifies.
+4. **Policy registry** (AGENTS.md 6): YAML fixtures under `policy/` compiled into a signed snapshot with a **monotonic
+   version** (OFF2-11) by the control plane (`policy_snapshot` table: version, hash, approver, mode); entry fields: id,
+   platform, surface, step, class, action (`allow|warn|redact|block`), mode (`monitor|enforce|shadow`), groups (AD group
+   pseudonym ids), exceptions with expiry, fail behaviour reference (ADR-010), source document pointer. Changes go through
+   PR + approval in the UI (four eyes for `enforce` changes on fail-closed classes) and are audited; the data plane loads
+   only a snapshot whose signature verifies and whose version is higher than the active one. **Fail-closed classes have no
+   `monitor` mode**: a new rule on them is `shadow` (recorded next to the live verdict) while the seed baseline enforces;
+   an exception on them needs `privacy_officer` + `security_admin` and a recorded legal instrument (PC-5).
 5. **Actions**: `allow` (204), `warn` (204 + coaching event), `redact` (200 with class tokens), `block` (403 coaching
    page). Every action is audited with the policy version; a user justification flow on the coaching page creates a
    time-boxed exception request for `security_analyst` approval (brief 10.4).

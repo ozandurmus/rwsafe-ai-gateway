@@ -25,8 +25,9 @@ A5 Secret-shaped test values are built at runtime; a literal blocks the ship.
 
 A6 External reviewers get masked material only, through `tools/review/`.
 
-A7 (rwsafe addition) No agent, reviewer or masked role receives a prompt body by default; derived features only. Any
-exception is a signed residual risk in a PO decision record.
+A7 (rwsafe addition) No agent, reviewer or masked role receives a prompt body by default. External reviewers receive
+**synthetic fixtures and aggregates (k ≥ 5) only**, never per-record pseudonymised rows (PC-11). Any exception is a signed
+residual risk in a PO decision record.
 
 Lessons already recorded from this design phase: a mask that silently fails is worse than none (test it with adjacent
 addresses, a CIDR, an address:port, an e-mail and a time); an interactive `ssh -t` prints its own prompts and messages
@@ -44,8 +45,8 @@ sessions are never read.
 | `security_analyst` | incidents, verdicts, findings (class + digest), redacted content with a case id | the day-to-day reviewer |
 | `privacy_officer` | DSAR search, retention and masking rules, raw-access approvals, legal hold | **new role** (PRIV-9); the DPO's seat |
 | `operator` | traffic metadata, health, read-only operations | |
-| `auditor` / `viewer` | read-only, unmasked metadata and audit | real names, no bodies without a grant |
-| `replay_viewer` (aiview, AI agents, external auditors) | **masked** projection of everything the viewer sees; no bodies | exclusive read-only session mode (neXus C9), activation audited |
+| `auditor` / `viewer` | read-only; **pseudonymised C1 by default** (PC-10); resolving a pseudonym to a real name is a per-action audited step | no bodies without a grant |
+| `replay_viewer` (aiview, AI agents, external auditors) | **masked** projection of everything the viewer sees; no bodies | exclusive read-only session mode (neXus C9), activation audited; an AI agent in this role on production data is a residual transfer the PO signs (Q-29) or it is restricted to aggregates (PC-11) |
 | machine sessions (e2e, canary) | as `replay_viewer`, GET/HEAD only, internal port only | neXus machine-identity pattern |
 
 Who may change masking and retention rules: `privacy_officer` proposes, `security_admin` approves (four eyes), audited.
@@ -133,5 +134,5 @@ review date and expire. Runs on pre-commit, in CI on the shipped tree, and on HO
 | DSAR search (it, e2e) | finds records by identifier and by digest; audited |
 | Deletion (it, drill) | rows, manifests, chunks, keys gone; receipts written; SIEM deletion event; restore replays receipts |
 | External review scripts (unit) | `tools/review/*` refuse an input that contains a body field or a canary digest |
-| Notice gate (it) | a user without acceptance: metadata + verdict only |
+| Notice gate (it) | a user without an acknowledgement record from any source (banner, IDE first run, directory attribute, gateway credential issue): metadata + verdict only (PC-2, PC-3) |
 | Gate self-test (CI) | the privacy gate catches each rule's synthetic positive and passes the synthetic negatives |

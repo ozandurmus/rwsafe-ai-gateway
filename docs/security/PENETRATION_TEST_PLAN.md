@@ -22,6 +22,7 @@ client harness is provided.
 | Agent channel (if present) | fake device certificate, update tampering, body exfiltration via the reporting API, rate-limit bypass, local privilege escalation on a test endpoint |
 | Namespace isolation | from a compromised rwsafe pod (tester-provided): reach `ui2*` services, the registry, the kubelet, Secrets of other namespaces; PSA and NetworkPolicy effectiveness |
 | Operations | rollout under attack load (does the drain hold), disk-fill behaviour (watermarks), log and heap for bodies |
+| Added by the freeze council (OFF2-17) | tenant enforcement end to end against **lab vendor tenants** (the three header vendors plus Anthropic; Q-34); CRLF and header injection into the rebuilt encapsulated response on REDACT and BLOCK; request smuggling via `Content-Length`/`Transfer-Encoding` after rewrite; attempts to flip REQMOD to fail-open by inducing selective 5xx or health-check failures; prompt-injection against the masked AI consumer path and the review scripts; the preview-padding (BY-PAD-1) and slow-body (OFF2-10) cases; from a build pod, reach the cluster or neXus (OFF2-16) |
 
 ## 3. Out of scope
 

@@ -23,13 +23,15 @@ by default. The platform seat requires content-addressed deduplication and a har
 | `C3 redacted content` | the prompt/response text after redaction of every detected secret, PII, customer identifier and estate name, tokenised (`[REDACTED:TCKN]`) | capture store (encrypted chunks) | 90 days | **no body by default**; derived features only (PRIV-6); exception by signed record |
 | `C4 raw content` | the original body, only when the policy for that platform and group allows, the user has an accepted notice and the disk watermark permits | capture store, envelope-encrypted per record with its own data key | 30 days | never |
 | `C5 special-category hits` | that a special-category class (health, religion, union, biometric, sexual life) was detected: class and digest only, never text | PostgreSQL (flag on C2) | 400 days | class only |
-| `C6 DLP findings` | class, offset, length, digest of the matched span, detector id, rule-pack version | PostgreSQL | 400 days | yes (no value exists) |
+| `C6 DLP findings` | class, offset, length, digest of the matched span, detector id, rule-pack version | PostgreSQL | **secret-shape digests 400 days; PII and customer-identifier digests 90 days (as C3), then a class-only tombstone** (PC-6: the TCKN space is enumerable, so a digest under a leaked key is reversible); digest key rotation yearly | yes (no value exists) |
 | `C7 audit` | every admin and raw-access action, trigger-enforced | PostgreSQL, append-only | 10 years (sector audit-trail norms, UNVERIFIED exact BDDK figure, REGULATORY_MAPPING) | yes, pseudonymised |
 | `C8 SIEM copies` | CEF/LEEF/HEC events: C1, C2, C6, C7 fields only; **never C3/C4** | the SIEM (external) | the SIEM's own; deletion requests are forwarded as events (PRIV-4) | n/a |
 | `C9 exports` | CSV/XLSX/PDF produced by a user: masked for masked roles, watermarked with the downloader fingerprint | not stored; the download is audited | — | masked |
 | `C10 backups` | encrypted sets of PostgreSQL and key material; capture chunks not backed up by default | platform backup set | 14 days | n/a |
 | `C11 evaluation corpus` | synthetic prompts and sanitized protocol frames only; **never captured content** (PRIV-8) | repository fixtures | permanent | n/a |
-| `C12 notice acceptance` | user, notice version, time, surface | PostgreSQL | as long as the user is in scope + 400 days | yes |
+| `C12 notice acknowledgement` | user, notice version, time, source (`banner`, `ide_first_run`, `directory_attribute` from the HR policy acknowledgement, `gateway_credential_issue`) | PostgreSQL | as long as the user is in scope + 400 days | yes |
+| `C15 case, grant and exception notes` | free text written by analysts, requesters and users (justification form) | PostgreSQL, detector-scanned and redacted at write | 400 days, legal hold applies | pseudonymised |
+| client-chosen metadata (file names, tool and MCP names, model, URL path, user agent, SSE event names, upstream errors) | **content-grade** fields inside C1 (OFF2-8) | PostgreSQL, length-capped, control characters stripped | as C1 | untrusted-framed |
 
 ### 2. Processing before persistence (PRIV-7)
 
@@ -43,7 +45,13 @@ raw C4 path (only if allowed): body ──► chunk (content-defined, 8–64 KiB
 
 Nothing matched is ever written: the digest lets an analyst ask "did this same secret appear elsewhere" without
 storing it. The HMAC key for digests is rwsafe's own, separate from the pseudonym key and the store KEK (key separation
-as in neXus C1 §6.1).
+as in neXus C1 §6.1). **What redaction does not do** (PC-7, stated honestly): C3 keeps names, addresses and free-text
+context that no deterministic detector matched, readable for 90 days by an analyst with a case id. Two mitigations:
+masking layers 4 and 5 (Turkish names, heuristic free text) run **at persistence** as well as at view, and when a C5
+special-category flag fires the record's C3 is **not persisted at all** (verdict and classes only). The residual is in
+PIA §4. **Personal-account logins** (PC-9): the detector sees a non-corporate identifier; the record stores class
+`NON_CORPORATE_ACCOUNT`, platform and the corporate user pseudonym only; the personal identifier is neither stored nor
+digested and is dropped after the verdict (SR-PRIV-14).
 
 ### 3. Deduplication and the byte cap (ARCH-2)
 
@@ -66,8 +74,9 @@ reference counts make deletion exact: a chunk is shredded when its last manifest
 |---|---|---|
 | C3 redacted text | `security_analyst` on an incident with a case id and reason code; `privacy_officer` for a DSAR | audited read; the UI frames the text as untrusted (SEC-5: rendered inert, no HTML, no formulas, CR/LF and ANSI stripped before display and export) |
 | C4 raw | nobody alone. Just-in-time grant: requester (`security_admin` or `privacy_officer`) + approver (the other role), reason code, case id, time limit ≤ 4 h, DPO notified at grant time, out-of-band audit copy to the SIEM immediately, grant revocable | the decrypted view is watermarked, not downloadable, and every page view is a trigger-audited row |
-| masked role (`replay_viewer`, AI agents) | never C3 or C4 bodies; C1, C2, C6 pseudonymised; derived features (class counts, token counts, flow fingerprints) | HTTP 503 if the masking dictionary or key is missing |
-| external reviewers | derived features and synthetic fixtures only (AGENTS.md 4.7) | authorised scripts |
+| `viewer`, `auditor` | **pseudonymised C1 by default** (PC-10); resolving a pseudonym to a real name is a per-action audited step | audited resolve |
+| masked role (`replay_viewer`, AI agents) | never C3 or C4 bodies; C1, C2, C6 pseudonymised; derived features (class counts, token counts, flow fingerprints). An AI agent working as `replay_viewer` on production data is pseudonymised personal data in the hands of an external model: a residual the PO signs (Q-29) or the agent is restricted to aggregates (PC-11) | HTTP 503 if the masking dictionary or key is missing |
+| external reviewers | **synthetic fixtures and aggregates (k ≥ 5) only, never per-record pseudonymised rows** (PC-11; AGENTS.md 4.7) | authorised scripts with the content guard |
 
 ### 6. Search (PRIV-5)
 
@@ -87,8 +96,9 @@ canary bodies after the ICAP e2e Job.
 ### 8. Secondary use (PRIV-8)
 
 Captured content is never used to train or tune classifiers, never aggregated into productivity analytics per person,
-never shared with another product. Team-level analytics apply a k-anonymity threshold of 5 (privacy P1 "small-team
-aggregation"). This is a policy-registry constant and a test.
+never shared with another product. "Policy tuning" means deterministic rule review by an analyst inside a case, never
+ML input (PC-14). Team-level analytics apply a k-anonymity threshold of 5 (privacy P1 "small-team aggregation"). This is
+a policy-registry constant and a test.
 
 ## Alternatives considered
 

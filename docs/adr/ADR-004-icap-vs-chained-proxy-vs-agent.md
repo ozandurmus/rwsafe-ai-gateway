@@ -24,7 +24,7 @@ proxy option for WebSocket and an agent option for off-net users.
 | Pinned apps (ChatGPT desktop/mobile, others) | **domain block at ProxySG** or MDM pinning exception, per platform row | vendor guidance (OpenAI) | agent on managed devices |
 | Off-net and Edge SWG users | **agent path** (ADR-006) | no inline hop exists | tenant settings (OUT_OF_SCOPE) |
 | Cloud-side agents | **tenant settings** | the traffic never crosses the corporate network | — |
-| Uncategorised new AI domains | ProxySG category rule: inspect by default and send to ICAP; rwsafe records them for shadow-AI discovery (brief 10.4) | SEC-7 | — |
+| Uncategorised domains and selected broad categories | ProxySG sends them to REQMOD in **header-only metadata mode** (no body capture, 30-day retention of C1): rwsafe fingerprints AI API shapes (`anthropic-version`, `/v1/messages`, `/v1/chat/completions`, SSE accept, `x-api-key`, `Authorization: Bearer sk-`) to detect relays and new AI hosts, which feed the AI-domain list in the policy registry and the shadow-AI inventory (OFF2-5; PO question Q-30). ProxySG itself cannot know that a new domain is AI, so "uncategorised → inspect" is implemented by this mode, not by a category rule | SEC-7, OFF2-5 | — |
 
 The chained forward proxy is therefore **designed but not built in the MVP**: its interface (a CONNECT proxy on 3128
 using the same inspection engine and policy snapshot) is specified so it can be added without changing the data model;

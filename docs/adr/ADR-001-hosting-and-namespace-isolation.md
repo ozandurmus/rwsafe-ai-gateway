@@ -26,9 +26,14 @@ corporate target platform is OpenShift (`docs/reference/CORPORATE_TECHNOLOGY_STA
    `deploy/rwsafe/overlays/openshift` (Routes, no quota objects). This satisfies brief rule 1 and PORT-3 at once.
 3. **Isolation beyond quota** (ARCH-2): PriorityClasses `rwsafe-dataplane` 1000, `rwsafe-control` 500, `rwsafe-batch`
    −200, all `preemptionPolicy: Never`; **no tolerations**; ResourceQuota requests 4 CPU / 8 GiB, limits 8 CPU / 16 GiB,
-   `requests.storage` 150 GiB; LimitRange with defaults so no container is unlimited; PSA `restricted` enforced on all
-   three namespaces; `automountServiceAccountToken: false` everywhere except the control plane's narrowly bound
-   ServiceAccount (it reads the kubelet summary API for the disk watermark and its own namespace's ConfigMaps).
+   `requests.storage` 150 GiB, `services.loadbalancers` 3 (ICAP, SNMP, optional proxy; PLAT-F6), with smaller quotas on
+   `rwsafe-build` and `rwsafe-security`; LimitRange with defaults so no container is unlimited; PSA `restricted` enforced on `rwsafe` and
+   `rwsafe-security`; `baseline` on `rwsafe-build` because kaniko needs it (the one documented relaxation, PLAT-F6);
+   `automountServiceAccountToken: false` on **every** rwsafe pod, the control plane included: the disk watermark is read
+   with `statvfs` on the mounted capture-store path (`java.nio.file.FileStore`), which on local-path reports the root
+   filesystem and on OpenShift the PVC, so no kubelet API and no cluster-scoped RBAC is needed (PLAT-F7). Every `emptyDir`
+   carries a `sizeLimit` (512 Mi on runtime pods, 256 Mi for the verdict spool, 4 Gi on build pods), enforced by the
+   manifest test.
 4. **Storage**: local-path PVCs with application-enforced byte caps and the disk watermark breaker
    (`CAPACITY_AND_SLO_MODEL.md` §2); no `hostPath`; raw bodies content-addressed and deduplicated before encryption.
 5. **Network**: namespace default-deny; explicit allows only (PORTS_AND_RESOURCES §4.2). Egress to the AI platforms is

@@ -1,5 +1,5 @@
-# ADR-001 §3: the three rwsafe namespaces with Pod Security Admission `restricted` enforced. Label value is `rwsafe`,
-# never `nexus-ui2`, so no selector written for neXus matches these pods.
+# ADR-001 §3: the three rwsafe namespaces. PSA `restricted` on rwsafe and rwsafe-security; `baseline` on rwsafe-build
+# because kaniko needs it (the one documented relaxation, PLAT-F6). Label value is `rwsafe`, never `nexus-ui2`.
 apiVersion: v1
 kind: Namespace
 metadata:

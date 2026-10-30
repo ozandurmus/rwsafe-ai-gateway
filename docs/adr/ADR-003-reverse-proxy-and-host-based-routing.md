@@ -26,10 +26,10 @@ catch-all. The corporate platform fronts with Nginx/OpenShift Routes.
    `tls:` block (SNI binding); Traefik's default certificate stays as the fallback for name-less requests. Certificates
    come from the corporate CA when the host names exist in DNS (brief: "the PO can register a host name"); until then the
    neXus local CA issues them (same as today's default certificate). rwsafe never reads the neXus TLS Secret.
-3. **Explicit 404 default backend**: an IngressRoute in `kube-system` (or a Traefik `defaultRule`-matched Ingress with
-   priority 1) routes any request whose Host matches no product to a tiny static "404 Not Found" service, so a bare IP or
-   an unknown name never reaches `ui2-service` or rwsafe (ARCH-3). This object is platform plumbing owned by the neXus
-   repository (`deploy/hosta/`), delivered with the neXus change below.
+3. **Explicit 404 for unknown hosts**: once the host-less catch-all rule is removed from the neXus Ingress, Traefik
+   itself answers `404 Not Found` for any request whose Host matches no Ingress rule, bare IP included (PLAT-F8); no extra
+   default-backend workload is deployed. The neXus PR's test asserts `curl -sk https://<node-address>/` returns 404 with
+   the default certificate.
 4. **Browser isolation**: rwsafe sets `__Host-` prefixed session and CSRF cookies (no `Domain`, `Secure`, `Path=/`), a
    host-only CSP (`default-src 'self'`, no parent-domain allowances), HSTS (max-age 1 year once the corporate certificate
    is in place; before that `max-age=0` is not set either, the header is simply absent), `Referrer-Policy:
@@ -97,11 +97,12 @@ PORT-2 and the privacy gate).
 +echo "site $(curl -sk --noproxy '*' --resolve "$SITE_HOST:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$SITE_HOST/")"
 ```
 
-Also in the same neXus PR: the 404 default backend objects under `deploy/hosta/` (a `Deployment` of a static server and
-an `IngressRoute` with `Host` catch-all at lowest priority, or Traefik's `--entryPoints.websecure.http.middlewares`
-default), the `ui2-tls` Secret contract file (`26-secret-tls.yaml`, name and type only), and the operator step that
-creates the certificate. Rollout order for zero downtime: (a) create `ui2-tls` and the 404 backend; (b) apply the new
-Ingress (Traefik reloads routes without dropping connections; the host rule already exists, so `ui2.nexus.local`
+Also in the same neXus PR: the `ui2-tls` Secret contract file (`26-secret-tls.yaml`, name and type only), the operator
+step that creates the certificate, and the shared build lock `flock ~/.locks/hosta-build.lock` in `hosta_deploy.sh`
+(ADR-011, PLAT-F9). **How the host name reaches the Ingress without touching the tree** (PLAT-F8): `module_deploy.py`
+reads `ingress_host` and `ingress_host_corp` from the in-cluster ConfigMap and streams a transient patch of the Ingress
+to `kubectl diff`/`kubectl apply -f -`; the committed file keeps a placeholder. Rollout order for zero downtime: (a)
+create `ui2-tls`; (b) apply the new Ingress (Traefik reloads routes without dropping connections; the host rule already exists, so `ui2.nexus.local`
 requests are unaffected; bare-IP requests start getting 404, which is the intended behaviour and is announced to
 operators beforehand); (c) merge the `hosta_deploy.sh` change in the same PR so the next deploy's health check uses the
 Host header. Nothing restarts.
