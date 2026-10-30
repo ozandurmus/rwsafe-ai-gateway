@@ -48,15 +48,17 @@ public class PolicyRegistryService {
     private final ControlProperties.Policy config;
     private final Pseudonymiser pseudonymiser;
     private final PrivacyKeys keys;
+    private final SnapshotSigner signer;
     private final SnapshotCompiler compiler = new SnapshotCompiler();
     private final Clock clock;
 
     public PolicyRegistryService(Database database, ControlProperties properties, Pseudonymiser pseudonymiser,
-                                 PrivacyKeys keys) {
+                                 PrivacyKeys keys, SnapshotSigner signer) {
         this.database = database;
         this.config = properties.policy();
         this.pseudonymiser = pseudonymiser;
         this.keys = keys;
+        this.signer = signer;
         this.clock = Clock.systemUTC();
     }
 
@@ -96,6 +98,11 @@ public class PolicyRegistryService {
     }
 
     private IssuedSnapshot currentSnapshot(Instant now, Duration refresh) {
+        // A snapshot is issued and ledgered as signed only when it can be signed (PR 16 review D-06).
+        if (!signer.available()) {
+            throw new RegistryRefusal(HttpStatus.SERVICE_UNAVAILABLE, "SNAPSHOT_SIGNING_UNAVAILABLE",
+                "The snapshot signing key is unavailable; no snapshot is issued.");
+        }
         return database.policySnapshots().current(compiler, now.truncatedTo(ChronoUnit.SECONDS), refresh,
             new AuditContext(ISSUER, "policy_snapshot.issue", "ACTIVE_POLICY_SIGNED", UUID.randomUUID().toString()));
     }
@@ -134,6 +141,11 @@ public class PolicyRegistryService {
             || !RegistryVocabulary.reasonCode(body.reasonCode())) {
             throw invalid("A draft needs mode (monitor, enforce), rolloutStage (pilot, pct25, pct50, all) and an "
                 + "upper-case reasonCode.");
+        }
+        // PR 16 review D-05: the reason code and a platform id are free values too; neither may name the estate.
+        if (namesEstate(body.reasonCode()) || (kind.equals(RegistryVocabulary.KIND_PLATFORM)
+            && namesEstate(ruleId.substring("platform.".length())))) {
+            throw estateRefused();
         }
         String author = pseudonym(loginName);
         Draft draft = switch (kind) {
@@ -197,14 +209,8 @@ public class PolicyRegistryService {
                 + defect + ".");
         }
         // Vendor-published endpoints only (PLATFORM_MATRIX §2): a host that names an estate term is refused.
-        for (String term : keys.estateTerms()) {
-            String t = term.toLowerCase(Locale.ROOT);
-            for (List<String> hosts : List.of(row.hostSuffixes(), row.apiHosts(), row.loginHosts())) {
-                if (!t.isBlank() && hosts.stream().anyMatch(h -> h.contains(t))) {
-                    throw new RegistryRefusal(HttpStatus.CONFLICT, "ESTATE_NAME_REFUSED",
-                        "A platform row names vendor endpoints only; a host matches the estate dictionary.");
-                }
-            }
+        if (rowNamesEstate(row)) {
+            throw estateRefused();
         }
         return new Draft(ruleId, RegistryVocabulary.KIND_PLATFORM, null, null, id, row.hostSuffixes(), row.apiHosts(),
             row.loginHosts(), null, b.mode(), b.rolloutStage(), author, b.reasonCode());
@@ -228,10 +234,72 @@ public class PolicyRegistryService {
         try {
             return database.policyRegistry().approve(ruleId, version, role, approver,
                 new AuditContext(approver, "policy.approve", "APPROVAL_" + role.toUpperCase(Locale.ROOT), correlation),
-                new AuditContext(approver, "policy.activate", "TWO_APPROVALS", correlation));
+                new AuditContext(approver, "policy.activate", "TWO_APPROVALS", correlation), this::checkActivation);
         } catch (RegistryConflict e) {
             throw conflict(e);
         }
+    }
+
+    /**
+     * Runs inside the activating approval's transaction on the would-be active versions (PR 16 review D-04): they must
+     * compile into a snapshot (every class and the flow, non-overlapping platform rows, approvals) and no platform row
+     * may name the estate. A failure rolls the approval and the activation back.
+     */
+    void checkActivation(List<PolicyRuleVersion> active) {
+        try {
+            compiler.compile(active);
+        } catch (RegistryRefusal e) {
+            throw new RegistryRefusal(HttpStatus.CONFLICT, "ACTIVATION_WOULD_NOT_COMPILE",
+                "This activation would leave a registry that does not compile (" + e.reason() + "); nothing changed.");
+        }
+        for (PolicyRuleVersion v : active) {
+            if (RegistryVocabulary.KIND_PLATFORM.equals(v.kind()) && (namesEstate(v.platformId())
+                || rowNamesEstate(new PlatformRow(v.platformId(), v.hostSuffixes(), v.apiHosts(), v.loginHosts())))) {
+                throw estateRefused();
+            }
+        }
+    }
+
+    private boolean rowNamesEstate(PlatformRow row) {
+        for (List<String> hosts : List.of(row.hostSuffixes(), row.apiHosts(), row.loginHosts())) {
+            if (hosts.stream().anyMatch(this::namesEstate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * True when {@code value} contains an estate-dictionary term, compared on letters and digits only and ignoring case
+     * (so {@code SYNTHETIC_ESTATE_X} matches the term {@code synthetic-estate}).
+     */
+    boolean namesEstate(String value) {
+        if (value == null) {
+            return false;
+        }
+        String v = letters(value);
+        for (String term : keys.estateTerms()) {
+            String t = letters(term);
+            if (!t.isEmpty() && v.contains(t)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String letters(String s) {
+        StringBuilder out = new StringBuilder(s.length());
+        for (char c : s.toLowerCase(Locale.ROOT).toCharArray()) {
+            if (Character.isLetterOrDigit(c)) {
+                out.append(c);
+            }
+        }
+        return out.toString();
+    }
+
+    private static RegistryRefusal estateRefused() {
+        return new RegistryRefusal(HttpStatus.CONFLICT, "ESTATE_NAME_REFUSED",
+            "Registry values name vendor endpoints and vocabulary only; a value matches the estate dictionary.");
     }
 
     /** Exceptions with an expiry exist for non-fail-closed rules only; a fail-closed class or flow never takes one. */

@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.rwsafe.control.support.ControlTestEnvironment;
 import io.rwsafe.persistence.PolicyRuleVersion;
 import io.rwsafe.persistence.PolicyRuleVersion.Draft;
+import io.rwsafe.persistence.PolicyRuleVersion.PolicyApproval;
 import io.rwsafe.persistence.PolicySnapshotStore;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -37,18 +38,28 @@ class SnapshotCompilerTest {
             d.reasonCode(), Instant.EPOCH, Instant.EPOCH, null, List.of());
     }
 
-    private static List<PolicyRuleVersion> replacingClass(String dataClass, String action, String mode, String stage) {
+    static final List<PolicyApproval> TWO_APPROVALS = List.of(
+        new PolicyApproval("security_admin", "USR-00000000a1", Instant.EPOCH),
+        new PolicyApproval("privacy_officer", "USR-00000000b2", Instant.EPOCH));
+
+    /** A registry version 2 of {@code ruleId}'s class, active, with the given approvals. */
+    static PolicyRuleVersion registryVersion(PolicyRuleVersion seed, String action, String mode, String stage,
+                                             List<PolicyApproval> approvals) {
+        return new PolicyRuleVersion(seed.ruleId(), 2, seed.kind(), seed.dataClass(), action, seed.platformId(),
+            seed.hostSuffixes(), seed.apiHosts(), seed.loginHosts(), seed.enforceFailClosed(), mode, stage, "active",
+            "registry", "USR-00000000a1", "SYNTHETIC_CHANGE", Instant.EPOCH, Instant.EPOCH, null, approvals);
+    }
+
+    private static List<PolicyRuleVersion> replacing(String ruleId, java.util.function.UnaryOperator<PolicyRuleVersion> f) {
         List<PolicyRuleVersion> out = new ArrayList<>();
         for (PolicyRuleVersion v : seedActive()) {
-            if (v.ruleId().equals("class." + dataClass)) {
-                Draft d = new Draft(v.ruleId(), v.kind(), v.dataClass(), v.action(), null, null, null, null, null,
-                    mode, stage, "USR-00000000a1", "SYNTHETIC_CHANGE");
-                out.add(version(d, 1, action, mode, stage));
-            } else {
-                out.add(v);
-            }
+            out.add(v.ruleId().equals(ruleId) ? f.apply(v) : v);
         }
         return out;
+    }
+
+    private static List<PolicyRuleVersion> replacingClass(String dataClass, String action, String mode, String stage) {
+        return replacing("class." + dataClass, v -> registryVersion(v, action, mode, stage, TWO_APPROVALS));
     }
 
     @Test
@@ -75,6 +86,53 @@ class SnapshotCompilerTest {
             + "\"apiHosts\":[\"api.anthropic.com\"],\"loginHosts\":[]}", claude.toString());
         assertEquals(List.of(RegistrySeed.SEED_ACTOR), compiled.approvers());
         assertEquals(14, compiled.ruleVersions().size());
+    }
+
+    @Test
+    void theDocumentIsOneTheDataPlaneCodecAccepts() throws Exception {
+        Instant now = Instant.parse("2026-10-30T18:00:00Z");
+        byte[] body = compiler.compile(replacingClass("TCKN", "BLOCK", "enforce", "all")).render(7, now).document()
+            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        io.rwsafe.policy.PolicySnapshot parsed = io.rwsafe.policy.SnapshotCodec.parse(body, now.plusSeconds(30));
+        assertEquals(7, parsed.version());
+        assertEquals(io.rwsafe.policy.Action.BLOCK,
+            parsed.actionFor(io.rwsafe.platform.verdict.DataClass.TCKN));
+        assertEquals(9, parsed.platforms().size());
+    }
+
+    // PR 16 review D-01: a compiled version is the seed's or holds two approvals; a snapshot has platform rows.
+
+    @Test
+    void aVersionWithoutTwoApprovalsByTwoPeopleIsNeverCompiled() {
+        PolicyApproval admin = TWO_APPROVALS.get(0);
+        PolicyApproval officer = TWO_APPROVALS.get(1);
+        List<List<PolicyApproval>> refused = List.of(
+            List.of(),
+            List.of(admin),
+            List.of(admin, new PolicyApproval("privacy_officer", admin.approverFingerprint(), Instant.EPOCH)),
+            List.of(admin, new PolicyApproval("security_admin", officer.approverFingerprint(), Instant.EPOCH)));
+        for (List<PolicyApproval> approvals : refused) {
+            List<PolicyRuleVersion> active = replacing("class.TCKN",
+                v -> registryVersion(v, "BLOCK", "enforce", "all", approvals));
+            assertEquals("SNAPSHOT_APPROVAL_MISSING",
+                assertThrows(RegistryRefusal.class, () -> compiler.compile(active)).reason(), approvals.toString());
+        }
+        List<PolicyRuleVersion> platformWithoutApproval = replacing("platform.claude",
+            v -> registryVersion(v, null, "enforce", "all", List.of()));
+        assertEquals("SNAPSHOT_APPROVAL_MISSING",
+            assertThrows(RegistryRefusal.class, () -> compiler.compile(platformWithoutApproval)).reason());
+        List<PolicyRuleVersion> forgedSeed = replacing("class.SECRET", v -> new PolicyRuleVersion(v.ruleId(), 3,
+            v.kind(), v.dataClass(), v.action(), null, null, null, null, null, "enforce", "all", "active", "seed",
+            RegistrySeed.SEED_ACTOR, "SEED_FIXTURE", Instant.EPOCH, Instant.EPOCH, null, List.of()));
+        assertEquals("SNAPSHOT_APPROVAL_MISSING",
+            assertThrows(RegistryRefusal.class, () -> compiler.compile(forgedSeed)).reason(), "a seed is version 1");
+    }
+
+    @Test
+    void aSnapshotWithoutPlatformRowsIsNeverCompiled() {
+        List<PolicyRuleVersion> noPlatforms = seedActive().stream().filter(v -> !v.kind().equals("platform")).toList();
+        assertEquals("SNAPSHOT_REGISTRY_INCOMPLETE",
+            assertThrows(RegistryRefusal.class, () -> compiler.compile(noPlatforms)).reason());
     }
 
     @Test

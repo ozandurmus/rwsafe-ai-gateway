@@ -57,6 +57,15 @@ export function interpolate(template: string, params?: Record<string, string | n
   );
 }
 
+/**
+ * A catalogue entry by a key built at runtime (a server code, a platform id): only the catalogue's own keys count, so a
+ * key such as `constructor` or `__proto__` gives the fallback, never an inherited member (PR 16 review D-07).
+ */
+export function catalogueLabel(lang: Lang, key: string, fallback: string): string {
+  const lookup = CATALOGUES[lang] as Record<string, string>;
+  return Object.prototype.hasOwnProperty.call(lookup, key) ? (lookup[key] ?? fallback) : fallback;
+}
+
 export interface Formatters {
   count: (n: number) => string;
   percent: (part: number, total: number) => string;
@@ -165,12 +174,11 @@ export function I18nProvider({
 
   const value = useMemo<I18n>(() => {
     const catalogue = CATALOGUES[lang];
-    const lookup = catalogue as Record<string, string>;
     return {
       lang,
       locale: LOCALE[lang],
       t: (key, params) => interpolate(catalogue[key] ?? key, params),
-      label: (key, fallback) => lookup[key] ?? fallback,
+      label: (key, fallback) => catalogueLabel(lang, key, fallback),
       fmt: formatters(lang),
       setLanguage,
     };

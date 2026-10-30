@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
 import org.jooq.Condition;
 import org.jooq.DSLContext;
 import org.jooq.Field;
@@ -76,7 +77,11 @@ public final class PolicyRegistryStore {
         return read(dsl, RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).stream().findFirst();
     }
 
-    /** Adds the next version of {@code draft.ruleId()} as {@code pending}. */
+    /**
+     * Adds the next version of {@code draft.ruleId()} as {@code pending}. A rule has at most one pending version: an
+     * earlier pending one (with whatever approvals it gathered) is superseded, so an approval given to an older draft can
+     * never be completed later by a single person (PR 16 review D-03).
+     */
     public PolicyRuleVersion draft(Draft draft, AuditContext audit) {
         return refusalsAsConflicts(() -> dsl.transactionResult(cfg -> {
             DSLContext tx = DSL.using(cfg);
@@ -86,6 +91,8 @@ public final class PolicyRegistryStore {
             int next = max == null ? 1 : max + 1;
             audit.apply(tx);
             insert(tx, draft, next, "pending", "registry", null);
+            tx.update(RULE_VERSION).set(RV_STATUS, "superseded").set(RV_SUPERSEDED_AT, Instant.now())
+                .where(RV_RULE_ID.eq(draft.ruleId()).and(RV_STATUS.eq("pending")).and(RV_VERSION.lt(next))).execute();
             return read(tx, RV_RULE_ID.eq(draft.ruleId()).and(RV_VERSION.eq(next))).get(0);
         }));
     }
@@ -97,11 +104,15 @@ public final class PolicyRegistryStore {
      *
      * @param approverFingerprint the approver's {@code USR-} pseudonym
      * @param activation          the ledger context of the activation, applied after the approval's
+     * @param activationCheck     runs on the would-be active versions inside the same transaction when this approval
+     *                            activates the version; an exception it throws rolls the approval and the activation
+     *                            back (PR 16 review D-04: an activation that would not compile is refused)
      * @throws RegistryConflict when the version is not pending, a newer version of the rule is active, the role is
      *                          already filled, or the approver already approved this version
      */
     public PolicyRuleVersion approve(String ruleId, int version, String role, String approverFingerprint,
-                                     AuditContext audit, AuditContext activation) {
+                                     AuditContext audit, AuditContext activation,
+                                     Consumer<List<PolicyRuleVersion>> activationCheck) {
         return refusalsAsConflicts(() -> dsl.transactionResult(cfg -> {
             DSLContext tx = DSL.using(cfg);
             lockRule(tx, ruleId);
@@ -137,13 +148,17 @@ public final class PolicyRegistryStore {
             if (roles == 2) {
                 activation.apply(tx);
                 Instant now = Instant.now();
-                Condition replaced = RV_RULE_ID.eq(ruleId).and(RV_MODE.eq(mode)).and(RV_STATUS.eq("active"));
+                // The new version first, then what it replaces: the guard supersedes an active version only when a
+                // newer active one exists (the one-active constraints are checked at commit).
+                tx.update(RULE_VERSION).set(RV_STATUS, "active").set(RV_ACTIVATED_AT, now)
+                    .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).execute();
+                Condition replaced = RV_RULE_ID.eq(ruleId).and(RV_MODE.eq(mode)).and(RV_STATUS.eq("active"))
+                    .and(RV_VERSION.lt(version));
                 if (!"all".equals(row.get(RV_STAGE))) {
                     replaced = replaced.and(RV_STAGE.ne("all"));
                 }
                 tx.update(RULE_VERSION).set(RV_STATUS, "superseded").set(RV_SUPERSEDED_AT, now).where(replaced).execute();
-                tx.update(RULE_VERSION).set(RV_STATUS, "active").set(RV_ACTIVATED_AT, now)
-                    .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).execute();
+                activationCheck.accept(activeIn(tx));
             }
             return read(tx, RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).get(0);
         }));

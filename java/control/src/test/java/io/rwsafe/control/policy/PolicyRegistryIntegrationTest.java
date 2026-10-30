@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.rwsafe.control.config.InternalConnector;
 import io.rwsafe.control.support.ApiClient;
 import io.rwsafe.control.support.ControlTestEnvironment;
+import io.rwsafe.persistence.PolicyRuleVersion;
 import io.rwsafe.persistence.PolicySnapshotStore.IssuedSnapshot;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -230,6 +231,89 @@ class PolicyRegistryIntegrationTest {
         ApiClient.Response ok = admin.post(base, platform("[\"vendor.example\"]", "[\"api.vendor.example\"]"), true);
         assertEquals(201, ok.status(), String.valueOf(ok.body()));
         assertEquals(1, ok.body().get("version").asInt());
+    }
+
+    // PR 16 review D-04: the activating approval compiles the would-be registry in its own transaction.
+
+    @Test
+    void anActivationThatWouldNotCompileIsRefusedAndRolledBack() throws Exception {
+        ApiClient admin = signedIn("synthetic-admin");
+        ApiClient officer = signedIn("synthetic-officer");
+        assertEquals(201, admin.post("/api/v1/policy/rules/platform.vendor-a/versions",
+            platform("[\"vendor.example\"]", "[]"), true).status());
+        // Valid against the active rows when drafted, but it overlaps vendor-a once that is active.
+        assertEquals(201, admin.post("/api/v1/policy/rules/platform.vendor-b/versions",
+            platform("[\"api.vendor.example\"]", "[]"), true).status());
+        assertEquals(200, admin.post("/api/v1/policy/rules/platform.vendor-a/versions/1/approvals",
+            role("security_admin"), true).status());
+        assertEquals(200, officer.post("/api/v1/policy/rules/platform.vendor-a/versions/1/approvals",
+            role("privacy_officer"), true).status());
+        assertEquals(200, admin.post("/api/v1/policy/rules/platform.vendor-b/versions/1/approvals",
+            role("security_admin"), true).status());
+        ApiClient.Response refused = officer.post("/api/v1/policy/rules/platform.vendor-b/versions/1/approvals",
+            role("privacy_officer"), true);
+        assertEquals(409, refused.status());
+        assertEquals("ACTIVATION_WOULD_NOT_COMPILE", refused.body().get("reason").asText());
+        JsonNode b = find(admin.get("/api/v1/policy/rules").body().get("rules"), "platform.vendor-b").get("versions")
+            .get(0);
+        assertEquals("pending", b.get("status").asText());
+        assertEquals(1, b.get("approvals").size(), "the refused approval is rolled back with the activation");
+        JsonNode doc = verified(snapshot(internal.snapshotPort(), null));
+        assertEquals(10, doc.get("platforms").size(), "the feed still compiles, with vendor-a");
+    }
+
+    // PR 16 review D-05: every free registry value is checked against the estate dictionary and masked.
+
+    @Test
+    void platformIdsAndReasonCodesNeverNameTheEstate() throws Exception {
+        ApiClient admin = signedIn("synthetic-admin");
+        assertEquals("ESTATE_NAME_REFUSED", admin.post("/api/v1/policy/rules/platform.synthetic-estate-vendor/versions",
+            platform("[\"vendor.example\"]", "[]"), true).body().get("reason").asText());
+        assertEquals("ESTATE_NAME_REFUSED", admin.post("/api/v1/policy/rules/class.TCKN/versions",
+            JSON.createObjectNode().put("action", "BLOCK").put("mode", "enforce").put("rolloutStage", "all")
+                .put("reasonCode", "SYNTHETIC_ESTATE_REVIEW").toString(), true).body().get("reason").asText());
+    }
+
+    @Autowired
+    io.rwsafe.control.privacy.Masking masking;
+    @Autowired
+    ObjectMapper springJson;
+
+    @Test
+    void theMaskedRegistryMasksReasonCodesRuleVersionsAndTheKeyId() throws Exception {
+        PolicyRuleVersion v = new PolicyRuleVersion("platform.synthetic-estate", 1, "platform", null, null,
+            "synthetic-estate", List.of("synthetic-estate.example"), List.of(), List.of(), null, "enforce", "all",
+            "active", "registry", "USR-00000000a1", "SYNTHETIC-ESTATE", Instant.EPOCH, Instant.EPOCH, null, List.of());
+        IssuedSnapshot s = new IssuedSnapshot(1, "registry-000000000000", Instant.EPOCH, "a".repeat(64), "b".repeat(64),
+            "{}", List.of("platform.synthetic-estate@v1"), List.of("system:seed-fixture"));
+        PolicyViews.RegistryView view = PolicyViews.RegistryView.of(List.of(v), s, "synthetic-estate-key");
+        String plain = springJson.writeValueAsString(view).toLowerCase(java.util.Locale.ROOT);
+        assertTrue(plain.contains("synthetic-estate"), "the unmasked view carries the synthetic term");
+        String masked = springJson.writeValueAsString(view.masked(masking.masker())).toLowerCase(java.util.Locale.ROOT);
+        assertFalse(masked.contains("synthetic-estate"), masked);
+    }
+
+    // PR 16 review D-06: nothing is issued or ledgered as signed without a signing key.
+
+    @Autowired
+    io.rwsafe.persistence.Database database;
+    @Autowired
+    io.rwsafe.control.privacy.Pseudonymiser pseudonymiser;
+    @Autowired
+    io.rwsafe.control.privacy.PrivacyKeys keys;
+
+    @Test
+    void withoutASigningKeyNoSnapshotIsIssuedOrLedgered() {
+        io.rwsafe.control.config.ControlProperties props = new io.rwsafe.control.config.ControlProperties(null, null,
+            null, null, new io.rwsafe.control.config.ControlProperties.Policy(null,
+                ControlTestEnvironment.dir().resolve("absent-signing-key"), "k1", null, null), null);
+        PolicyRegistryService unsigned = new PolicyRegistryService(database, props, pseudonymiser, keys,
+            new SnapshotSigner(props));
+        assertEquals("SNAPSHOT_SIGNING_UNAVAILABLE",
+            org.junit.jupiter.api.Assertions.assertThrows(RegistryRefusal.class, unsigned::currentSnapshot).reason());
+        unsigned.reissueWhenDue();
+        assertTrue(database.policySnapshots().latest().isEmpty());
+        assertEquals(0, ledger("policy_snapshot"));
     }
 
     private static String platform(String suffixes, String apiHosts) {

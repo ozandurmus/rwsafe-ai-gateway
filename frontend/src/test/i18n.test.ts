@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CATALOGUES, DEFAULT_LANG, LANGUAGES, formatters, interpolate } from '../i18n';
+import { CATALOGUES, DEFAULT_LANG, LANGUAGES, catalogueLabel, formatters, interpolate } from '../i18n';
 
 // PO decision Q-38: one catalogue per language, keys in English; a key missing in either catalogue fails here (and in
 // `tsc`, which types the Turkish catalogue against the English key set).
@@ -75,6 +75,15 @@ describe('formatting', () => {
     expect(tr.time('2026-10-30T09:15:00Z')).toBe('30.10.2026 12:15:00');
     expect(en.time('2026-10-30T09:15:00Z')).toBe('30/10/2026, 12:15:00');
     expect(tr.time(null)).toBe('—');
+  });
+
+  it('looks up runtime keys among the catalogue own keys only (PR 16 review D-07)', () => {
+    for (const lang of LANGUAGES) {
+      for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'reason.code_constructor']) {
+        expect(catalogueLabel(lang, key, 'fallback'), `${lang}:${key}`).toBe('fallback');
+      }
+    }
+    expect(catalogueLabel('tr', 'nav.policies', 'fallback')).toBe('Politikalar');
   });
 
   it('interpolates named placeholders and leaves unknown ones visible', () => {

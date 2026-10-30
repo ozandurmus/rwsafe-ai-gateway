@@ -11,7 +11,9 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.Set;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,6 +60,18 @@ public final class SnapshotCompiler implements PolicySnapshotStore.Compiler {
         }
         List<PlatformRow> rows = baseline.stream().filter(r -> RegistryVocabulary.KIND_PLATFORM.equals(r.kind()))
             .map(r -> new PlatformRow(r.platformId(), r.hostSuffixes(), r.apiHosts(), r.loginHosts())).toList();
+        if (rows.isEmpty()) {
+            throw incomplete("no platform row is active");
+        }
+        // PR 16 review D-01: every compiled version is the fixture's seed or carries its two approvals, whatever the
+        // database says about its status.
+        for (PolicyRuleVersion v : baseline) {
+            if (!approved(v)) {
+                throw new RegistryRefusal(HttpStatus.SERVICE_UNAVAILABLE, "SNAPSHOT_APPROVAL_MISSING",
+                    "An active rule version has neither the seed's provenance nor two approvals; no snapshot is "
+                        + "compiled.");
+            }
+        }
         String defect = PlatformRow.defect(rows);
         if (defect != null) {
             throw incomplete("the platform rows are defective: " + defect);
@@ -103,6 +117,24 @@ public final class SnapshotCompiler implements PolicySnapshotStore.Compiler {
             doc.putAll(content);
             return new PolicySnapshotStore.Rendered(id, write(doc));
         }
+    }
+
+    /**
+     * A seed version is version 1 by the seed actor with no approval; any other version holds exactly two approvals,
+     * one per approver role, by two different people (AGENTS.md section 6).
+     */
+    static boolean approved(PolicyRuleVersion v) {
+        if ("seed".equals(v.source())) {
+            return v.version() == 1 && RegistrySeed.SEED_ACTOR.equals(v.authorFingerprint()) && v.approvals().isEmpty();
+        }
+        Set<String> roles = new HashSet<>();
+        Set<String> people = new HashSet<>();
+        for (PolicyRuleVersion.PolicyApproval a : v.approvals()) {
+            roles.add(a.role());
+            people.add(a.approverFingerprint());
+        }
+        return "registry".equals(v.source()) && v.approvals().size() == 2 && people.size() == 2
+            && roles.equals(Set.of("security_admin", "privacy_officer"));
     }
 
     private static RegistryRefusal incomplete(String why) {

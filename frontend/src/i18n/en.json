@@ -237,6 +237,8 @@
   "reason.code_SNAPSHOT_SIGNING_UNAVAILABLE": "Snapshot signing unavailable",
   "reason.code_SNAPSHOT_REGISTRY_INCOMPLETE": "Registry incomplete",
   "reason.code_SNAPSHOT_FAIL_CLOSED_RELAXED": "Fail-closed class relaxed",
+  "reason.code_SNAPSHOT_APPROVAL_MISSING": "Active version lacks its approvals",
+  "reason.code_ACTIVATION_WOULD_NOT_COMPILE": "Activation would break the snapshot",
   "reason.code_AUTHENTICATION_REQUIRED": "Sign-in required",
   "reason.code_INVALID_CREDENTIALS": "Sign-in refused",
   "reason.code_INVALID_LOGIN_REQUEST": "Incomplete sign-in",

@@ -43,7 +43,7 @@ class PolicyRegistryStoreTest {
 
     private static Draft classRule(String dataClass, String action, String mode, String stage, String author) {
         return new Draft("class." + dataClass, "class_action", dataClass, action, null, null, null, null, null, mode,
-            stage, author, "SYNTHETIC_CHANGE");
+            stage, author, author.startsWith("system:") ? "SEED_FIXTURE" : "SYNTHETIC_CHANGE");
     }
 
     private static AuditContext audit(String actor, String action) {
@@ -52,7 +52,7 @@ class PolicyRegistryStoreTest {
 
     private PolicyRuleVersion approve(String ruleId, int version, String role, String who) {
         return registry.approve(ruleId, version, role, who, audit(who, "policy.approve"),
-            audit("system:policy-registry", "policy.activate"));
+            audit("system:policy-registry", "policy.activate"), active -> { });
     }
 
     private String status(String ruleId, int version) {
@@ -153,8 +153,143 @@ class PolicyRegistryStoreTest {
         approve("class.TCKN", 5, "privacy_officer", OFFICER);
         assertEquals(List.of(5), registry.active().stream().filter(v -> v.ruleId().equals("class.TCKN"))
             .map(PolicyRuleVersion::version).toList());
-        assertEquals("NEWER_VERSION_ACTIVE", assertThrows(RegistryConflict.class,
-            () -> approve("class.TCKN", 4, "security_admin", ADMIN)).reason());
+        assertEquals("POLICY_NOT_PENDING", assertThrows(RegistryConflict.class,
+            () -> approve("class.TCKN", 4, "security_admin", ADMIN)).reason(), "v5's draft superseded v4");
+    }
+
+    // PR 16 review D-01: the seed path and the supersede path cannot activate or remove a rule without two approvals.
+
+    @Test
+    void aSeedRowIsOnlyTheFixtureImportIntoAnEmptyRegistry() {
+        String seed = "INSERT INTO policy_rule_version (rule_id, version, kind, data_class, action, mode, rollout_stage, "
+            + "status, source, author_fingerprint, reason_code, activated_at) VALUES ('class.%s', %d, 'class_action', "
+            + "'%s', 'BLOCK', '%s', '%s', 'active', 'seed', '%s', '%s', now())";
+        for (String sql : new String[] {
+            String.format(seed, "TCKN", 2, "TCKN", "enforce", "all", "system:seed-fixture", "SEED_FIXTURE"),
+            String.format(seed, "TR_IBAN", 1, "TR_IBAN", "monitor", "all", "system:seed-fixture", "SEED_FIXTURE"),
+            String.format(seed, "TR_IBAN", 1, "TR_IBAN", "enforce", "pilot", "system:seed-fixture", "SEED_FIXTURE"),
+            String.format(seed, "TR_IBAN", 1, "TR_IBAN", "enforce", "all", ADMIN, "SEED_FIXTURE"),
+            String.format(seed, "TR_IBAN", 1, "TR_IBAN", "enforce", "all", "system:seed-fixture", "SYNTHETIC_CHANGE")}) {
+            DataAccessException e = assertThrows(DataAccessException.class, () -> mutate(sql), sql);
+            assertTrue(e.getMessage().contains("POLICY_SEED_SHAPE"), sql);
+        }
+        registry.draft(classRule("TCKN", "BLOCK", "enforce", "all", ADMIN), audit(ADMIN, "policy.draft"));
+        DataAccessException closed = assertThrows(DataAccessException.class, () -> mutate(
+            String.format(seed, "TR_IBAN", 1, "TR_IBAN", "enforce", "all", "system:seed-fixture", "SEED_FIXTURE")));
+        assertTrue(closed.getMessage().contains("POLICY_SEED_CLOSED"));
+    }
+
+    @Test
+    void anActiveVersionIsSupersededOnlyByANewerActiveOne() {
+        for (String rule : new String[] {"class.SECRET", "platform.claude", "flow.ai-category"}) {
+            DataAccessException e = assertThrows(DataAccessException.class, () -> mutate(
+                "UPDATE policy_rule_version SET status = 'superseded', superseded_at = now() WHERE rule_id = '" + rule
+                    + "' AND version = 1"));
+            assertTrue(e.getMessage().contains("POLICY_NO_REPLACEMENT"), rule);
+        }
+        registry.draft(classRule("TCKN", "BLOCK", "enforce", "pilot", ADMIN), audit(ADMIN, "policy.draft"));
+        approve("class.TCKN", 2, "security_admin", ADMIN);
+        approve("class.TCKN", 2, "privacy_officer", OFFICER);
+        DataAccessException byStaged = assertThrows(DataAccessException.class, () -> mutate(
+            "UPDATE policy_rule_version SET status = 'superseded', superseded_at = now() WHERE rule_id = 'class.TCKN' "
+                + "AND version = 1"));
+        assertTrue(byStaged.getMessage().contains("POLICY_NO_REPLACEMENT"), "a staged version never replaces the baseline");
+        DataAccessException retime = assertThrows(DataAccessException.class, () -> mutate(
+            "UPDATE policy_rule_version SET activated_at = now() - interval '1 day' WHERE rule_id = 'class.SECRET'"));
+        assertTrue(retime.getMessage().contains("POLICY_LIFECYCLE"));
+    }
+
+    // PR 16 review D-03: one pending version per rule; a newer draft supersedes an older one with its approvals.
+
+    @Test
+    void aNewDraftSupersedesTheOlderPendingOneWithItsApproval() {
+        registry.draft(classRule("TCKN", "BLOCK", "enforce", "all", ADMIN), audit(ADMIN, "policy.draft"));
+        approve("class.TCKN", 2, "security_admin", ADMIN);
+        registry.draft(classRule("TCKN", "BLOCK", "enforce", "pct50", ADMIN), audit(ADMIN, "policy.draft"));
+        assertEquals("superseded", status("class.TCKN", 2));
+        assertEquals("pending", status("class.TCKN", 3));
+        assertEquals("POLICY_NOT_PENDING", assertThrows(RegistryConflict.class,
+            () -> approve("class.TCKN", 2, "privacy_officer", OFFICER)).reason(),
+            "a single person can never complete the older draft");
+        assertEquals("active", status("class.TCKN", 1));
+        assertEquals(1, registry.versions().stream().filter(v -> v.status().equals("pending")).count());
+
+        DataAccessException second = assertThrows(DataAccessException.class, () -> mutate(
+            "INSERT INTO policy_rule_version (rule_id, version, kind, data_class, action, mode, rollout_stage, status, "
+                + "source, author_fingerprint, reason_code) VALUES ('class.TCKN', 9, 'class_action', 'TCKN', 'BLOCK', "
+                + "'enforce', 'all', 'pending', 'registry', 'USR-00000000a1', 'SYNTHETIC_CHANGE')"));
+        assertEquals("23P01", second.sqlState(), "the one-pending exclusion constraint");
+        DataAccessException orphan = assertThrows(DataAccessException.class, () -> mutate(
+            "UPDATE policy_rule_version SET status = 'superseded', superseded_at = now() WHERE rule_id = 'class.TCKN' "
+                + "AND version = 3"));
+        assertTrue(orphan.getMessage().contains("POLICY_NO_REPLACEMENT"));
+    }
+
+    // PR 16 review D-04: the activating approval runs the caller's check in the same transaction.
+
+    @Test
+    void aRefusedActivationCheckRollsTheApprovalBack() {
+        registry.draft(classRule("TCKN", "BLOCK", "enforce", "all", ADMIN), audit(ADMIN, "policy.draft"));
+        approve("class.TCKN", 2, "security_admin", ADMIN);
+        List<List<String>> seen = new java.util.ArrayList<>();
+        IllegalStateException refused = assertThrows(IllegalStateException.class, () -> registry.approve("class.TCKN", 2,
+            "privacy_officer", OFFICER, audit(OFFICER, "policy.approve"), audit(OFFICER, "policy.activate"), active -> {
+                seen.add(active.stream().map(PolicyRuleVersion::key).sorted().toList());
+                throw new IllegalStateException("synthetic refusal");
+            }));
+        assertEquals("synthetic refusal", refused.getMessage());
+        assertTrue(seen.get(0).contains("class.TCKN@v2") && !seen.get(0).contains("class.TCKN@v1"),
+            "the check sees the would-be active set");
+        PolicyRuleVersion after = registry.version("class.TCKN", 2).orElseThrow();
+        assertEquals("pending", after.status());
+        assertEquals(1, after.approvals().size());
+        assertEquals("active", status("class.TCKN", 1));
+        assertEquals(1, ledgerRows("policy_approval", "INSERT"));
+    }
+
+    @Test
+    void theFlowIsNeverRelaxedInMonitorModeEither() {
+        assertThrows(RegistryConflict.class, () -> registry.draft(new Draft("flow.ai-category", "flow", null, null, null,
+            null, null, null, false, "monitor", "all", ADMIN, "SYNTHETIC_CHANGE"), audit(ADMIN, "policy.draft")));
+    }
+
+    // PR 16 review D-02: a stored snapshot is re-served only when it is exactly what the compiler renders.
+
+    @Test
+    void aTamperedOrFutureSnapshotRowIsNeverServedAgain() {
+        PolicySnapshotStore snapshots = db.policySnapshots();
+        Instant t0 = Instant.parse("2026-10-30T10:00:00Z");
+        Duration refresh = Duration.ofHours(6);
+        AuditContext issuer = audit("system:snapshot-issuer", "policy_snapshot.issue");
+        IssuedSnapshot first = snapshots.current(SyntheticCompiler.INSTANCE, t0, refresh, issuer);
+        String forged = "{\"version\":2,\"issuedAt\":\"2027-01-01T00:00:00Z\",\"forged\":true}";
+        insertSnapshot(2, "2027-01-01T00:00:00Z", first.rulesDigest(), PolicySnapshotStore.sha256(forged), forged);
+        IssuedSnapshot afterFuture = snapshots.current(SyntheticCompiler.INSTANCE, t0.plusSeconds(60), refresh, issuer);
+        assertEquals(3, afterFuture.version(), "a future row is not reused");
+        assertEquals(t0.plusSeconds(60), afterFuture.issuedAt(), "and its future time is not carried forward");
+        assertEquals(SyntheticCompiler.INSTANCE.compile(registry.active()).render(3, t0.plusSeconds(60)).document(),
+            afterFuture.document());
+
+        String tampered = "{\"version\":4,\"issuedAt\":\"" + t0.plusSeconds(90) + "\",\"tampered\":true}";
+        insertSnapshot(4, t0.plusSeconds(90).toString(), first.rulesDigest(), PolicySnapshotStore.sha256(tampered),
+            tampered);
+        assertEquals(5, snapshots.current(SyntheticCompiler.INSTANCE, t0.plusSeconds(120), refresh, issuer).version(),
+            "a document that differs from the rendering is not reused");
+
+        String honest = SyntheticCompiler.INSTANCE.compile(registry.active()).render(6, t0.plusSeconds(150)).document();
+        insertSnapshot(6, t0.plusSeconds(150).toString(), first.rulesDigest(), "c".repeat(64), honest);
+        assertEquals(7, snapshots.current(SyntheticCompiler.INSTANCE, t0.plusSeconds(180), refresh, issuer).version(),
+            "a stored digest that does not match its document is not reused");
+        IssuedSnapshot seventh = snapshots.latest().orElseThrow();
+        assertEquals(seventh, snapshots.current(SyntheticCompiler.INSTANCE, t0.plusSeconds(200), refresh, issuer),
+            "an honest row is reused");
+    }
+
+    private void insertSnapshot(long version, String issuedAt, String rulesDigest, String sha, String document) {
+        mutate("INSERT INTO policy_snapshot (version, snapshot_id, issued_at, rules_digest, document_sha256, document, "
+            + "rule_versions, approvers) VALUES (" + version + ", 'registry-" + rulesDigest.substring(0, 12) + "', '"
+            + issuedAt + "', '" + rulesDigest + "', '" + sha + "', '" + document + "', ARRAY['class.SECRET@v1'], "
+            + "ARRAY['system:seed-fixture'])");
     }
 
     @Test

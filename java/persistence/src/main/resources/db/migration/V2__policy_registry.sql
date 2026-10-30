@@ -51,20 +51,26 @@ CREATE TABLE policy_rule_version (
     END),
     -- SR-DLP-1, ADR-010, POLICY_SNAPSHOT_CONTRACT: every Tier-1 class is fail-closed, so no version, monitor or enforce,
     -- ever allows or warns it (the data plane refuses such a snapshot whatever enforceFailClosed says), and the
-    -- AI-category flow is never relaxed in enforce mode.
+    -- AI-category flow is never relaxed, in any mode (PR 16 review D-06).
     CONSTRAINT policy_rule_version_fail_closed_class CHECK (
         NOT (kind = 'class_action' AND action IN ('ALLOW', 'WARN'))),
     CONSTRAINT policy_rule_version_fail_closed_flow CHECK (
-        NOT (kind = 'flow' AND mode = 'enforce' AND NOT enforce_fail_closed)),
-    CONSTRAINT policy_rule_version_lifecycle CHECK ((status = 'pending') = (activated_at IS NULL)
-        AND (status = 'superseded') = (superseded_at IS NOT NULL))
+        NOT (kind = 'flow' AND NOT enforce_fail_closed)),
+    -- A pending version was never active; a superseded one may have been pending (a newer draft replaced it, D-03) or
+    -- active.
+    CONSTRAINT policy_rule_version_lifecycle CHECK ((status <> 'pending' OR activated_at IS NULL)
+        AND (status <> 'active' OR activated_at IS NOT NULL)
+        AND (status = 'superseded') = (superseded_at IS NOT NULL)),
+    -- One active baseline (stage all) and one active staged version per rule and mode, and one pending version per rule
+    -- (PR 16 review D-03). Deferred to the end of the transaction, so an activation or a draft can write the new version
+    -- before it supersedes the one it replaces, and the guard can require that replacement.
+    CONSTRAINT policy_rule_version_one_baseline EXCLUDE USING btree (rule_id WITH =, mode WITH =)
+        WHERE (status = 'active' AND rollout_stage = 'all') DEFERRABLE INITIALLY DEFERRED,
+    CONSTRAINT policy_rule_version_one_staged EXCLUDE USING btree (rule_id WITH =, mode WITH =)
+        WHERE (status = 'active' AND rollout_stage <> 'all') DEFERRABLE INITIALLY DEFERRED,
+    CONSTRAINT policy_rule_version_one_pending EXCLUDE USING btree (rule_id WITH =)
+        WHERE (status = 'pending') DEFERRABLE INITIALLY DEFERRED
 );
-
--- One active baseline (stage all) and one active staged version per rule and mode.
-CREATE UNIQUE INDEX policy_rule_version_one_baseline ON policy_rule_version (rule_id, mode)
-    WHERE status = 'active' AND rollout_stage = 'all';
-CREATE UNIQUE INDEX policy_rule_version_one_staged ON policy_rule_version (rule_id, mode)
-    WHERE status = 'active' AND rollout_stage <> 'all';
 
 CREATE TABLE policy_approval (
     rule_id               text        NOT NULL,
@@ -80,8 +86,11 @@ CREATE TABLE policy_approval (
     FOREIGN KEY (rule_id, version) REFERENCES policy_rule_version (rule_id, version)
 );
 
--- A seed version enters active; a registry version enters pending. Afterwards only the lifecycle columns change, along
--- pending -> active -> superseded, and pending -> active needs both approvals by two different people.
+-- A seed version enters active, and only as the fixture's import: version 1, enforce, stage all, the seed actor and
+-- reason, before any registry version exists (PR 16 review D-01). A registry version enters pending. Afterwards only
+-- the lifecycle columns change: pending -> active with both approvals by two different people; active -> superseded
+-- only when a newer active version of the rule and mode replaces it (a baseline only by a newer baseline);
+-- pending -> superseded only when a newer version of the rule exists (a newer draft, D-03).
 CREATE FUNCTION rwsafe_policy_rule_version_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     approvals integer;
@@ -93,10 +102,34 @@ BEGIN
             RAISE EXCEPTION 'POLICY_APPROVAL_REQUIRED: a registry version starts pending'
                 USING ERRCODE = 'check_violation';
         END IF;
-        IF NEW.source = 'seed' AND NEW.status <> 'active' THEN
-            RAISE EXCEPTION 'POLICY_SEED_SHAPE: a seed version starts active' USING ERRCODE = 'check_violation';
+        IF NEW.source = 'seed' AND (NEW.status <> 'active' OR NEW.version <> 1 OR NEW.mode <> 'enforce'
+                OR NEW.rollout_stage <> 'all' OR NEW.author_fingerprint <> 'system:seed-fixture'
+                OR NEW.reason_code <> 'SEED_FIXTURE') THEN
+            RAISE EXCEPTION 'POLICY_SEED_SHAPE: a seed version is version 1, active, enforce, stage all, by the fixture'
+                USING ERRCODE = 'check_violation';
+        END IF;
+        IF NEW.source = 'seed' AND EXISTS (SELECT 1 FROM policy_rule_version WHERE source = 'registry') THEN
+            RAISE EXCEPTION 'POLICY_SEED_CLOSED: the seed is imported into an empty registry only'
+                USING ERRCODE = 'check_violation';
         END IF;
         RETURN NEW;
+    END IF;
+    IF OLD.status = NEW.status AND (NEW.activated_at IS DISTINCT FROM OLD.activated_at
+            OR NEW.superseded_at IS DISTINCT FROM OLD.superseded_at) THEN
+        RAISE EXCEPTION 'POLICY_LIFECYCLE: the lifecycle times change only with the status'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF OLD.status = 'active' AND NEW.status = 'superseded' AND NOT EXISTS (
+            SELECT 1 FROM policy_rule_version r
+             WHERE r.rule_id = OLD.rule_id AND r.mode = OLD.mode AND r.status = 'active' AND r.version > OLD.version
+               AND (OLD.rollout_stage <> 'all' OR r.rollout_stage = 'all')) THEN
+        RAISE EXCEPTION 'POLICY_NO_REPLACEMENT: an active version is superseded only by a newer active one'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF OLD.status = 'pending' AND NEW.status = 'superseded' AND NOT EXISTS (
+            SELECT 1 FROM policy_rule_version r WHERE r.rule_id = OLD.rule_id AND r.version > OLD.version) THEN
+        RAISE EXCEPTION 'POLICY_NO_REPLACEMENT: a pending version is superseded only by a newer draft'
+            USING ERRCODE = 'check_violation';
     END IF;
     -- The generated key is computed after BEFORE triggers, so it is left out of the comparison (it follows the key).
     IF (to_jsonb(NEW) - 'status' - 'activated_at' - 'superseded_at' - 'version_key')
@@ -104,8 +137,8 @@ BEGIN
         RAISE EXCEPTION 'POLICY_VERSION_IMMUTABLE: a rule version never changes; draft a new one'
             USING ERRCODE = 'insufficient_privilege';
     END IF;
-    IF NOT ((OLD.status = 'pending' AND NEW.status = 'active') OR (OLD.status = 'active' AND NEW.status = 'superseded')
-            OR OLD.status = NEW.status) THEN
+    IF NOT ((OLD.status = 'pending' AND NEW.status IN ('active', 'superseded'))
+            OR (OLD.status = 'active' AND NEW.status = 'superseded') OR OLD.status = NEW.status) THEN
         RAISE EXCEPTION 'POLICY_LIFECYCLE: % -> % is refused', OLD.status, NEW.status
             USING ERRCODE = 'check_violation';
     END IF;

@@ -43,7 +43,8 @@ public final class PolicyViews {
         @Override
         public VersionView masked(TextMasker m) {
             return new VersionView(m.mask(ruleId), version, action, enforceFailClosed, mask(m, hostSuffixes),
-                mask(m, apiHosts), mask(m, loginHosts), mode, rolloutStage, status, source, author, reasonCode, createdAt,
+                mask(m, apiHosts), mask(m, loginHosts), mode, rolloutStage, status, source, author, m.mask(reasonCode),
+                createdAt,
                 activatedAt, supersededAt, approvals, inSnapshot);
         }
     }
@@ -67,6 +68,12 @@ public final class PolicyViews {
         static SnapshotView of(IssuedSnapshot s, String keyId) {
             return new SnapshotView(s.version(), s.snapshotId(), s.issuedAt(), s.documentSha256(), s.ruleVersions(),
                 s.approvers(), keyId);
+        }
+
+        /** The rule-version references name platform ids and the key id is operator-chosen: both pass the masker. */
+        SnapshotView masked(TextMasker m) {
+            return new SnapshotView(version, id, issuedAt, documentSha256, mask(m, ruleVersions), approvers,
+                keyId == null ? null : m.mask(keyId));
         }
     }
 
@@ -97,8 +104,8 @@ public final class PolicyViews {
 
         @Override
         public RegistryView masked(TextMasker m) {
-            return new RegistryView(rules.stream().map(r -> r.masked(m)).toList(), snapshot, failClosedClasses, actions,
-                modes, stages);
+            return new RegistryView(rules.stream().map(r -> r.masked(m)).toList(),
+                snapshot == null ? null : snapshot.masked(m), failClosedClasses, actions, modes, stages);
         }
     }
 

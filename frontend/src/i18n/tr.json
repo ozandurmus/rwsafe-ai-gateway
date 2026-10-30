@@ -237,6 +237,8 @@
   "reason.code_SNAPSHOT_SIGNING_UNAVAILABLE": "Anlık görüntü imzalanamıyor",
   "reason.code_SNAPSHOT_REGISTRY_INCOMPLETE": "Kayıt eksik",
   "reason.code_SNAPSHOT_FAIL_CLOSED_RELAXED": "Kapalı kalan sınıf gevşetilmiş",
+  "reason.code_SNAPSHOT_APPROVAL_MISSING": "Etkin sürümün onayları eksik",
+  "reason.code_ACTIVATION_WOULD_NOT_COMPILE": "Etkinleştirme anlık görüntüyü bozar",
   "reason.code_AUTHENTICATION_REQUIRED": "Giriş gerekli",
   "reason.code_INVALID_CREDENTIALS": "Giriş reddedildi",
   "reason.code_INVALID_LOGIN_REQUEST": "Eksik giriş bilgisi",

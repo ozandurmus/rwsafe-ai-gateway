@@ -85,7 +85,8 @@ public final class PolicySnapshotStore {
                 return last.get();
             }
             long version = last.map(s -> s.version() + 1).orElse(1L);
-            Instant issuedAt = last.isPresent() && !now.isAfter(last.get().issuedAt()) ? last.get().issuedAt() : now;
+            // Always the issuing time: a stored issued_at in the future is never carried forward (PR 16 review D-02).
+            Instant issuedAt = now;
             Rendered rendered = compiled.render(version, issuedAt);
             IssuedSnapshot issued = new IssuedSnapshot(version, rendered.snapshotId(), issuedAt, compiled.rulesDigest(),
                 sha256(rendered.document()), rendered.document(), compiled.ruleVersions(), compiled.approvers());
@@ -100,9 +101,20 @@ public final class PolicySnapshotStore {
         });
     }
 
-    private static boolean reusable(IssuedSnapshot latest, Compiled compiled, Instant now, Duration refreshAfter) {
+    /**
+     * The stored snapshot is served again only when it is exactly what this control plane would issue now for that
+     * version and time: the same rules, not issued in the future, younger than the refresh interval, its stored digest
+     * matching its document, and its document byte-identical to the compiler's rendering. A row written past the
+     * application (a direct database write) is therefore never signed; a new version is issued from the active rules
+     * instead (PR 16 review D-02).
+     */
+    static boolean reusable(IssuedSnapshot latest, Compiled compiled, Instant now, Duration refreshAfter) {
         return latest.rulesDigest().equals(compiled.rulesDigest())
-            && latest.issuedAt().plus(refreshAfter).isAfter(now);
+            && !latest.issuedAt().isAfter(now)
+            && latest.issuedAt().plus(refreshAfter).isAfter(now)
+            && latest.documentSha256().equals(sha256(latest.document()))
+            && compiled.render(latest.version(), latest.issuedAt()).document().equals(latest.document())
+            && compiled.render(latest.version(), latest.issuedAt()).snapshotId().equals(latest.snapshotId());
     }
 
     private static Optional<IssuedSnapshot> latest(DSLContext ctx) {
