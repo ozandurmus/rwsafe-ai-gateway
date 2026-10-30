@@ -2,19 +2,23 @@ package io.rwsafe.dataplane.inspect;
 
 import io.rwsafe.detect.DetectorSet;
 import io.rwsafe.detect.Normaliser;
+import io.rwsafe.platform.verdict.DataClass;
 import io.rwsafe.platform.verdict.Finding;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Base64 layer decoding of one field (OFF2-3, ICAP spec §3, BY-ENC-1, BY-ENC-2, BY-ENC-8). A linear scanner (no regular
  * expression) finds runs of the standard or URL-safe base64 alphabet, joined across single line breaks (MIME wrapping),
  * of at least {@link #MIN_RUN} characters, and decodes them up to {@link #MAX_DEPTH} layers deep and at most
- * {@link #MAX_DECODED} bytes per field. Decoded text (strict UTF-8, UTF-8 with NUL bytes removed, or UTF-16LE) is
- * normalised, scanned and its own runs decoded in turn; decoded bytes that are not text are still scanned after NUL
- * removal and replacement decoding (PR 17 review D-02). A run that does not decode to text as a whole is retried without
- * its leading {@code - _ + /}, split at {@code /}, and at offsets 1 to 3 (D-03).
+ * {@link #MAX_DECODED} bytes per field. A run that decodes to strict UTF-8 is normalised, scanned and its own runs decoded
+ * in turn. A run that does not decode cleanly is decoded at all four alignments (start offsets 0 to 3, each trimmed to
+ * whole quanta), so a prefix or suffix of any characters cannot misalign it, and every alignment is read through every
+ * byte view: UTF-8 with NUL removed and invalid sequences replaced, UTF-16LE and UTF-16BE (PR 17 recheck D-05, D-07).
+ * Every decode is charged to the per-field budget; the work is at most five decodes per run character per layer.
  *
  * <p>The outcome is the findings inside decoded layers (the caller replaces the whole field) and, when one applies, a
  * non-verdict reason; the findings are always kept with it (D-01):
@@ -22,11 +26,13 @@ import java.util.List;
  *   <li>{@code EMBEDDED_FILE}: decoded bytes start with a document, archive or compression signature (any size), or an
  *       image signature in a run above {@link #BLOB_LIMIT} characters; the file pipeline (BY-FILE-*) is not built;</li>
  *   <li>{@code UNDECODABLE_BLOB}: a run above {@link #BLOB_LIMIT} characters that is not text and whose Shannon entropy,
- *       the highest over any {@link #BLOB_LIMIT}-character window, is over {@link #ENTROPY_LIMIT} bits per character; a
- *       third layer that decodes to text, at any length; or the per-field decode budget is spent;</li>
+ *       the highest over any {@link #BLOB_LIMIT}-character window, is over {@link #ENTROPY_LIMIT} bits per character; any
+ *       run of at least {@link #MIN_RUN} characters inside a second decoded layer (a third layer); or the per-field decode
+ *       budget is spent;</li>
  *   <li>{@code NORMALISATION} and {@code FINDING_LIMIT} as for the outer text; these and a spent budget stop the scan
  *       ({@link Outcome#stops()}), the others let the caller go on inspecting the rest of the body.</li>
  * </ul>
+ * When several reasons occur the most severe is kept ({@link #worse}): a terminating one outranks {@code EMBEDDED_FILE}.
  * A short run that decodes to binary (a small icon, an opaque token) is ignored: it carries too little to matter and is
  * what legitimate traffic is full of.
  */
@@ -115,163 +121,151 @@ final class Base64Layers {
     }
 
     private void examine(String run, int depth) {
-        byte[] bytes = decode(run);
-        if (bytes != null) {
-            decoded += bytes.length;
-            if (decoded > MAX_DECODED) {
-                halt("UNDECODABLE_BLOB");
+        if (depth >= MAX_DEPTH) {
+            // PR 17 recheck D-05: a base64 run inside a second decoded layer is a third layer, whatever it decodes to.
+            flag("UNDECODABLE_BLOB");
+        }
+        byte[] whole = decode(run);
+        String strict = null;
+        Map<DataClass, List<Finding>> best = new EnumMap<>(DataClass.class);
+        if (whole != null) {
+            if (!charge(whole.length)) {
                 return;
             }
-            if (fileMagic(bytes, run.length())) {
+            if (fileMagic(whole, run.length())) {
                 flag("EMBEDDED_FILE");
                 return;
             }
-            String strict = BodyInspector.strictUtf8(bytes, bytes.length);
+            strict = BodyInspector.strictUtf8(whole, whole.length);
             if (strict != null) {
-                layer(strict, depth);
-                return;
-            }
-            // D-02: bytes that are binary only because of NUL or invalid bytes still reach the detectors (as UTF-16LE,
-            // without NUL, or with replacement characters) before any blob decision. NUL padding can make random bytes
-            // pass as text, so a recovered layer is still subject to the blob rule below.
-            String recovered = recovered(bytes);
-            if (recovered != null) {
-                layer(recovered, depth);
+                scanView(strict, depth, best);
             } else {
-                scanLayer(new String(withoutNul(bytes), StandardCharsets.UTF_8), depth);
+                scanViews(whole, depth, best);
             }
-            if (stop) {
-                return;
+        }
+        // D-07: a run that is not whole quanta of clean text is also read at all four alignments, each trimmed to whole
+        // quanta, so a prefix or a suffix of any characters cannot misalign or extend it; every alignment goes through
+        // every byte view, and per class the most findings any reading gave are kept.
+        boolean clean = strict != null && run.length() % 4 == 0;
+        for (int offset = 0; offset < 4 && !stop && !clean; offset++) {
+            int end = offset + (run.length() - offset) / 4 * 4;
+            if (end - offset < 4 || (offset == 0 && end == run.length() && whole != null)) {
+                continue;
             }
-            if (recovered == null && realign(run, depth)) {
-                return;
+            byte[] bytes = decode(run.substring(offset, end));
+            if (!charge(bytes.length)) {
+                break;
             }
-        } else if (realign(run, depth)) {
+            if (fileMagic(bytes, end - offset)) {
+                flag("EMBEDDED_FILE");
+                continue;
+            }
+            scanViews(bytes, depth, best);
+        }
+        for (List<Finding> classFindings : best.values()) {
+            findings.addAll(classFindings);
+        }
+        if (DetectorSet.overLimit(findings)) {
+            halt("FINDING_LIMIT");
             return;
         }
-        if (!stop && run.length() > BLOB_LIMIT && entropy(run) > ENTROPY_LIMIT) {
+        if (!stop && strict == null && run.length() > BLOB_LIMIT && entropy(run) > ENTROPY_LIMIT) {
             flag("UNDECODABLE_BLOB");
         }
     }
 
-    /** A decoded text layer is scanned; a readable third layer is also a residual blob at any length (D-02). */
-    private void layer(String text, int depth) {
-        if (depth >= MAX_DEPTH && printable(text)) {
-            flag("UNDECODABLE_BLOB");
+    /**
+     * D-05: bytes that are not strict UTF-8 are read every way that could hide text, never one way chosen by a
+     * heuristic: UTF-8 with NUL removed and invalid sequences replaced, and UTF-16LE and UTF-16BE at both byte parities.
+     */
+    private void scanViews(byte[] bytes, int depth, Map<DataClass, List<Finding>> best) {
+        scanView(new String(withoutNul(bytes), StandardCharsets.UTF_8), depth, best);
+        for (int parity = 0; parity < 2 && !stop; parity++) {
+            if (bytes.length - parity >= 2) {
+                scanView(new String(bytes, parity, bytes.length - parity, StandardCharsets.UTF_16LE), depth, best);
+                scanView(new String(bytes, parity, bytes.length - parity, StandardCharsets.UTF_16BE), depth, best);
+            }
         }
-        scanLayer(text, depth);
     }
 
-    private void scanLayer(String text, int depth) {
+    /**
+     * Scans one decoded reading and decodes its own runs one layer deeper. What this reading found, its inner layers
+     * included, is merged into {@code best} per class (the most findings any reading of the run gave), so the four
+     * alignments and five views of one run never count one value twice.
+     */
+    private void scanView(String text, int depth, Map<DataClass, List<Finding>> best) {
+        if (stop) {
+            return;
+        }
         String normalised = Normaliser.normalise(text);
         if (normalised.length() > MAX_EXPANSION * text.length() + 64) {
             halt("NORMALISATION");
             return;
         }
-        findings.addAll(detectors.scan(normalised));
-        if (DetectorSet.overLimit(findings)) {
+        List<Finding> found = new ArrayList<>(detectors.scan(normalised));
+        if (DetectorSet.overLimit(found)) {
             halt("FINDING_LIMIT");
             return;
         }
         if (depth < MAX_DEPTH) {
+            int mark = findings.size();
             scan(normalised, depth + 1);
+            List<Finding> inner = findings.subList(mark, findings.size());
+            found.addAll(inner);
+            inner.clear();
+        }
+        Map<DataClass, List<Finding>> byClass = new EnumMap<>(DataClass.class);
+        for (Finding f : found) {
+            byClass.computeIfAbsent(f.dataClass(), c -> new ArrayList<>()).add(f);
+        }
+        byClass.forEach((c, list) -> {
+            if (list.size() > best.getOrDefault(c, List.of()).size()) {
+                best.put(c, list);
+            }
+        });
+        if (DetectorSet.overLimit(found)) {
+            halt("FINDING_LIMIT");
         }
     }
 
-    /**
-     * D-03: a run glued to a prefix ({@code -}, {@code /}, a URL path, a word) decodes misaligned. Retries the run without
-     * its leading {@code - _ + /}, each {@code /}-separated segment, and offsets 1 to 3; a retry counts only when it
-     * decodes to text or a file signature. At most six decodes per run character, so the scan stays linear.
-     *
-     * @return true when the whole run, less its prefix, decoded (a segment alone never exempts the run from the blob rule)
-     */
-    private boolean realign(String run, int depth) {
-        String stripped = stripLeading(run);
-        boolean covered = !stripped.equals(run) && retry(stripped, depth);
-        if (run.indexOf('/') >= 0) {
-            int from = 0;
-            for (int k = 0; k <= run.length() && !stop; k++) {
-                if (k == run.length() || run.charAt(k) == '/') {
-                    retry(stripLeading(run.substring(from, k)), depth);
-                    from = k + 1;
-                }
-            }
-        }
-        for (int offset = 1; offset <= 3 && !covered && !stop; offset++) {
-            if (stripped.length() - offset >= MIN_RUN) {
-                covered = retry(stripped.substring(offset), depth);
-            }
-        }
-        return covered;
-    }
-
-    private boolean retry(String candidate, int depth) {
-        if (candidate.length() < MIN_RUN || stop) {
-            return false;
-        }
-        byte[] bytes = decode(candidate);
-        if (bytes == null) {
-            return false;
-        }
-        boolean magic = fileMagic(bytes, candidate.length());
-        String text = magic ? null : text(bytes);
-        if (!magic && (text == null || !printable(text))) {
-            return false;
-        }
-        decoded += bytes.length;
+    /** Charges decoded bytes to the per-field budget; false (and a hard stop) when it is spent. */
+    private boolean charge(int bytes) {
+        decoded += bytes;
         if (decoded > MAX_DECODED) {
             halt("UNDECODABLE_BLOB");
-        } else if (magic) {
-            flag("EMBEDDED_FILE");
-        } else {
-            layer(text, depth);
+            return false;
         }
         return true;
     }
 
-    /** A soft reason: remembered, and the scan goes on so findings after it are still made (D-01). */
+    /**
+     * D-06: when several reasons occur, the most severe is kept: a terminating reason (a blob, a limit) outranks
+     * {@code EMBEDDED_FILE}. The scan goes on after a soft reason so findings after it are still made (D-01).
+     */
     private void flag(String r) {
-        if (reason == null) {
-            reason = r;
-        }
+        reason = worse(reason, r);
     }
 
     /** A hard reason: the scan stops. */
     private void halt(String r) {
-        reason = r;
+        reason = worse(reason, r);
         stop = true;
     }
 
-    /** Decoded bytes as text: strict UTF-8, UTF-16LE when every other byte is mostly NUL, or UTF-8 without NUL bytes. */
-    static String text(byte[] b) {
-        String strict = BodyInspector.strictUtf8(b, b.length);
-        return strict != null ? strict : recovered(b);
+    /** The more severe of two non-verdict reasons (null is none). */
+    static String worse(String a, String b) {
+        return severity(b) > severity(a) ? b : a;
     }
 
-    /** Text that is not strict UTF-8 only because of NUL bytes: UTF-16LE or UTF-8 once NUL is removed; else null. */
-    static String recovered(byte[] b) {
-        if (utf16le(b)) {
-            String s = new String(b, StandardCharsets.UTF_16LE);
-            if (s.indexOf('\uFFFD') < 0) {
-                return withoutNulChars(s);
-            }
+    private static int severity(String r) {
+        if (r == null) {
+            return 0;
         }
-        byte[] stripped = withoutNul(b);
-        return stripped.length == b.length || stripped.length == 0 ? null
-            : BodyInspector.strictUtf8(stripped, stripped.length);
-    }
-
-    private static boolean utf16le(byte[] b) {
-        if (b.length < 4 || b.length % 2 != 0) {
-            return false;
-        }
-        int zeros = 0;
-        for (int k = 1; k < b.length; k += 2) {
-            if (b[k] == 0) {
-                zeros++;
-            }
-        }
-        return zeros * 2 >= b.length / 2;
+        return switch (r) {
+            case "EMBEDDED_FILE" -> 1;
+            case "UNDECODABLE_BLOB" -> 2;
+            default -> 3;
+        };
     }
 
     private static byte[] withoutNul(byte[] b) {
@@ -292,38 +286,6 @@ final class Base64Layers {
             }
         }
         return out;
-    }
-
-    private static String withoutNulChars(String s) {
-        if (s.indexOf('\0') < 0) {
-            return s;
-        }
-        StringBuilder out = new StringBuilder(s.length());
-        for (int k = 0; k < s.length(); k++) {
-            if (s.charAt(k) != '\0') {
-                out.append(s.charAt(k));
-            }
-        }
-        return out.toString();
-    }
-
-    /** Text a person or a model would read: no control character other than tab and line ends. */
-    static boolean printable(String s) {
-        for (int k = 0; k < s.length(); k++) {
-            char c = s.charAt(k);
-            if ((c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c == 0x7f || c == '\uFFFD') {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static String stripLeading(String run) {
-        int k = 0;
-        while (k < run.length() && "-_+/".indexOf(run.charAt(k)) >= 0) {
-            k++;
-        }
-        return k == 0 ? run : run.substring(k);
     }
 
     /** Standard and URL-safe alphabets together; -1 for any other character. */

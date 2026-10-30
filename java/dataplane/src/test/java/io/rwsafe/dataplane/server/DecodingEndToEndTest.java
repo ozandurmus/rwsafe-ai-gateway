@@ -124,11 +124,20 @@ class DecodingEndToEndTest {
     void base64CloudKeyIsBlocked() throws Exception {
         String key = Synthetic.awsKey();
         IcapTestClient.Response r = once(API, BodyDecodingTest.utf8(
-            BodyDecodingTest.prompt("synthetic deploy " + BodyDecodingTest.b64(BodyDecodingTest.b64(key)))));
+            BodyDecodingTest.prompt("synthetic deploy " + BodyDecodingTest.b64(key))));
         assertTrue(r.httpHead().startsWith("HTTP/1.1 403"));
         assertTrue(r.httpHead().contains("X-RWSAFE-Reason: secret"));
         assertFalse(r.bodyText().contains(key));
         assertEquals(Verdict.BLOCK, awaitEvent().verdict());
+        // Double encoded: the key itself is a run inside the second layer, so it is also a third layer (recheck D-05);
+        // the request blocks and the event keeps the secret.
+        IcapTestClient.Response twice = once(API, BodyDecodingTest.utf8(
+            BodyDecodingTest.prompt("synthetic deploy " + BodyDecodingTest.b64(BodyDecodingTest.b64(key)))));
+        assertTrue(twice.httpHead().startsWith("HTTP/1.1 403"));
+        VerdictEvent e = awaitEvent();
+        assertEquals(Verdict.UNINSPECTABLE, e.verdict());
+        assertEquals("UNDECODABLE_BLOB", e.reason());
+        assertEquals(1, e.findings().get("SECRET"));
     }
 
     @Test
@@ -225,8 +234,11 @@ class DecodingEndToEndTest {
     @Test
     void responseWithAFindingBesideAFileOrWithABlobIsTerminated() throws Exception {
         String tckn = Synthetic.tckn(43);
+        // The third case is recheck D-06: an embedded file before the blob must not mask it.
         String[] contents = {"synthetic " + tckn + "\"},{\"type\":\"image\",\"data\":\""
-            + BodyDecodingTest.b64(BodyDecodingTest.png(400)), BodyDecodingTest.b64(BodyDecodingTest.random(300, 44))};
+            + BodyDecodingTest.b64(BodyDecodingTest.png(400)), BodyDecodingTest.b64(BodyDecodingTest.random(300, 44)),
+            BodyDecodingTest.b64(BodyDecodingTest.utf8("%PDF-1.4\n")) + "\"},{\"type\":\"text\",\"text\":\""
+                + BodyDecodingTest.b64(BodyDecodingTest.random(300, 45))};
         for (String content : contents) {
             byte[] body = BodyDecodingTest.utf8("{\"content\":[{\"type\":\"text\",\"text\":\"" + content + "\"}]}");
             Frames.Http request = Frames.fixture("claude/api/messages.http", "synthetic hi");

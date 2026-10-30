@@ -155,10 +155,9 @@ public final class BodyInspector {
                 String reason = layers.stops() ? layers.reason() : "FINDING_LIMIT";
                 return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, reason, all, false, null);
             }
-            if (blobReason == null) {
-                // D-01: an embedded file or blob is remembered and the rest of the body is still inspected and redacted.
-                blobReason = layers.reason();
-            }
+            // D-01: an embedded file or blob is remembered and the rest of the body is still inspected and redacted;
+            // recheck D-06: the most severe reason of all fields is kept.
+            blobReason = Base64Layers.worse(blobReason, layers.reason());
             if (found.isEmpty() && layers.findings().isEmpty()) {
                 continue;
             }

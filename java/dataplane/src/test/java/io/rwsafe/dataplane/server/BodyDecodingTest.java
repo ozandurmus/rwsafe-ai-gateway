@@ -377,6 +377,83 @@ class BodyDecodingTest {
         assertNull(inspect(JSON, utf8(prompt(b64(small)))).nonVerdict());
     }
 
+    // ---- PR 17 confirmation review ----
+
+    /** D-05 (1): NUL-padded UTF-8 and UTF-16BE layers are read through every view (the reviewer's cases). */
+    @Test
+    void nulPaddedAndUtf16BeLayersAreFound() {
+        String secret = "synthetic " + Synthetic.awsKey();
+        byte[][] layers = {
+            concat(new byte[30], utf8(secret)),
+            concat(new byte[7], utf8(secret)),
+            secret.getBytes(StandardCharsets.UTF_16BE),
+            concat(new byte[] {(byte) 0xff, 0}, secret.getBytes(StandardCharsets.UTF_16LE)),
+        };
+        for (int i = 0; i < layers.length; i++) {
+            assertTrue(has(inspect(JSON, utf8(prompt(b64(layers[i])))), DataClass.SECRET), "case " + i);
+        }
+    }
+
+    /** D-05 (2): a third layer is a blob whatever it decodes to, a control or invalid byte included. */
+    @Test
+    void aThirdLayerIsABlobWhateverItDecodesTo() {
+        String secret = "synthetic " + Synthetic.awsKey();
+        String[] values = {
+            b64(b64(b64(utf8("\u0001" + secret)))),
+            b64(b64(b64(concat(new byte[] {(byte) 0xff}, utf8(b64(secret)))))),
+            b64(b64(b64(random(12, 51)))),
+        };
+        for (String v : values) {
+            InspectionResult r = inspect(JSON, utf8(prompt(v)));
+            assertEquals(Verdict.UNINSPECTABLE, r.nonVerdict(), v.substring(0, 16));
+            assertEquals("UNDECODABLE_BLOB", r.reason());
+        }
+    }
+
+    /** D-06: an earlier embedded file never masks a later blob, in one field or across fields, in either order. */
+    @Test
+    void aBlobOutranksAnEmbeddedFile() {
+        String pdf = b64(utf8("%PDF-1.4\n"));
+        String blob = b64(random(300, 52));
+        String[] bodies = {
+            "{\"a\":\"" + pdf + "\",\"b\":\"" + blob + "\"}",
+            "{\"a\":\"" + blob + "\",\"b\":\"" + pdf + "\"}",
+            prompt(pdf + " " + blob),
+            prompt(pdf + " " + b64(b64(b64("synthetic " + Synthetic.awsKey())))),
+        };
+        for (String body : bodies) {
+            assertEquals("UNDECODABLE_BLOB", inspect(JSON, utf8(body)).reason(), body.substring(0, 20));
+        }
+    }
+
+    /** D-07: the reviewer's glued suffix and long prefixes. */
+    @Test
+    void gluedSuffixAndLongPrefixesAreFound() {
+        String enc = b64("synthetic " + Synthetic.awsKey());
+        for (String v : new String[] {enc + "-", enc + "_", "item-" + enc, "token_" + enc, enc + "ab"}) {
+            assertTrue(has(inspect(JSON, utf8(prompt(v))), DataClass.SECRET), v.substring(0, 6));
+        }
+    }
+
+    /** D-07: prefixes of 1 to 8 and suffixes of 0 to 3 characters, standard and URL-safe alphabets. */
+    @Test
+    void prefixAndSuffixMatrixInBothAlphabets() {
+        byte[] secret = utf8("synthetic " + Synthetic.awsKey());
+        String[] payloads = {Base64.getEncoder().encodeToString(secret),
+            Base64.getUrlEncoder().withoutPadding().encodeToString(secret)};
+        String[] prefixChars = {"Q+/a9Zk+", "Q-_a9Zk_"};
+        String[] suffixChars = {"+/a", "-_a"};
+        for (int a = 0; a < 2; a++) {
+            for (int p = 1; p <= 8; p++) {
+                for (int x = 0; x <= 3; x++) {
+                    String v = prefixChars[a].substring(0, p) + payloads[a] + suffixChars[a].substring(0, x);
+                    assertTrue(has(inspect(JSON, utf8(prompt(v))), DataClass.SECRET),
+                        "alphabet " + a + " prefix " + p + " suffix " + x);
+                }
+            }
+        }
+    }
+
     /** A PNG-signature byte array of {@code n} bytes (a synthetic image header, no real image). */
     static byte[] png(int n) {
         byte[] b = random(n, n);
