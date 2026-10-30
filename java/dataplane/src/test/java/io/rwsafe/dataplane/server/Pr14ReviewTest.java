@@ -252,6 +252,39 @@ class Pr14ReviewTest {
         }
     }
 
+    /** PR 14 recheck N-01: at shutdown with a spool, queued events go straight to disk without any HTTP attempt. */
+    @Test
+    void shutdownSpillsToSpoolWithoutNetworkAttempts() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        HttpServer http = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 4);
+        http.createContext("/internal/v1/verdict-events", ex -> {
+            requests.incrementAndGet();
+            ex.getRequestBody().readAllBytes();
+            ex.sendResponseHeaders(503, -1);
+            ex.close();
+        });
+        http.start();
+        try {
+            URI uri = URI.create("http://127.0.0.1:" + http.getAddress().getPort() + "/internal/v1/verdict-events");
+            Path spool = tmp.resolve("spool-shutdown");
+            BoundedEventQueue queue = new BoundedEventQueue(1000);
+            for (int i = 0; i < 450; i++) {
+                queue.emit(event("late-" + i));
+            }
+            EventShipper shipper = new EventShipper(queue, uri, spool, 1024 * 1024, Duration.ofMillis(20));
+            shipper.stop();
+            Thread t = new Thread(shipper);
+            t.start();
+            t.join(10_000);
+            assertFalse(t.isAlive());
+            assertEquals(0, queue.size());
+            assertEquals(0, requests.get(), "no HTTP attempt during the shutdown spill");
+            assertEquals(3, Files.readAllLines(spool.resolve("verdict-spool.jsonl")).size());
+        } finally {
+            http.stop(0);
+        }
+    }
+
     private static void waitFor(java.util.function.BooleanSupplier condition) throws InterruptedException {
         long deadline = System.currentTimeMillis() + 10_000;
         while (!condition.getAsBoolean()) {

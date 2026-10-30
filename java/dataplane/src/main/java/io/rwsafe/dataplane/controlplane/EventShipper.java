@@ -82,7 +82,10 @@ public final class EventShipper implements Runnable {
     public void run() {
         List<VerdictEvent> batch = new ArrayList<>(BATCH);
         while (running || queue.size() > 0) {
-            boolean spoolPending = client != null && spoolBytes.get() > 0 && !replayDue();
+            // On shutdown with a spool, queued batches go straight to disk: no replay and no HTTP wait (PR 14 recheck N-01).
+            boolean shuttingDownToSpool = !running && spoolDir != null;
+            boolean spoolPending = client != null
+                && (shuttingDownToSpool || (spoolBytes.get() > 0 && !replayDue()));
             batch.clear();
             if (queue.drainTo(batch, BATCH) == 0) {
                 if (running) {
@@ -97,7 +100,12 @@ public final class EventShipper implements Runnable {
             String json = VerdictEventJson.array(batch);
             if (!spoolPending && post(json)) {
                 shipped.addAndGet(batch.size());
-            } else if (!spoolAppend(json)) {
+            } else if (spoolAppend(json)) {
+                if (!spoolPending) {
+                    // The control plane just refused: wait the back-off before replaying what was spooled (N-01).
+                    nextReplayAtNanos = System.nanoTime() + Math.max(retryPause.toNanos() * 5, 1_000_000L);
+                }
+            } else {
                 hold(json, batch.size());
             }
         }
