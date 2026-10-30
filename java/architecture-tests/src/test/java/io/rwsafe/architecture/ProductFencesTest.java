@@ -5,6 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
 /** Applies {@link Fences} to the product modules (production classes only). */
@@ -23,15 +27,53 @@ class ProductFencesTest {
     static final String[] CONTROL_PLANE_MODULES = {
         "io.rwsafe.persistence..", "io.rwsafe.control..", "io.rwsafe.worker..", "io.rwsafe.cli..",
     };
+    /** Module name to package, and the modules each may depend on (ARCHITECTURE.md §9, the Gradle project graph). */
+    static final Map<String, String> MODULES = Map.of(
+        "platform", "io.rwsafe.platform..", "detect", "io.rwsafe.detect..", "policy", "io.rwsafe.policy..",
+        "dataplane", "io.rwsafe.dataplane..", "persistence", "io.rwsafe.persistence..", "control", "io.rwsafe.control..",
+        "worker", "io.rwsafe.worker..", "cli", "io.rwsafe.cli..");
+    static final Map<String, Set<String>> MODULE_GRAPH = Map.of(
+        "platform", Set.of(),
+        "detect", Set.of("platform"),
+        "policy", Set.of("platform", "detect"),
+        "dataplane", Set.of("platform", "detect", "policy"),
+        "persistence", Set.of("platform"),
+        "control", Set.of("platform", "detect", "policy", "persistence"),
+        "worker", Set.of("platform", "detect", "policy", "persistence"),
+        "cli", Set.of("platform"));
     static final String[] PRODUCT = {"io.rwsafe.."};
     static final String[] SERVER = {
         "io.rwsafe.platform..", "io.rwsafe.detect..", "io.rwsafe.policy..", "io.rwsafe.dataplane..",
         "io.rwsafe.persistence..", "io.rwsafe.control..", "io.rwsafe.worker..",
     };
 
+    /** Gradle module to root package (the module-graph names above, keyed by Gradle project). */
+    static final Map<String, String> MODULE_ROOT_PACKAGES = Map.of(
+        "platform-core", "io.rwsafe.platform", "detect", "io.rwsafe.detect", "policy", "io.rwsafe.policy",
+        "dataplane", "io.rwsafe.dataplane", "persistence", "io.rwsafe.persistence", "control", "io.rwsafe.control",
+        "worker", "io.rwsafe.worker", "cli", "io.rwsafe.cli");
+    /** Gradle module to its build directory, from the build (architecture-tests/build.gradle.kts). */
+    static final Map<String, String> MODULE_OUTPUTS = moduleOutputs();
+
+    /** Every class the product modules compile, whatever its package (PR 7 review D-05). */
     private static final JavaClasses PRODUCT_CLASSES = new ClassFileImporter()
         .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
-        .importPackages("io.rwsafe");
+        .withImportOption(location -> MODULE_OUTPUTS.values().stream().anyMatch(location::contains))
+        .importClasspath();
+
+    private static Map<String, String> moduleOutputs() {
+        String property = System.getProperty("rwsafe.moduleOutputs");
+        if (property == null || property.isBlank()) {
+            throw new IllegalStateException("rwsafe.moduleOutputs is not set: run the fences through Gradle");
+        }
+        Map<String, String> outputs = Arrays.stream(property.split(";"))
+            .map(pair -> pair.split("=", 2))
+            .collect(Collectors.toMap(pair -> pair[0], pair -> pair[1]));
+        if (!outputs.keySet().equals(MODULE_ROOT_PACKAGES.keySet())) {
+            throw new IllegalStateException("rwsafe.moduleOutputs does not name exactly the product modules");
+        }
+        return outputs;
+    }
 
     @Test
     void importSeesEveryModule() {
@@ -39,6 +81,16 @@ class ProductFencesTest {
             assertTrue(PRODUCT_CLASSES.stream().anyMatch(c -> c.getPackageName().startsWith(root)),
                 root + " has no class in the imported product classes, so no fence would see it");
         }
+    }
+
+    @Test
+    void classesLiveUnderTheirModuleRoot() {
+        Fences.classesLiveUnderTheirModuleRoot(MODULE_OUTPUTS, MODULE_ROOT_PACKAGES).check(PRODUCT_CLASSES);
+    }
+
+    @Test
+    void modulesFollowTheModuleGraph() {
+        Fences.moduleGraph(MODULES, MODULE_GRAPH).check(PRODUCT_CLASSES);
     }
 
     @Test
