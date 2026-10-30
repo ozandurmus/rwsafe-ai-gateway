@@ -21,6 +21,8 @@ to the "Decided" table. Chat answers in Turkish are quoted in the record; the qu
 
 | Id | Decision record | Date |
 |---|---|---|
+| Q-39 | `PO_DECISION_RECORD_2026_10_30_POLICY_SCOPE_AND_PLATFORM_RETIREMENT.md`: every rule version has a source scope (ANY or directory groups); no mandatory staging | 2026-10-30 |
+| Q-40 | `PO_DECISION_RECORD_2026_10_30_POLICY_SCOPE_AND_PLATFORM_RETIREMENT.md`: a security_admin alone retires a platform row, audited, history kept | 2026-10-30 |
 | Q-38 | `PO_DECISION_RECORD_2026_10_30_ADMIN_UI_LANGUAGE.md`: admin UI TR/EN selectable, Turkish by default | 2026-10-30 |
 | Q-7 | `PO_DECISION_RECORD_2026_10_30_REMAINING_OPEN_QUESTIONS.md`: class-based allowlist; customer data, banking secret, special-category to no external model | 2026-10-30 |
 | Q-8 | `PO_DECISION_RECORD_2026_10_30_REMAINING_OPEN_QUESTIONS.md`: (a) out of scope, tenant settings and compensating controls | 2026-10-30 |
