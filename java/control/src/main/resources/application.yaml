@@ -95,3 +95,9 @@ rwsafe:
   sample:
     events: 0
     seed: 1
+  # Redacted capture (Q-4 b, ADR-009 C3): off unless the deploy says `redacted`; the capture key is its own Secret.
+  capture:
+    mode: ${RWSAFE_CAPTURE_MODE:off}
+    key-dir: ${RWSAFE_CAPTURE_KEY_DIR:/run/secrets/rwsafe-capture-key}
+    retention: P90D
+    watermark-paths: ${RWSAFE_CAPTURE_WATERMARK_PATHS:${java.io.tmpdir}}

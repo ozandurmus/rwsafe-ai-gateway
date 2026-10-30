@@ -215,6 +215,51 @@ directory: bind a group to `privacy_officer` as to any other role.
 Every secret is a mounted file; none is a property value. Without the key file ingestion answers 503 and stores nothing;
 without the dictionary the masked role gets 503.
 
+## Redacted capture (Q-4 b)
+
+Off by default on both sides; metadata and verdicts flow in every mode. With capture on, a REDACT verdict event carries
+the text the engine already rewrote (class tokens, never the original bytes); a BLOCK, an ALLOW, a non-verdict and a
+stream abort carry none. The control plane stores it sealed only for a user with an acknowledgement of the current notice
+(SR-PRIV-10), below the disk watermark (SR-HOST-2), when its re-run of the Tier-1 detectors finds nothing (SR-PRIV-11),
+after the masking layers ran at persistence.
+
+| Side | Variable | Default | Meaning |
+|---|---|---|---|
+| data plane | `RWSAFE_CAPTURE_MODE` | unset (off) | exactly `redacted` turns capture on |
+| data plane | `RWSAFE_CAPTURE_MAX_BYTES` | `32768` | bound of one event's text (at most `65536`); the rest is cut and marked `truncated` |
+| control | `RWSAFE_CAPTURE_MODE` | `off` | exactly `redacted` stores content |
+| control | `RWSAFE_CAPTURE_KEY_DIR` | `/run/secrets/rwsafe-capture-key` | the capture-key Secret: `<key id>.key` files (base64 of 32 random bytes) and an `active` file naming the key new records use (one key needs no `active`) |
+| control | `RWSAFE_CAPTURE_WATERMARK_PATHS` | the JVM temporary directory | comma-separated paths on the database volume's filesystem, read every 30 s |
+
+A local key, generated and never committed:
+
+```bash
+mkdir -p java/build/dev/capture-key && head -c 32 /dev/urandom | base64 > java/build/dev/capture-key/cap-local.key
+RWSAFE_CAPTURE_MODE=redacted RWSAFE_CAPTURE_KEY_DIR="$PWD/java/build/dev/capture-key" ./java/gradlew -p java :control:runDev
+RWSAFE_CAPTURE_MODE=redacted RWSAFE_CONTROL_EVENTS_URL=http://127.0.0.1:8092/internal/v1/verdict-events \
+  ./java/gradlew -p java :dataplane:runIcap
+```
+
+Nothing is stored until the user has acknowledged the current notice (`POST /internal/v1/notice-acknowledgements`, the
+`RWSAFE_ENDUSER_*` values set). Health shows two components: `capture` (mode, key, stored records and why content was
+not stored, counted since start) and `capture-watermark` (UP below 75 % used; DEGRADED above 75 %: raw off; DOWN above
+85 % or with no reading for 5 minutes: redacted off). A tripped level resumes 5 points below its threshold. The data
+plane applies the same breaker to its spool: above 85 % it spools events without their text
+(`icap_capture_spool_stripped_total`).
+
+Reading one record: `security_admin` or `privacy_officer`, never the viewer or a masked session, with a reason code
+(`INCIDENT_INVESTIGATION`, `DSAR`, `LEGAL_HOLD_REVIEW`, `FALSE_POSITIVE_REVIEW`, `REGULATOR_REQUEST`) and a case id:
+
+```bash
+curl -b cookies -H "X-XSRF-TOKEN: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"reasonCode":"INCIDENT_INVESTIGATION","caseId":"CASE-0001"}' \
+  http://127.0.0.1:8080/api/v1/captures/<event id>/read
+```
+
+Every request, a refused one included, is a `capture_read` row and an audit-ledger row. Retention (90 days) and key
+shredding run at 00:20, 06:20, 12:20 and 18:20 Europe/Istanbul: rotate by adding a key and pointing `active` at it;
+removing the old key file shreds its records, and the next run deletes their rows with a `capture_deletion_receipt`.
+
 ## What the engine does not do yet
 
 The file pipeline (multipart, documents, archives, and files found inside a base64 layer, which are

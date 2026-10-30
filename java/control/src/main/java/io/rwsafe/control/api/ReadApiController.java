@@ -8,6 +8,7 @@ import io.rwsafe.control.api.Views.HealthView;
 import io.rwsafe.control.api.Views.OverviewView;
 import io.rwsafe.control.api.Views.PlatformsView;
 import io.rwsafe.control.api.Views.TrafficView;
+import io.rwsafe.control.capture.CaptureHealth;
 import io.rwsafe.control.config.ControlProperties;
 import io.rwsafe.control.policy.SnapshotSigner;
 import io.rwsafe.control.privacy.PrivacyKeys;
@@ -42,12 +43,14 @@ public class ReadApiController {
     private final Database database;
     private final PrivacyKeys keys;
     private final SnapshotSigner signer;
+    private final CaptureHealth capture;
     private final Clock clock;
 
-    public ReadApiController(Database database, PrivacyKeys keys, SnapshotSigner signer) {
+    public ReadApiController(Database database, PrivacyKeys keys, SnapshotSigner signer, CaptureHealth capture) {
         this.database = database;
         this.keys = keys;
         this.signer = signer;
+        this.capture = capture;
         this.clock = Clock.systemUTC();
     }
 
@@ -110,7 +113,7 @@ public class ReadApiController {
         boolean db = database.reachable();
         VerdictQueries.IngestStats stats = db ? database.verdictQueries().ingestStats(now.minus(Duration.ofMinutes(5)))
             : new VerdictQueries.IngestStats(0, null, 0);
-        List<ComponentView> components = List.of(
+        List<ComponentView> components = new java.util.ArrayList<>(List.of(
             new ComponentView("database", db ? "UP" : "DOWN", db ? "PostgreSQL answers" : "PostgreSQL does not answer"),
             new ComponentView("privacy-key", keys.keyAvailable() ? "UP" : "DOWN",
                 keys.keyAvailable() ? "pseudonymisation key loaded" : "key missing: ingestion is refused"),
@@ -119,7 +122,8 @@ public class ReadApiController {
             new ComponentView("ingestion", stats.eventsSince() > 0 ? "UP" : "UNKNOWN",
                 stats.eventsSince() + " events in the last 5 minutes"),
             snapshotFeed(db, now),
-            new ComponentView("dataplane", "UNKNOWN", "data-plane metrics are not implemented yet"));
+            new ComponentView("dataplane", "UNKNOWN", "data-plane metrics are not implemented yet")));
+        components.addAll(capture.components(db));
         return new HealthView(now, components, stats.eventsSince(), stats.totalEvents(), stats.latestReceivedAt());
     }
 

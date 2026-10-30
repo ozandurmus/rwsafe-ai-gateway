@@ -2,6 +2,7 @@ package io.rwsafe.control.config;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -11,15 +12,46 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties(prefix = "rwsafe")
 public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFeed, Privacy privacy, Identity identity,
-                                Policy policy, Sample sample) {
+                                Policy policy, Sample sample, Capture capture) {
 
     public ControlProperties {
+        capture = capture == null ? new Capture(null, null, null, null) : capture;
         captureSink = captureSink == null ? new CaptureSink(8092, "127.0.0.1") : captureSink;
         snapshotFeed = snapshotFeed == null ? new SnapshotFeed(8091, "127.0.0.1") : snapshotFeed;
         privacy = privacy == null ? new Privacy(null, null) : privacy;
         identity = identity == null ? new Identity(null, null, false) : identity;
         policy = policy == null ? new Policy(null, null, null, null, null) : policy;
         sample = sample == null ? new Sample(0, 1) : sample;
+    }
+
+    /**
+     * Redacted capture (PO decisions Q-3, Q-4 b, Q-5; ADR-009 C3).
+     *
+     * @param mode           {@code redacted} stores the redacted text of REDACT verdicts for users with a current notice
+     *                       acknowledgement; anything else (the default {@code off}) stores metadata and verdicts only
+     * @param keyDir         the mounted capture-key Secret: one {@code <key id>.key} file per key (base64 of 32 bytes) and
+     *                       an {@code active} file naming the key new records are sealed under; never the privacy key
+     * @param retention      how long a record lives, at most 90 days (Q-5)
+     * @param watermarkPaths paths on the filesystems the breaker watches (the database volume's filesystem; on k3s
+     *                       local-path any path of the node's root filesystem)
+     */
+    public record Capture(String mode, Path keyDir, Duration retention, List<Path> watermarkPaths) {
+
+        public static final Duration MAX_RETENTION = Duration.ofDays(90);
+
+        public Capture {
+            mode = mode == null ? "off" : mode;
+            retention = retention == null ? MAX_RETENTION : retention;
+            watermarkPaths = watermarkPaths == null || watermarkPaths.isEmpty()
+                ? List.of(Path.of(System.getProperty("java.io.tmpdir"))) : List.copyOf(watermarkPaths);
+            if (retention.isNegative() || retention.isZero() || retention.compareTo(MAX_RETENTION) > 0) {
+                throw new IllegalArgumentException("rwsafe.capture.retention is between 1 s and 90 days (Q-5)");
+            }
+        }
+
+        public boolean redacted() {
+            return "redacted".equals(mode);
+        }
     }
 
     /** The internal connector (PORTS_AND_RESOURCES: 8092 capture sink): ingestion only, ClusterIP only. */

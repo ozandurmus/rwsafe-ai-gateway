@@ -43,6 +43,19 @@ public final class PrometheusText {
         return s.toString();
     }
 
+    /**
+     * Redacted capture (Q-4 b): events whose content went straight to the control plane, events spooled without it
+     * because the spool was above the redacted watermark (SR-HOST-2), and whether the spool may hold content now.
+     * Counts only, fixed names, no label from content.
+     */
+    public static String capture(long shipped, long stripped, boolean spoolAllowsRedacted) {
+        StringBuilder s = new StringBuilder(256);
+        counter(s, "icap_capture_shipped_total", shipped);
+        counter(s, "icap_capture_spool_stripped_total", stripped);
+        gauge(s, "icap_capture_spool_allowed", spoolAllowsRedacted ? 1 : 0);
+        return s.toString();
+    }
+
     private static void gauge(StringBuilder s, String name, long v) {
         s.append("# TYPE ").append(name).append(" gauge\n").append(name).append(' ').append(v).append('\n');
     }

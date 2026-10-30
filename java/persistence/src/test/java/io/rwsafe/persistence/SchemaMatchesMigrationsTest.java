@@ -50,4 +50,26 @@ class SchemaMatchesMigrationsTest {
             assertEquals(0, r.getInt(1), "ADR-009: no body, raw claim or raw address column");
         }
     }
+
+    /** V6, AGENTS.md 4.13: the capture table's only text columns are a pseudonym, a key id and a rule-set version. */
+    @Test
+    void capturedContentIsStoredAsCiphertextOnly() throws Exception {
+        DataSource ds = TestDatabase.fresh();
+        Database.migrateAndOpen(ds);
+        java.util.Set<String> text = new java.util.TreeSet<>();
+        try (Connection c = ds.getConnection(); PreparedStatement q = c.prepareStatement(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'redacted_capture'");
+             ResultSet r = q.executeQuery()) {
+            while (r.next()) {
+                String type = r.getString(2);
+                if (type.equals("text") || type.contains("character")) {
+                    text.add(r.getString(1));
+                }
+                if (r.getString(1).equals("ciphertext")) {
+                    assertEquals("bytea", type);
+                }
+            }
+        }
+        assertEquals(java.util.Set.of("key_id", "mask_rule_set", "user_pseudonym"), text);
+    }
 }

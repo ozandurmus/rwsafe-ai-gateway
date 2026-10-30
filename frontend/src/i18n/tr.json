@@ -142,6 +142,8 @@
   "health.component.ingestion": "Olay alımı",
   "health.component.dataplane": "Veri düzlemi",
   "health.component.snapshot-feed": "Politika anlık görüntü akışı",
+  "health.component.capture": "Maskelenmiş içerik kaydı",
+  "health.component.capture-watermark": "Disk doluluk eşiği",
   "policies.title": "Politikalar",
   "policies.snapshot": "Etkin anlık görüntü v{version} · {id} · yayım {time} · imza anahtarı {keyId}",
   "policies.noSnapshot": "Henüz anlık görüntü yayımlanmadı: veri düzlemi henüz istemedi.",

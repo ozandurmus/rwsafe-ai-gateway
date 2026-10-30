@@ -76,6 +76,12 @@ public class SecurityConfig {
                     .access((auth, context) -> new AuthorizationDecision(
                         (hasRole(auth.get(), Roles.SECURITY_ADMIN) || hasRole(auth.get(), Roles.PRIVACY_OFFICER))
                             && !hasRole(auth.get(), Roles.REPLAY_VIEWER)))
+                // A C3 read (ADR-009 §5): security_admin or privacy_officer with a reason, never a masked session or
+                // the viewer; the controller ledgers it.
+                .requestMatchers(HttpMethod.POST, "/api/v1/captures/*/read")
+                    .access((auth, context) -> new AuthorizationDecision(
+                        (hasRole(auth.get(), Roles.SECURITY_ADMIN) || hasRole(auth.get(), Roles.PRIVACY_OFFICER))
+                            && !hasRole(auth.get(), Roles.REPLAY_VIEWER)))
                 // Mutations: security_admin, and never a masked session, whatever else it holds (PR 12 review D-02).
                 .requestMatchers("/api/**").access((auth, context) -> new AuthorizationDecision(
                     hasRole(auth.get(), Roles.SECURITY_ADMIN) && !hasRole(auth.get(), Roles.REPLAY_VIEWER)))

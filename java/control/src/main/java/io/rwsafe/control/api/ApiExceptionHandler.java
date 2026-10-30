@@ -38,6 +38,11 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(e.status()).body(ApiError.of(e.reason(), e.getMessage()));
     }
 
+    @ExceptionHandler(io.rwsafe.control.capture.CaptureReadController.CaptureRefusal.class)
+    ResponseEntity<ApiError> capture(io.rwsafe.control.capture.CaptureReadController.CaptureRefusal e) {
+        return ResponseEntity.status(e.status()).body(ApiError.of(e.reason(), e.getMessage()));
+    }
+
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     ResponseEntity<ApiError> typeMismatch(MethodArgumentTypeMismatchException e) {
         return ResponseEntity.badRequest().body(ApiError.of("INVALID_PARAMETER",

@@ -140,6 +140,43 @@ final class Schema {
     static final Field<String> NA_KEY_ID = DSL.field(DSL.name("notice_acknowledgement", "pseudonym_key_id"),
         SQLDataType.CLOB);
 
+    static final Table<Record> CAPTURE = DSL.table(DSL.name("redacted_capture"));
+    static final Field<UUID> CAP_EVENT_ID = DSL.field(DSL.name("redacted_capture", "event_id"), SQLDataType.UUID);
+    static final Field<Instant> CAP_CAPTURED_AT = DSL.field(DSL.name("redacted_capture", "captured_at"),
+        SQLDataType.INSTANT);
+    static final Field<Instant> CAP_EXPIRES_AT = DSL.field(DSL.name("redacted_capture", "expires_at"),
+        SQLDataType.INSTANT);
+    static final Field<String> CAP_USER = DSL.field(DSL.name("redacted_capture", "user_pseudonym"), SQLDataType.CLOB);
+    static final Field<String> CAP_KEY_ID = DSL.field(DSL.name("redacted_capture", "key_id"), SQLDataType.CLOB);
+    static final Field<byte[]> CAP_WRAPPED_KEY = DSL.field(DSL.name("redacted_capture", "wrapped_key"),
+        SQLDataType.BLOB);
+    static final Field<byte[]> CAP_NONCE = DSL.field(DSL.name("redacted_capture", "nonce"), SQLDataType.BLOB);
+    static final Field<byte[]> CAP_CIPHERTEXT = DSL.field(DSL.name("redacted_capture", "ciphertext"), SQLDataType.BLOB);
+    static final Field<Integer> CAP_PLAIN_BYTES = DSL.field(DSL.name("redacted_capture", "plain_bytes"),
+        SQLDataType.INTEGER);
+    static final Field<Boolean> CAP_TRUNCATED = DSL.field(DSL.name("redacted_capture", "truncated"),
+        SQLDataType.BOOLEAN);
+    static final Field<String> CAP_MASK_RULE_SET = DSL.field(DSL.name("redacted_capture", "mask_rule_set"),
+        SQLDataType.CLOB);
+    static final Field<Boolean> CAP_LEGAL_HOLD = DSL.field(DSL.name("redacted_capture", "legal_hold"),
+        SQLDataType.BOOLEAN);
+
+    static final Table<Record> CAPTURE_READ = DSL.table(DSL.name("capture_read"));
+    static final Field<Long> CR_ID = DSL.field(DSL.name("capture_read", "read_id"), SQLDataType.BIGINT);
+    static final Field<UUID> CR_EVENT_ID = DSL.field(DSL.name("capture_read", "event_id"), SQLDataType.UUID);
+    static final Field<String> CR_ACTOR = DSL.field(DSL.name("capture_read", "actor_fingerprint"), SQLDataType.CLOB);
+    static final Field<String> CR_REASON = DSL.field(DSL.name("capture_read", "reason_code"), SQLDataType.CLOB);
+    static final Field<String> CR_CASE = DSL.field(DSL.name("capture_read", "case_id"), SQLDataType.CLOB);
+    static final Field<String> CR_OUTCOME = DSL.field(DSL.name("capture_read", "outcome"), SQLDataType.CLOB);
+
+    static final Table<Record> CAPTURE_RECEIPT = DSL.table(DSL.name("capture_deletion_receipt"));
+    static final Field<String> RCPT_REASON = DSL.field(DSL.name("capture_deletion_receipt", "reason"),
+        SQLDataType.CLOB);
+    static final Field<String> RCPT_KEY_ID = DSL.field(DSL.name("capture_deletion_receipt", "key_id"),
+        SQLDataType.CLOB);
+    static final Field<UUID[]> RCPT_EVENT_IDS = DSL.field(DSL.name("capture_deletion_receipt", "event_ids"),
+        SQLDataType.UUID.array());
+
     static final Table<Record> AUDIT_EVENT = DSL.table(DSL.name("audit_event"));
     static final Field<String> AUDIT_ACTOR = DSL.field(DSL.name("audit_event", "actor_fingerprint"), SQLDataType.CLOB);
     static final Field<String> AUDIT_ACTION = DSL.field(DSL.name("audit_event", "action_id"), SQLDataType.CLOB);

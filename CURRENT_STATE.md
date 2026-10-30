@@ -229,6 +229,37 @@ Nothing applied; build and apply commands in `DEPLOY_AND_SHARED_HOST_RUNBOOK.md`
   job, the `RWSAFE_ENDUSER_*` ConfigMap contract in `deploy/rwsafe/contracts`, a call site for the coaching page, and
   the data plane reasons `PLATFORM_NOT_ALLOWED`, `VENDOR_INSTRUMENT_MISSING` and `PERSONAL_ACCOUNT` (their pages exist).
 
+## Done (redacted capture, branch `feature/redacted-capture`)
+
+ROADMAP "Capture in redacted mode (Q-4 b)", acceptance SR-PRIV-10, SR-PRIV-11, SR-HOST-2. Off by default on both sides
+(`RWSAFE_CAPTURE_MODE=redacted` turns it on); `docs/operations/LOCAL_RUN.md` "Redacted capture".
+
+- Data plane: a REDACT verdict event (REQMOD and whole-body RESPMOD) carries the body the engine already rewrote
+  (`CapturedText`: the redaction's array wrapped on the request thread, decoded and bounded to 32 KiB by default, at
+  most 64 KiB, on the shipper thread); BLOCK, ALLOW, non-verdicts and stream aborts carry none. Same queue and spool;
+  posted arrays are cut to 512 Ki characters (under the 2 MiB ingestion cap); the spool keeps the text only below the
+  Q-3 redacted watermark of its filesystem, otherwise it spools metadata only and counts it (Prometheus
+  `icap_capture_*`). The `capture` object is written only when present, so other events keep the earlier field set.
+- Shared breaker `platform.capacity.WatermarkBreaker`: raw off at 75 %, redacted off at 85 %, resume 5 points lower
+  (hysteresis is this lane's choice), no reading for 5 minutes trips it.
+- Control plane `control.capture`: the sink stores content only for a REDACT verdict of a user with an acknowledgement
+  of the current notice (`NoticeAcknowledgementService.contentCaptureAllowed`, PR 22), below the database volume's
+  watermark (read every 30 s), when no Tier-1 detector hits the text (raw and normalised), after the masking layers ran
+  at persistence; everything else is dropped with a counted reason while metadata and verdicts are stored. Envelope
+  encryption: a per-record AES-256-GCM data key wrapped by the capture key (its own mounted Secret, rotation by an
+  `active` file, re-read every 5 minutes), event id as associated data. Retention 90 days and key shredding in the
+  protected windows, with receipts. Health shows `capture` and `capture-watermark`.
+- Migration V6 (`redacted_capture` ciphertext only, immutable except the legal hold, deletes ledgered; `capture_read`
+  and `capture_deletion_receipt` append-only and ledgered; at most 90 days by a check).
+- Read route `POST /api/v1/captures/{eventId}/read`: `security_admin` or `privacy_officer` with a reason code and a case
+  id; every request ledgered before anything opens; viewer, masked role and a masked dual session get 403; the text is
+  framed inert; the masked projection withholds it. A focused test proves the masked role and viewer reach no content
+  and no log line carries it (the Playwright leak probe is not on `main`).
+- Open: deploy wiring (the capture-key Secret, `RWSAFE_CAPTURE_*` in the ConfigMaps and contracts, a watermark path on
+  the database volume's filesystem); legal-hold API; SIEM deletion events; the screen that opens a record; masking
+  layers 4 (Turkish names) and 5 (free-text heuristics) before production capture (`TextMasker` is still
+  `rwmask-v1-slice1`); persisted skip counters (they restart at zero).
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
@@ -240,7 +271,7 @@ neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeSc
 later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules, the PO's
 confirmation of the orchestrator's Q-41 decision (withdrawal of a group scope under two approvals), a server-side user
 settings store for the UI language, the
-ratified decision record that mirrors the seed fixture, C3 capture store, the Incidents, Identities and roles and
+ratified decision record that mirrors the seed fixture, the C4 raw capture and its grants, the Incidents, Identities and roles and
 Administration screens, Playwright masked-role leak probe, the cluster PostgreSQL Job); the
 Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with them); Trivy image scanning and SBOM (with
 the first image, ship pipeline).
