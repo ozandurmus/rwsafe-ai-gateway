@@ -61,7 +61,13 @@ export interface TrafficPage {
 
 export interface Health {
   checkedAt: string;
-  components: { component: string; state: 'UP' | 'DOWN' | 'DEGRADED' | 'UNKNOWN'; detail: string }[];
+  components: {
+    component: string;
+    state: 'UP' | 'DOWN' | 'DEGRADED' | 'UNKNOWN';
+    detail: string;
+    /** Counts and 0/1 conditions under fixed keys (PR 28 review D-03); absent from an older server. */
+    counts?: Record<string, number>;
+  }[];
   eventsLastFiveMinutes: number;
   totalEvents: number;
   latestEventAt: string | null;
@@ -164,8 +170,10 @@ export interface Simulation {
 }
 
 /**
- * The reason codes a captured-content read takes (RAW_CONTENT_ACCESS §3, the server's `CaptureReadController.REASONS`;
- * `CaptureReasonCodesUiTest` fails when this list and the server's differ). `DSAR` is the privacy officer's alone.
+ * The reason codes a captured-content read takes, in display order (RAW_CONTENT_ACCESS §3, the server's
+ * `CaptureReadController.REASONS`), and which reader role may give which (ADR-009 §5, PO decision on the PR 28 review
+ * Q-1: incident reasons for the security administrator, DSAR for the privacy officer; both roles give both sets).
+ * `CaptureReasonCodesUiTest` fails when these and the server's differ.
  */
 export const CAPTURE_REASON_CODES = [
   'INCIDENT_INVESTIGATION',
@@ -176,8 +184,35 @@ export const CAPTURE_REASON_CODES = [
 ] as const;
 export type CaptureReasonCode = (typeof CAPTURE_REASON_CODES)[number];
 
-/** A case id as the server takes it: 3 to 64 letters, digits, `_` or `-` (a reference, never a value). */
-export const CASE_ID_PATTERN = /^[A-Za-z0-9_-]{3,64}$/;
+export const CAPTURE_REASONS_BY_ROLE: Record<'security_admin' | 'privacy_officer', readonly CaptureReasonCode[]> = {
+  security_admin: ['INCIDENT_INVESTIGATION', 'FALSE_POSITIVE_REVIEW', 'LEGAL_HOLD_REVIEW', 'REGULATOR_REQUEST'],
+  privacy_officer: ['DSAR'],
+};
+
+/** The longest digit run, joined across one `-`, `_`, `.` or space between digits (the server's IdentifierCheck). */
+export function longestDigitRun(value: string): number {
+  let run = 0;
+  let longest = 0;
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charAt(i);
+    if (c >= '0' && c <= '9') {
+      run++;
+      longest = Math.max(longest, run);
+    } else if (!(' -._'.includes(c) && /[0-9]/.test(value.charAt(i - 1)) && /[0-9]/.test(value.charAt(i + 1)))) {
+      run = 0;
+    }
+  }
+  return longest;
+}
+
+/**
+ * A case id's shape as the server checks it (PR 28 review Q-2, D-01): 3 to 64 letters, digits, `_` or `-`, at least
+ * one letter, and no run of six or more digits even across a separator. The server also runs its detectors and the
+ * estate check, which the browser cannot; its refusal is shown as it comes.
+ */
+export function caseIdAcceptable(value: string): boolean {
+  return /^[A-Za-z0-9_-]{3,64}$/.test(value) && /[A-Za-z]/.test(value) && longestDigitRun(value) < 6;
+}
 
 export interface CaptureReadRequest {
   reasonCode: CaptureReasonCode;

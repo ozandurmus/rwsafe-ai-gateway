@@ -79,7 +79,11 @@ export function NoticePage() {
                 {data.title}
               </Typography>
               {data.sections === null ? (
-                <Alert severity="info">{me?.masked ? t('notice.sectionsMasked') : t('notice.sectionsNone')}</Alert>
+                // PR 28 review D-04: an incomplete notice has no text for any role; only a complete one is withheld
+                // from the masked view.
+                <Alert severity="info">
+                  {!data.complete || !me?.masked ? t('notice.sectionsNone') : t('notice.sectionsMasked')}
+                </Alert>
               ) : (
                 <Box display="grid" gap={1.5} lang="tr">
                   {data.sections.map((s, i) => (

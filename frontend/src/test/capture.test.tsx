@@ -68,13 +68,13 @@ describe('captured content reader', () => {
     await userEvent.click(screen.getByRole('option', { name: 'Güvenlik olayı incelemesi' }));
     const proceed = screen.getByRole('button', { name: 'Devam' });
     expect(proceed).toBeDisabled();
-    await userEvent.type(screen.getByLabelText(/Dosya numarası/), 'INC-2026-0042');
+    await userEvent.type(screen.getByLabelText(/Dosya numarası/), 'INC-A-0042');
     await userEvent.click(proceed);
 
     // The confirmation step is on the page; nothing has been read yet.
     const confirm = await screen.findByRole('alert');
     expect(confirm).toHaveTextContent('Güvenlik olayı incelemesi');
-    expect(confirm).toHaveTextContent('INC-2026-0042');
+    expect(confirm).toHaveTextContent('INC-A-0042');
     expect(confirm).toHaveTextContent('kayda geçer');
     expect(s.calls.some((c) => c.method === 'POST')).toBe(false);
     await userEvent.click(within(confirm).getByRole('button', { name: 'Evet, aç' }));
@@ -84,7 +84,7 @@ describe('captured content reader', () => {
     expect(post?.url.pathname).toBe(`/api/v1/captures/${SYNTHETIC_EVENT.eventId}/read`);
     expect(JSON.parse(String(post?.init.body))).toEqual({
       reasonCode: 'INCIDENT_INVESTIGATION',
-      caseId: 'INC-2026-0042',
+      caseId: 'INC-A-0042',
     });
     expect(text.textContent).toBe(SYNTHETIC_TEXT);
     expect(text.querySelector('b')).toBeNull();
@@ -98,12 +98,44 @@ describe('captured content reader', () => {
     expect(screen.getByRole('button', { name: 'İçeriği aç' })).toBeInTheDocument();
   });
 
-  it('offers DSAR to the privacy officer', async () => {
+  it('offers the privacy officer DSAR only, and a person holding both roles both sets (PR 28 Q-1)', async () => {
     server(user(['privacy_officer']));
+    const { unmount } = renderApp(EVENT_PATH);
+    await userEvent.click(await screen.findByRole('button', { name: 'İçeriği aç' }));
+    await userEvent.click(screen.getByRole('combobox', { name: /Gerekçe/ }));
+    expect((await screen.findAllByRole('option')).map((o) => o.textContent)).toEqual([
+      'Kişinin kendi verisine erişim başvurusu',
+    ]);
+    await userEvent.click(screen.getByRole('option', { name: 'Kişinin kendi verisine erişim başvurusu' }));
+    expect(screen.getByRole('combobox', { name: /Gerekçe/ })).toHaveTextContent('Kişinin kendi verisine erişim başvurusu');
+    unmount();
+    vi.unstubAllGlobals();
+
+    server(user(['security_admin', 'privacy_officer']));
     renderApp(EVENT_PATH);
     await userEvent.click(await screen.findByRole('button', { name: 'İçeriği aç' }));
-    await chooseReason('Kişinin kendi verisine erişim başvurusu');
-    expect(screen.getByRole('combobox', { name: /Gerekçe/ })).toHaveTextContent('Kişinin kendi verisine erişim başvurusu');
+    await userEvent.click(screen.getByRole('combobox', { name: /Gerekçe/ }));
+    expect(await screen.findAllByRole('option')).toHaveLength(CAPTURE_REASON_CODES.length);
+  });
+
+  it('keeps nothing for the browser to remember, and forgets the reason and case on close (PR 28 D-02)', async () => {
+    server(user(['security_admin']));
+    renderApp(EVENT_PATH);
+    await userEvent.click(await screen.findByRole('button', { name: 'İçeriği aç' }));
+    const form = screen.getByRole('form', { name: 'İçeriği neden açtığınız' });
+    expect(form).toHaveAttribute('autocomplete', 'off');
+    const field = screen.getByLabelText(/Dosya numarası/);
+    expect(field).toHaveAttribute('autocomplete', 'off');
+    expect(field).toHaveAttribute('spellcheck', 'false');
+    expect(field).not.toHaveAttribute('name');
+    await chooseReason('Güvenlik olayı incelemesi');
+    await userEvent.type(field, 'INC-7');
+    await userEvent.click(screen.getByRole('button', { name: 'Vazgeç' }));
+    await userEvent.click(screen.getByRole('button', { name: 'İçeriği aç' }));
+    expect(screen.getByLabelText(/Dosya numarası/)).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Devam' })).toBeDisabled();
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
   });
 
   it('goes back from the confirmation without reading', async () => {
@@ -124,10 +156,38 @@ describe('captured content reader', () => {
     renderApp(EVENT_PATH);
     await userEvent.click(await screen.findByRole('button', { name: 'İçeriği aç' }));
     await chooseReason('Güvenlik olayı incelemesi');
-    await userEvent.type(screen.getByLabelText(/Dosya numarası/), 'synthetic person name');
-    expect(screen.getByText('3 ile 64 karakter arası harf, rakam, alt çizgi veya tire kullanın')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Devam' })).toBeDisabled();
+    const field = screen.getByLabelText(/Dosya numarası/);
+    // A space, no letter, six digits in a row, six digits split by separators (PR 28 Q-2, D-01).
+    for (const refused of ['synthetic person name', '12345', 'REF123456', 'INC-2026-0042', 'INC-12-34-56']) {
+      await userEvent.clear(field);
+      await userEvent.type(field, refused);
+      expect(screen.getByText(/en az bir harf olsun, arka arkaya altı rakam olmasın/), refused).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Devam' }), refused).toBeDisabled();
+    }
+    await userEvent.clear(field);
+    await userEvent.type(field, 'INC-2026-A42');
+    expect(screen.getByRole('button', { name: 'Devam' })).toBeEnabled();
     expect(s.calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it("forgets a case id the server refused and does not show it again", async () => {
+    server(user(['security_admin']), SYNTHETIC_EVENT, () => ({
+      status: 400,
+      body: {
+        reason: 'CASE_ID_REFUSED',
+        message: 'A case id carries no identifier; the request was recorded.',
+      },
+    }));
+    renderApp(EVENT_PATH);
+    await userEvent.click(await screen.findByRole('button', { name: 'İçeriği aç' }));
+    await chooseReason('Güvenlik olayı incelemesi');
+    await userEvent.type(screen.getByLabelText(/Dosya numarası/), 'SYNTHETIC-TERM');
+    await userEvent.click(screen.getByRole('button', { name: 'Devam' }));
+    await userEvent.click(within(await screen.findByRole('alert')).getByRole('button', { name: 'Evet, aç' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Dosya numarası kabul edilmedi'));
+    expect(screen.getByRole('alert')).toHaveTextContent('CASE_ID_REFUSED');
+    expect(screen.getByLabelText(/Dosya numarası/)).toHaveValue('');
+    expect(document.body).not.toHaveTextContent('SYNTHETIC-TERM');
   });
 
   it("shows the server's refusal with its reason and returns to the form", async () => {

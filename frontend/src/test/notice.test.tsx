@@ -93,6 +93,19 @@ describe('notice screen', () => {
     expect(screen.getByText('Gösterilecek metin yok: metin eksik.')).toBeInTheDocument();
   });
 
+  it('says the notice is incomplete in the masked view too (PR 28 D-04)', async () => {
+    fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: masked, headers: { 'X-RWSAFE-Masked': 'true' } }),
+      'GET /api/v1/notice': () => ({
+        status: 200,
+        body: { ...NOTICE, currentVersion: null, complete: false, missingParameters: ['dpo_contact'], sections: null },
+      }),
+    });
+    renderApp('/notice');
+    expect(await screen.findByText('Gösterilecek metin yok: metin eksik.')).toBeInTheDocument();
+    expect(screen.queryByText(/Metnin kendisi maskeli görünümde gösterilmez/)).toBeNull();
+  });
+
   it('looks up acknowledgements by pseudonym only and never sends anything else', async () => {
     const s = fakeServer({
       'GET /api/v1/auth/me': () => ({ status: 200, body: viewer }),

@@ -1,9 +1,11 @@
 import { Alert, Box, Button, Card, CardContent, MenuItem, TextField, Typography } from '@mui/material';
 import { useState } from 'react';
 import {
+  ApiError,
+  CAPTURE_REASONS_BY_ROLE,
   CAPTURE_REASON_CODES,
-  CASE_ID_PATTERN,
   api,
+  caseIdAcceptable,
   type CaptureReasonCode,
   type CaptureView,
   type Me,
@@ -22,9 +24,18 @@ export function canReadCapture(me: Me | null): boolean {
   return me.roles.includes('security_admin') || me.roles.includes('privacy_officer');
 }
 
-/** The reason codes this user may choose: DSAR is the privacy officer's alone. */
+/**
+ * The reason codes this user may choose (PR 28 review Q-1): the incident reasons for a security administrator, DSAR for
+ * a privacy officer, both sets for a person holding both roles; in the server's display order.
+ */
 export function captureReasonsFor(me: Me): CaptureReasonCode[] {
-  return CAPTURE_REASON_CODES.filter((c) => c !== 'DSAR' || me.roles.includes('privacy_officer'));
+  const allowed = new Set<CaptureReasonCode>();
+  for (const role of ['security_admin', 'privacy_officer'] as const) {
+    if (me.roles.includes(role)) {
+      CAPTURE_REASONS_BY_ROLE[role].forEach((c) => allowed.add(c));
+    }
+  }
+  return CAPTURE_REASON_CODES.filter((c) => allowed.has(c));
 }
 
 type Step = 'closed' | 'form' | 'confirm' | 'shown';
@@ -44,8 +55,8 @@ export function CaptureReader({ me, eventId }: { me: Me; eventId: string }) {
   const [error, setError] = useState<unknown>(null);
   const [view, setView] = useState<CaptureView | null>(null);
   const trimmedCase = caseId.trim();
-  const caseValid = CASE_ID_PATTERN.test(trimmedCase);
-  const valid = reasonCode !== '' && caseValid;
+  const caseValid = caseIdAcceptable(trimmedCase);
+  const valid = reasonCode !== '' && reasons.includes(reasonCode) && caseValid;
 
   async function read() {
     if (reasonCode === '') {
@@ -58,6 +69,10 @@ export function CaptureReader({ me, eventId }: { me: Me; eventId: string }) {
       setStep('shown');
     } catch (e) {
       setError(e);
+      if (e instanceof ApiError && e.reason === 'CASE_ID_REFUSED') {
+        // The server's refusal does not repeat the value; the screen does not keep it either.
+        setCaseId('');
+      }
       setStep('form');
     } finally {
       setBusy(false);
@@ -67,7 +82,14 @@ export function CaptureReader({ me, eventId }: { me: Me; eventId: string }) {
   function close() {
     setView(null);
     setError(null);
+    setReasonCode('');
+    setCaseId('');
     setStep('closed');
+  }
+
+  // The caller checks too; the reader never renders for a session the server would refuse (PR 28 review D-02).
+  if (!canReadCapture(me)) {
+    return null;
   }
 
   return (
@@ -92,6 +114,7 @@ export function CaptureReader({ me, eventId }: { me: Me; eventId: string }) {
             display="grid"
             gap={1.5}
             aria-label={t('capture.formTitle')}
+            autoComplete="off"
             onSubmit={(e) => {
               e.preventDefault();
               if (valid) {
@@ -123,7 +146,7 @@ export function CaptureReader({ me, eventId }: { me: Me; eventId: string }) {
               label={t('capture.caseLabel')}
               value={caseId}
               disabled={step === 'confirm' || busy}
-              inputProps={{ maxLength: 64 }}
+              inputProps={{ maxLength: 64, spellCheck: false, autoComplete: 'off', autoCapitalize: 'off' }}
               onChange={(e) => setCaseId(e.target.value)}
               error={trimmedCase !== '' && !caseValid}
               helperText={trimmedCase !== '' && !caseValid ? t('capture.caseInvalid') : t('capture.caseHelp')}

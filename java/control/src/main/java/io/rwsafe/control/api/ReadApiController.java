@@ -138,7 +138,7 @@ public class ReadApiController {
     /** SIEM export: off, or per destination delivered counts, queue depth and the latest failure class. */
     private ComponentView siem() {
         SiemExportService.Health h = siem.health();
-        return new ComponentView("siem", h.state(), h.detail());
+        return new ComponentView("siem", h.state(), h.detail(), h.counts());
     }
 
     /** The signed snapshot feed: the signing key, and the latest issued version and its age (the contract's 6 h re-sign). */

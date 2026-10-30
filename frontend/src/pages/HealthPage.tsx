@@ -16,12 +16,16 @@ function factValue(i18n: I18n, f: HealthFact): string {
   const { t, fmt } = i18n;
   switch (f.key) {
     case 'storedBytes':
-    case 'capBytes':
-      return typeof f.value === 'number' ? fmt.bytes(f.value) : String(f.value);
+    case 'maxBytes':
+      return fmt.bytes(Number(f.value));
     case 'usedPercent':
-      return typeof f.value === 'number' ? fmt.percentValue(f.value) : String(f.value);
-    case 'stalledSeconds':
-      return t('health.stalledFor', { seconds: typeof f.value === 'number' ? fmt.count(f.value) : f.value });
+      return fmt.percentValue(Number(f.value));
+    case 'notStarted':
+      return t('health.seeDetail');
+    case 'stalled':
+      return t('health.stalledValue');
+    case 'stale':
+      return t('health.staleValue');
     case 'queue':
       return t('health.queueOf', { depth: fmt.count(Number(f.value)), capacity: fmt.count(f.of ?? 0) });
     case 'backlogUncounted':
@@ -29,8 +33,11 @@ function factValue(i18n: I18n, f: HealthFact): string {
     case 'readerFailure':
     case 'senderFailure':
       return i18n.label(`health.siemFailure.${String(f.value)}`, String(f.value));
+    case 'keyAvailable':
+    case 'storeWritable':
+      return f.value === true ? t('notice.yes') : t('notice.no');
     default:
-      return typeof f.value === 'number' ? fmt.count(f.value) : f.value;
+      return typeof f.value === 'number' ? fmt.count(f.value) : String(f.value);
   }
 }
 
@@ -48,7 +55,7 @@ function Facts({ groups }: { groups: FactGroup[] }) {
           )}
           <Box component="dl" sx={{ m: 0, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', columnGap: 2 }}>
             {g.facts.map((f) => (
-              <Box key={f.key} sx={{ display: 'contents' }}>
+              <Box key={`${f.key}-${String(f.value)}`} sx={{ display: 'contents' }}>
                 <Typography component="dt" variant="body2" color="text.secondary">
                   {i18n.t(`health.fact.${f.key}`)}
                 </Typography>
@@ -95,7 +102,7 @@ export function HealthPage() {
               const explained = (EXPLAINED_COMPONENTS as readonly string[]).includes(c.component);
               const meaning = explained ? i18n.label(`health.meaning.${c.component}.${c.state}`, '') : '';
               const todo = explained ? i18n.label(`health.todo.${c.component}.${c.state}`, '') : '';
-              const groups = explained ? healthFacts(c.component, c.detail) : [];
+              const groups = explained ? healthFacts(c.component, c.counts) : [];
               return (
                 <Grid item xs={12} sm={explained ? 12 : 6} md={explained ? 6 : 4} key={c.component}>
                   <Card

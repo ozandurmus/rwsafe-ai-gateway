@@ -1,31 +1,31 @@
-// Counts and states from the Health screen's server details, for the components that carry them (SIEM export, capture,
-// capture watermark). The server writes each detail in a fixed English vocabulary (SiemExportService.health,
-// CaptureHealth); this reads the numbers out of it so the screen can name them in the selected language. A sentence it
-// does not recognise yields no fact: the screen always shows the server's own detail beside them, so nothing is hidden.
-// The patterns are anchored on literal words and bounded digit runs; the detail is short, server-made text.
+// The Health screen's counts for the components that carry them (SIEM export, capture, capture watermark), read from the
+// server's structured `counts` (PR 28 review D-03: SiemExportService.Health, CaptureHealth), never from the detail
+// sentence. A value that is not a non-negative safe integer is dropped, so a wrong number is never shown as fact; the
+// server's own detail is always shown beside the facts.
 
 export type FactKey =
   | 'notStarted'
-  | 'stalledSeconds'
-  | 'heldRows'
+  | 'stalled'
+  | 'heldBehindOpenTransaction'
   | 'readerFailure'
   | 'senderFailure'
   | 'delivered'
   | 'backlog'
   | 'backlogUncounted'
   | 'queue'
-  | 'possiblyLost'
+  | 'possiblyLostBatches'
   | 'skippedAtStart'
-  | 'activeKey'
+  | 'keyAvailable'
+  | 'storeWritable'
   | 'records'
   | 'chunks'
   | 'storedBytes'
-  | 'capBytes'
-  | 'onHold'
+  | 'maxBytes'
+  | 'heldRecords'
   | 'rewrapRecords'
   | 'rewrapChunks'
-  | 'shreddedHeld'
-  | 'missingKeys'
+  | 'shreddedKeyRecords'
+  | 'missingKeyRecords'
   | 'stored'
   | 'noAcknowledgement'
   | 'aboveWatermark'
@@ -33,12 +33,17 @@ export type FactKey =
   | 'evicted'
   | 'other'
   | 'usedPercent'
+  | 'stale'
   | 'skipped';
 
 export interface HealthFact {
   key: FactKey;
-  /** A count (bytes for `storedBytes` and `capBytes`, a percentage for `usedPercent`) or the server's word. */
-  value: number | string;
+  /**
+   * A count (bytes for `storedBytes` and `maxBytes`, a percentage for `usedPercent`), a yes/no state
+   * (`keyAvailable`, `storeWritable`), a failure class (`readerFailure`, `senderFailure`), or true for a condition
+   * (`notStarted`, `stalled`, `stale`, `backlogUncounted`).
+   */
+  value: number | string | boolean;
   /** For `queue`: the capacity beside the depth. */
   of?: number;
 }
@@ -52,111 +57,123 @@ export interface FactGroup {
 /** The components the screen explains in words and reads facts from. */
 export const EXPLAINED_COMPONENTS = ['siem', 'capture', 'capture-watermark'] as const;
 
-function num(detail: string, pattern: RegExp, key: FactKey, out: HealthFact[]) {
-  const m = pattern.exec(detail);
-  if (m?.[1] !== undefined) {
-    out.push({ key, value: Number(m[1]) });
+const SIEM_DESTINATIONS = ['siem', 'syslog', 'hec'] as const;
+const FAILURE_CLASSES = ['connect', 'tls', 'io', 'timeout', 'auth', 'rejected', 'unavailable', 'database'];
+
+type Counts = Record<string, unknown> | undefined | null;
+
+/** A count the screen may show: a non-negative safe integer, or undefined. */
+function count(counts: Counts, key: string): number | undefined {
+  if (!counts || !Object.prototype.hasOwnProperty.call(counts, key)) {
+    return undefined;
+  }
+  const v = counts[key];
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : undefined;
+}
+
+function push(out: HealthFact[], key: FactKey, value: number | undefined) {
+  if (value !== undefined) {
+    out.push({ key, value });
   }
 }
 
-function siem(detail: string): FactGroup[] {
+function siem(counts: Counts): FactGroup[] {
   const groups: FactGroup[] = [];
-  // A destination's part starts with its name; a refusal reason may hold "; " itself, so split only before a name.
-  for (const part of detail.split(/; (?=(?:syslog|hec|siem): )/)) {
-    const m = /^(syslog|hec|siem): ([\s\S]*)$/.exec(part);
-    if (!m) {
-      continue;
-    }
-    const group = m[1] ?? null;
-    const rest = m[2] ?? '';
+  for (const d of SIEM_DESTINATIONS) {
+    const k = (name: string) => count(counts, `${d}.${name}`);
     const facts: HealthFact[] = [];
-    if (rest.startsWith('not started, ')) {
-      facts.push({ key: 'notStarted', value: rest.substring('not started, '.length) });
-      groups.push({ group, facts });
-      continue;
+    if (k('notStarted') === 1) {
+      facts.push({ key: 'notStarted', value: true });
     }
-    const stall = /stalled: no progress for over (\d{1,9}) s with (\d{1,18}) rows held/.exec(rest);
-    if (stall) {
-      facts.push({ key: 'stalledSeconds', value: Number(stall[1]) });
-      facts.push({ key: 'heldRows', value: Number(stall[2]) });
+    if (k('stalled') === 1) {
+      facts.push({ key: 'stalled', value: true });
     }
-    const retry = /retrying after a failure \(([a-z ,]{1,80})\)/.exec(rest);
-    if (retry?.[1]) {
-      for (const piece of retry[1].split(', ')) {
-        const [who, what] = piece.split(' ');
-        if (what && (who === 'reader' || who === 'sender')) {
-          facts.push({ key: who === 'reader' ? 'readerFailure' : 'senderFailure', value: what });
+    for (const thread of ['readerFailure', 'senderFailure'] as const) {
+      for (const cls of FAILURE_CLASSES) {
+        if (k(`${thread}.${cls}`) === 1) {
+          facts.push({ key: thread, value: cls });
         }
       }
     }
-    num(rest, /(\d{1,18}) events delivered/, 'delivered', facts);
-    if (/backlog not counted yet/.test(rest)) {
-      facts.push({ key: 'backlogUncounted', value: '' });
-    } else {
-      num(rest, /backlog (\d{1,18})/, 'backlog', facts);
+    const delivered = k('delivered');
+    push(facts, 'delivered', delivered);
+    const backlog = k('backlog');
+    if (backlog !== undefined) {
+      facts.push({ key: 'backlog', value: backlog });
+    } else if (delivered !== undefined) {
+      facts.push({ key: 'backlogUncounted', value: true });
     }
-    const queue = /queue (\d{1,9})\/(\d{1,9})/.exec(rest);
-    if (queue) {
-      facts.push({ key: 'queue', value: Number(queue[1]), of: Number(queue[2]) });
+    const depth = k('queueDepth');
+    const capacity = k('queueCapacity');
+    if (depth !== undefined && capacity !== undefined) {
+      facts.push({ key: 'queue', value: depth, of: capacity });
     }
-    num(rest, /(\d{1,18}) batches possibly lost/, 'possiblyLost', facts);
-    num(rest, /(\d{1,18}) verdict events skipped at a latest start/, 'skippedAtStart', facts);
-    groups.push({ group, facts });
+    push(facts, 'heldBehindOpenTransaction', k('heldBehindOpenTransaction'));
+    push(facts, 'possiblyLostBatches', k('possiblyLostBatches'));
+    push(facts, 'skippedAtStart', k('skippedAtStart'));
+    if (facts.length > 0) {
+      groups.push({ group: d, facts });
+    }
   }
   return groups;
 }
 
-function capture(detail: string): FactGroup[] {
+function flag(out: HealthFact[], key: FactKey, value: number | undefined) {
+  if (value === 0 || value === 1) {
+    out.push({ key, value: value === 1 });
+  }
+}
+
+function capture(counts: Counts): FactGroup[] {
   const facts: HealthFact[] = [];
-  const key = /active key ([^;]{1,64});/.exec(detail);
-  if (key?.[1]) {
-    facts.push({ key: 'activeKey', value: key[1] });
+  if (count(counts, 'captureOn') !== 1) {
+    return [];
   }
-  const totals = /(\d{1,18}) records, (\d{1,18}) chunks, (\d{1,18}) of (\d{1,18}) bytes, (\d{1,18}) on hold/.exec(detail);
-  if (totals) {
-    facts.push({ key: 'records', value: Number(totals[1]) });
-    facts.push({ key: 'chunks', value: Number(totals[2]) });
-    facts.push({ key: 'storedBytes', value: Number(totals[3]) });
-    facts.push({ key: 'capBytes', value: Number(totals[4]) });
-    facts.push({ key: 'onHold', value: Number(totals[5]) });
-  }
-  const rewrap = /re-wrap from older mounted keys: (\d{1,18}) records and (\d{1,18}) chunks/.exec(detail);
-  if (rewrap) {
-    facts.push({ key: 'rewrapRecords', value: Number(rewrap[1]) });
-    facts.push({ key: 'rewrapChunks', value: Number(rewrap[2]) });
-  }
-  num(detail, /held under shredded keys: (\d{1,18})/, 'shreddedHeld', facts);
-  num(detail, /; under missing keys: (\d{1,18})/, 'missingKeys', facts);
-  const since =
-    /since start: stored (\d{1,18}), without acknowledgement (\d{1,18}), above the watermark (\d{1,18}), detector hit refused (\d{1,18}), evicted for the cap (\d{1,18}), other (\d{1,18})/.exec(
-      detail,
-    );
-  if (since) {
-    const keys: FactKey[] = ['stored', 'noAcknowledgement', 'aboveWatermark', 'detectorHit', 'evicted', 'other'];
-    keys.forEach((k, i) => facts.push({ key: k, value: Number(since[i + 1]) }));
-  }
+  flag(facts, 'keyAvailable', count(counts, 'keyAvailable'));
+  flag(facts, 'storeWritable', count(counts, 'storeWritable'));
+  const keys: FactKey[] = [
+    'records',
+    'chunks',
+    'storedBytes',
+    'maxBytes',
+    'heldRecords',
+    'rewrapRecords',
+    'rewrapChunks',
+    'shreddedKeyRecords',
+    'missingKeyRecords',
+    'stored',
+    'noAcknowledgement',
+    'aboveWatermark',
+    'detectorHit',
+    'evicted',
+    'other',
+  ];
+  keys.forEach((k) => push(facts, k, count(counts, k)));
   return facts.length === 0 ? [] : [{ group: null, facts }];
 }
 
-function watermark(detail: string): FactGroup[] {
+function watermark(counts: Counts): FactGroup[] {
   const facts: HealthFact[] = [];
-  const used = /^(\d{1,3}(?:\.\d)?) % used/.exec(detail);
-  if (used) {
-    facts.push({ key: 'usedPercent', value: Number(used[1]) });
+  if (count(counts, 'stale') === 1) {
+    facts.push({ key: 'stale', value: true });
   }
-  num(detail, /(\d{1,18}) captures skipped since start/, 'skipped', facts);
+  const perMille = count(counts, 'usedPerMille');
+  if (perMille !== undefined && perMille <= 1000) {
+    facts.push({ key: 'usedPercent', value: perMille / 10 });
+  }
+  push(facts, 'skipped', count(counts, 'skipped'));
   return facts.length === 0 ? [] : [{ group: null, facts }];
 }
 
-/** The facts of one component's detail; empty for a component the screen does not read facts from. */
-export function healthFacts(component: string, detail: string): FactGroup[] {
+/** The facts of one component's counts; empty for a component the screen does not read facts from. */
+export function healthFacts(component: string, counts: Counts): FactGroup[] {
   switch (component) {
     case 'siem':
-      return siem(detail);
+      return siem(counts);
     case 'capture':
-      return capture(detail);
+      return capture(counts);
     case 'capture-watermark':
-      return watermark(detail);
+      return watermark(counts);
     default:
       return [];
   }

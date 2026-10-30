@@ -324,8 +324,10 @@ reading for 5 minutes: redacted off). A tripped level resumes 5 points below its
 same breaker to its spool: above 85 % it spools events without their text (`icap_capture_spool_stripped_total`).
 
 Reading one record: `security_admin` or `privacy_officer` (the MVP reader roles), never the viewer or a masked session,
-with a reason code (`INCIDENT_INVESTIGATION`, `LEGAL_HOLD_REVIEW`, `FALSE_POSITIVE_REVIEW`, `REGULATOR_REQUEST`, and
-`DSAR` for the privacy officer only) and a case id:
+with a reason code its role may give (PR 28 Q-1: `INCIDENT_INVESTIGATION`, `LEGAL_HOLD_REVIEW`,
+`FALSE_POSITIVE_REVIEW`, `REGULATOR_REQUEST` for `security_admin`; `DSAR` for `privacy_officer`; both sets for a person
+holding both roles) and a case id (3 to 64 letters, digits, `_` or `-`, at least one letter, no run of six or more digits
+even across a separator, no detector hit or estate term; otherwise 400 `CASE_ID_REFUSED`, ledgered without the value):
 
 ```bash
 curl -b cookies -H "X-XSRF-TOKEN: $CSRF" -H 'Content-Type: application/json' \

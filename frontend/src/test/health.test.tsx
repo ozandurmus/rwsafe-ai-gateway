@@ -5,42 +5,69 @@ import { CATALOGUES, LANGUAGES } from '../i18n';
 import { fakeServer } from './fakeServer';
 import { renderApp } from './render';
 
-// The Health screen's SIEM export and capture components: states in plain words, what to do, and the counts by name.
-// The details below are the server's fixed vocabulary (SiemExportService.health, CaptureHealth) with synthetic numbers.
+// The Health screen's SIEM export and capture components: states in plain words, what to do, and the counts by name,
+// read from the server's structured `counts` (PR 28 review D-03; the keys are those SiemExportService.Health and
+// CaptureHealth emit, which their Java tests assert). All numbers are synthetic.
 
 afterEach(() => {
   vi.unstubAllGlobals();
   window.localStorage.clear();
 });
 
-const SIEM_DEGRADED =
-  'syslog: stalled: no progress for over 180 s with 3 rows held behind an open database transaction, retrying after a ' +
-  'failure (reader database, sender connect), 1200 events delivered, backlog 40, queue 2/64, 5 batches possibly lost ' +
-  '(connection closed after the flush), 7 verdict events skipped at a latest start; hec: 9 events delivered, backlog not ' +
-  'counted yet, queue 0/64';
-const SIEM_DOWN =
-  'siem: not started, the privacy key or the estate dictionary is missing; nothing is exported';
-const CAPTURE_DEGRADED =
-  'redacted mode, active key cap-k2; 12 records, 30 chunks, 1048576 of 34359738368 bytes, 1 on hold; to re-wrap from ' +
-  'older mounted keys: 4 records and 9 chunks; held under shredded keys: 2; under missing keys: 6; since start: stored ' +
-  '12, without acknowledgement 3, above the watermark 0, detector hit refused 8, evicted for the cap 0, other 1';
-const WATERMARK_DEGRADED = '78.5 % used; above 75 %: raw off, redacted persists; 11 captures skipped since start';
-const WATERMARK_STALE = 'no disk reading for 5 minutes: content is not persisted (fail closed); 2 captures skipped since start';
+const SIEM_COUNTS = {
+  'syslog.delivered': 1200,
+  'syslog.backlog': 40,
+  'syslog.queueDepth': 2,
+  'syslog.queueCapacity': 64,
+  'syslog.stalled': 1,
+  'syslog.heldBehindOpenTransaction': 3,
+  'syslog.possiblyLostBatches': 5,
+  'syslog.skippedAtStart': 7,
+  'syslog.readerFailure.database': 1,
+  'syslog.senderFailure.connect': 1,
+  'hec.delivered': 9,
+  'hec.queueDepth': 0,
+  'hec.queueCapacity': 64,
+  'hec.stalled': 0,
+  'hec.heldBehindOpenTransaction': 0,
+  'hec.possiblyLostBatches': 0,
+  'hec.skippedAtStart': 0,
+};
+const CAPTURE_COUNTS = {
+  captureOn: 1,
+  keyAvailable: 1,
+  storeWritable: 1,
+  records: 12,
+  chunks: 30,
+  storedBytes: 1048576,
+  maxBytes: 34359738368,
+  heldRecords: 1,
+  rewrapRecords: 4,
+  rewrapChunks: 9,
+  shreddedKeyRecords: 2,
+  missingKeyRecords: 6,
+  stored: 12,
+  noAcknowledgement: 3,
+  aboveWatermark: 0,
+  detectorHit: 8,
+  evicted: 0,
+  other: 1,
+};
 
 describe('health facts', () => {
   it('reads the SIEM destinations, their failures, backlog, held rows and possibly lost batches', () => {
-    expect(healthFacts('siem', SIEM_DEGRADED)).toEqual([
+    expect(healthFacts('siem', SIEM_COUNTS)).toEqual([
       {
         group: 'syslog',
         facts: [
-          { key: 'stalledSeconds', value: 180 },
-          { key: 'heldRows', value: 3 },
+          { key: 'stalled', value: true },
           { key: 'readerFailure', value: 'database' },
           { key: 'senderFailure', value: 'connect' },
           { key: 'delivered', value: 1200 },
           { key: 'backlog', value: 40 },
           { key: 'queue', value: 2, of: 64 },
-          { key: 'possiblyLost', value: 5 },
+          { key: 'heldBehindOpenTransaction', value: 3 },
+          { key: 'possiblyLostBatches', value: 5 },
           { key: 'skippedAtStart', value: 7 },
         ],
       },
@@ -48,53 +75,57 @@ describe('health facts', () => {
         group: 'hec',
         facts: [
           { key: 'delivered', value: 9 },
-          { key: 'backlogUncounted', value: '' },
+          { key: 'backlogUncounted', value: true },
           { key: 'queue', value: 0, of: 64 },
+          { key: 'heldBehindOpenTransaction', value: 0 },
+          { key: 'possiblyLostBatches', value: 0 },
+          { key: 'skippedAtStart', value: 0 },
         ],
       },
     ]);
-    // A refusal reason holds "; " itself and stays whole.
-    expect(healthFacts('siem', SIEM_DOWN)).toEqual([
-      {
-        group: 'siem',
-        facts: [{ key: 'notStarted', value: 'the privacy key or the estate dictionary is missing; nothing is exported' }],
-      },
+    expect(healthFacts('siem', { 'siem.notStarted': 1 })).toEqual([
+      { group: 'siem', facts: [{ key: 'notStarted', value: true }] },
     ]);
   });
 
   it('reads the capture store, its key states and its skip counts', () => {
-    const facts = healthFacts('capture', CAPTURE_DEGRADED)[0]?.facts ?? [];
+    const facts = healthFacts('capture', CAPTURE_COUNTS)[0]?.facts ?? [];
     expect(Object.fromEntries(facts.map((f) => [f.key, f.value]))).toEqual({
-      activeKey: 'cap-k2',
-      records: 12,
-      chunks: 30,
-      storedBytes: 1048576,
-      capBytes: 34359738368,
-      onHold: 1,
-      rewrapRecords: 4,
-      rewrapChunks: 9,
-      shreddedHeld: 2,
-      missingKeys: 6,
-      stored: 12,
-      noAcknowledgement: 3,
-      aboveWatermark: 0,
-      detectorHit: 8,
-      evicted: 0,
-      other: 1,
+      ...Object.fromEntries(Object.entries(CAPTURE_COUNTS).filter(([k]) => k !== 'captureOn')),
+      keyAvailable: true,
+      storeWritable: true,
     });
-    // Capture off: no counts, only the sentence.
-    expect(healthFacts('capture', 'capture is off: metadata and verdicts only')).toEqual([]);
+    expect(healthFacts('capture', { captureOn: 0 })).toEqual([]);
   });
 
-  it('reads the watermark, and yields nothing for a sentence it does not know', () => {
-    expect(healthFacts('capture-watermark', WATERMARK_DEGRADED)).toEqual([
+  it('reads the watermark', () => {
+    expect(healthFacts('capture-watermark', { stale: 0, usedPerMille: 785, skipped: 11 })).toEqual([
       { group: null, facts: [{ key: 'usedPercent', value: 78.5 }, { key: 'skipped', value: 11 }] },
     ]);
-    expect(healthFacts('capture-watermark', WATERMARK_STALE)).toEqual([
-      { group: null, facts: [{ key: 'skipped', value: 2 }] },
+    expect(healthFacts('capture-watermark', { stale: 1, skipped: 2 })).toEqual([
+      { group: null, facts: [{ key: 'stale', value: true }, { key: 'skipped', value: 2 }] },
     ]);
-    expect(healthFacts('siem', 'something the server never says')).toEqual([]);
-    expect(healthFacts('database', 'PostgreSQL answers')).toEqual([]);
+  });
+
+  it('never shows a wrong number as fact (PR 28 review D-03)', () => {
+    const bad = {
+      captureOn: 1,
+      records: -1,
+      chunks: 2 ** 53,
+      storedBytes: 1.5,
+      maxBytes: Number.NaN,
+      stored: '12',
+      other: null,
+      evicted: 7,
+    } as unknown as Record<string, number>;
+    expect(healthFacts('capture', bad)).toEqual([{ group: null, facts: [{ key: 'evicted', value: 7 }] }]);
+    expect(healthFacts('capture-watermark', { usedPerMille: 1001 })).toEqual([]);
+    // A destination with nothing recognised gets no empty header; no counts at all (an older server) give nothing.
+    expect(healthFacts('siem', { 'syslog.unknownThing': 3, 'syslog.stalled': 2 })).toEqual([]);
+    expect(healthFacts('siem', undefined)).toEqual([]);
+    expect(healthFacts('database', { anything: 1 })).toEqual([]);
+    // Inherited members are not counts.
+    expect(healthFacts('capture', Object.create({ captureOn: 1, records: 3 }))).toEqual([]);
   });
 
   it('explains every state of the explained components in both languages', () => {
@@ -122,10 +153,15 @@ describe('health screen', () => {
         body: {
           checkedAt: '2026-10-30T09:00:00Z',
           components: [
-            { component: 'database', state: 'UP', detail: 'PostgreSQL answers' },
-            { component: 'siem', state: 'DEGRADED', detail: SIEM_DEGRADED },
-            { component: 'capture', state: 'DEGRADED', detail: CAPTURE_DEGRADED },
-            { component: 'capture-watermark', state: 'DOWN', detail: WATERMARK_STALE },
+            { component: 'database', state: 'UP', detail: 'PostgreSQL answers', counts: {} },
+            { component: 'siem', state: 'DEGRADED', detail: 'syslog: synthetic server sentence', counts: SIEM_COUNTS },
+            { component: 'capture', state: 'DEGRADED', detail: 'synthetic capture sentence', counts: CAPTURE_COUNTS },
+            {
+              component: 'capture-watermark',
+              state: 'DOWN',
+              detail: 'synthetic watermark sentence',
+              counts: { stale: 1, skipped: 2 },
+            },
           ],
           eventsLastFiveMinutes: 0,
           totalEvents: 10,
@@ -140,7 +176,7 @@ describe('health screen', () => {
     expect(siem).toHaveTextContent('Kayıtlar atılmaz');
     expect(siem).toHaveTextContent('Ne yapmalı:');
     expect(within(siem).getByText('Syslog alıcısı')).toBeInTheDocument();
-    expect(within(siem).getByText('180 saniyeden uzun süredir ilerleme yok')).toBeInTheDocument();
+    expect(siem).toHaveTextContent('Takıldıüç dakikadan uzun süredir ilerleme yok');
     expect(siem).toHaveTextContent('Açık kalan bir veritabanı işleminin arkasında bekleyen satır3');
     expect(siem).toHaveTextContent('Okuma (yeniden deneniyor)veritabanı okunamıyor');
     expect(siem).toHaveTextContent('Gönderme (yeniden deneniyor)bağlantı kurulamıyor');
@@ -148,11 +184,10 @@ describe('health screen', () => {
     expect(siem).toHaveTextContent('Gönderilmeyi bekleyen kayıt40');
     expect(siem).toHaveTextContent('Kaybolmuş olabilecek paket5');
     expect(siem).toHaveTextContent('Gönderilmeyi bekleyen kayıthenüz sayılmadı');
-    expect(siem).toHaveTextContent('Sunucunun ayrıntısı:');
-    expect(siem).toHaveTextContent('5 batches possibly lost');
+    expect(siem).toHaveTextContent('Sunucunun ayrıntısı: syslog: synthetic server sentence');
 
     const capture = screen.getByRole('region', { name: 'Maskelenmiş içerik kaydı' });
-    expect(capture).toHaveTextContent('Kullanılan anahtarcap-k2');
+    expect(capture).toHaveTextContent('İçerik kaydı anahtarı takılıEvet');
     expect(capture).toHaveTextContent('Kullanılan alan1,0 MiB');
     expect(capture).toHaveTextContent('Alan sınırı32,0 GiB');
     expect(capture).toHaveTextContent('Anahtarı bulunamayan kayıt6');
@@ -163,6 +198,7 @@ describe('health screen', () => {
     const watermark = screen.getByRole('region', { name: 'Disk doluluk eşiği' });
     expect(within(watermark).getByText('Çalışmıyor')).toBeInTheDocument();
     expect(watermark).toHaveTextContent('beş dakikadır disk ölçümü alınamıyor');
+    expect(watermark).toHaveTextContent('Disk ölçümübeş dakikadır alınamıyor');
     expect(watermark).toHaveTextContent('Disk dolu olduğu için saklanmayan içerik (başlangıçtan beri)2');
 
     // A component without an explanation keeps its plain card.

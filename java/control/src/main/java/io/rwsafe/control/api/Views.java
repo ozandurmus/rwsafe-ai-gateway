@@ -113,12 +113,25 @@ public final class Views {
         @Override
         public MaskedView masked(TextMasker m) {
             return new HealthView(checkedAt, components.stream().map(c -> new ComponentView(c.component(), c.state(),
-                m.mask(c.detail()))).toList(), eventsLastFiveMinutes, totalEvents, latestEventAt);
+                m.mask(c.detail()), c.counts())).toList(), eventsLastFiveMinutes, totalEvents, latestEventAt);
         }
     }
 
-    /** @param state {@code UP}, {@code DOWN}, {@code DEGRADED} or {@code UNKNOWN} */
-    public record ComponentView(String component, String state, String detail) {
+    /**
+     * @param state  {@code UP}, {@code DOWN}, {@code DEGRADED} or {@code UNKNOWN}
+     * @param counts the component's counts and 0/1 conditions under fixed-vocabulary keys (PR 28 review D-03: the admin
+     *               UI reads these, never the detail sentence); numbers only, no identifier, so both projections carry
+     *               them as they are. Sorted by key.
+     */
+    public record ComponentView(String component, String state, String detail, Map<String, Long> counts) {
+
+        public ComponentView {
+            counts = counts == null ? Map.of() : java.util.Collections.unmodifiableMap(new TreeMap<>(counts));
+        }
+
+        public ComponentView(String component, String state, String detail) {
+            this(component, state, detail, Map.of());
+        }
     }
 
     private static FindingView finding(FindingCount f) {
