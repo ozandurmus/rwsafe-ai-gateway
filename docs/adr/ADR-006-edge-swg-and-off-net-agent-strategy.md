@@ -1,6 +1,6 @@
 # ADR-006: Edge SWG and off-net agent strategy
 
-Status: PROPOSED
+Status: ACCEPTED (PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE, 2026-10-30)
 Date: 2026-10-30
 Answers: brief section 2 (Off-network / cloud proxy), 5E; council offensive P1 "agent channel hardening" and "MV3
 feasibility spike"; brief 10.5 (MV3 browser-extension feasibility note, included here as §5)

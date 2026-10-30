@@ -1,6 +1,9 @@
 # Regulatory mapping
 
-**Status:** DRAFT for DPO and PO review. Answers brief 10.5 (this document), council PRIV-1, PRIV-3, privacy P1 (5651,
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for DPO and PO review. Answers brief 10.5 (this document), council PRIV-1, PRIV-3, privacy P1 (5651,
 ISO 27001/42001, NIST AI RMF), OWASP LLM Top 10. The architect maps requirements to controls; legal readings marked
 UNVERIFIED need counsel or the DPO. Turkish statute names are kept in Turkish where they are proper names.
 

@@ -1,6 +1,9 @@
 # ICAP and streaming protocol specification
 
-**Status:** DRAFT for design freeze, revised after the design-freeze council (2026-10-30: OFF2-1, OFF2-2, OFF2-3, OFF2-6,
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze, revised after the design-freeze council (2026-10-30: OFF2-1, OFF2-2, OFF2-3, OFF2-6,
 OFF2-10, OFF2-11, PLAT-F1, PLAT-F3, PLAT-F4). Answers brief 10.5, council ARCH-4, ARCH-5, ARCH-6, Argon P0-4, P0-5,
 offensive seat "ReDoS and parser DoS", SEC-1, SEC-3. Normative references: RFC 3507 (ICAP/1.0) and its errata, the ICAP
 Extensions draft (`X-Client-IP`, `X-Authenticated-User`, `X-Server-IP`), RFC 9112 (HTTP/1.1), the HTML living standard for

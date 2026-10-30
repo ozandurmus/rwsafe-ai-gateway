@@ -1,6 +1,6 @@
 # ADR-007: Tenant restriction per vendor
 
-Status: PROPOSED
+Status: ACCEPTED (PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE, 2026-10-30)
 Date: 2026-10-30
 Answers: brief 5A (first priority), 10.4 (agentic and MCP governance: managed settings); council offensive P1 "tenant
 headers do not revoke existing sessions", SEC-3; PLATFORM_MATRIX §2

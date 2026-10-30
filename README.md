@@ -5,15 +5,16 @@ visibility under masking and retention limits, guardrails (allow, warn, redact, 
 neXus-grade administration (LDAP/AD, RBAC, trigger-enforced audit, syslog/SIEM, SNMP, CLI parity, a masked role for AI
 agents, health). First product of the **rwsafe** family; runs beside neXus on the same k3s node in its own namespace.
 
-**Phase:** architecture design (no product code yet). The design deliverables are under `docs/`; implementation starts
-after the Product Owner accepts the design-freeze council review.
+**Phase:** implementation, phase 0 (discovery and measurement; no production change). The design is **FROZEN** by
+`docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30) and ADR-001 to ADR-011 are ACCEPTED; product
+code starts with the phase 0 repository skeleton (`docs/product/ROADMAP.md`).
 
 ## Start here
 
 | Reader | Read |
 |---|---|
 | Any agent or engineer | `AGENTS.md` (constitution), then `roles/<ROLE>.md` |
-| Product Owner | `docs/product/OPEN_QUESTIONS.md`, `docs/reviews/COUNCIL_RESPONSE.md`, `docs/product/ROADMAP.md` |
+| Product Owner | `docs/product/OPEN_QUESTIONS.md`, `docs/design/PO_DECISION_RECORD_*.md`, `docs/reviews/COUNCIL_RESPONSE.md`, `docs/product/ROADMAP.md` |
 | Architecture | `docs/architecture/ARCHITECTURE.md`, `docs/adr/`, `docs/architecture/ICAP_AND_STREAMING_PROTOCOL_SPEC.md` |
 | Platform and operations | `docs/operations/` (ports, capacity, hardening, deploy runbook), `deploy/rwsafe/` |
 | Security and privacy | `docs/security/`, `docs/compliance/REGULATORY_MAPPING.md` |

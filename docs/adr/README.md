@@ -30,3 +30,6 @@ Answers: <brief clause>, <council IDs>
 | ADR-009 | Data model, retention and privacy |
 | ADR-010 | Fail-open and fail-closed |
 | ADR-011 | Shared tooling with neXus and the corporate build standard |
+
+All eleven ADRs are **ACCEPTED** by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); a change to an accepted ADR
+needs a new decision record or a superseding ADR that quotes one.

@@ -1,6 +1,9 @@
 # Roadmap
 
-**Status:** DRAFT for design freeze. Phases per brief section 9 item 8, with acceptance criteria, size (S/M/L/XL in
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze. Phases per brief section 9 item 8, with acceptance criteria, size (S/M/L/XL in
 engineering weeks for the Opus-led implementation team) and risk. No phase changes HOST-A, neXus, ProxySG or any
 production system until its own acceptance says so; phase 0 changes nothing at all.
 

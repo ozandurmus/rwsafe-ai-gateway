@@ -1,6 +1,6 @@
 # ADR-011: Shared tooling with neXus and the corporate build standard
 
-Status: PROPOSED
+Status: ACCEPTED (PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE, 2026-10-30)
 Date: 2026-10-30
 Answers: brief section 7 (Multi-agent work, Stack), section 10.4 (Shared delivery tooling); council Argon P1-1, P1-3;
 `docs/reference/CORPORATE_TECHNOLOGY_STACK.md` rows Build, Persistence, Source

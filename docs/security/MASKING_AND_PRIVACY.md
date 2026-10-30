@@ -1,6 +1,9 @@
 # Masking and privacy: how agents work, and what the product does
 
-**Status:** DRAFT for design freeze. The separate deliverable brief section 4A asks for. Part A is the agent rules
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze. The separate deliverable brief section 4A asks for. Part A is the agent rules
 (binding now, mirrored in `AGENTS.md` section 4); part B is the product design; part C is the test plan. neXus sources
 read for this design: `PrivacyMaskingResponseBodyAdvice`, `TopologyNamePseudonymizer`, `SubnetPreservingIpMasker`,
 `PseudonymRegistry`, `ReportProjectionMasker`, `EstateDictionarySource`, `LogMasking` (rule sets `logmask-v1`..`v4`),

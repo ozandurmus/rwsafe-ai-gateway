@@ -1,6 +1,9 @@
 # Bypass catalogue: techniques, expected result, test
 
-**Status:** DRAFT for design freeze (AC-7). Answers council SEC-4 and the offensive seat's deliverable list. Each row is a
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze (AC-7). Answers council SEC-4 and the offensive seat's deliverable list. Each row is a
 technique an attacker or a careless user could use to get sensitive data past the gateway or to defeat tenant
 enforcement; the expected result is what the design must do; the test is the synthetic fixture that proves it (never
 captured content). Pilot acceptance requires every MVP row green. Columns: Phase = MVP or later.

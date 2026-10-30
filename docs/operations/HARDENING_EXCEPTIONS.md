@@ -1,6 +1,9 @@
 # Hardening exceptions for PO approval
 
-**Status:** DRAFT for PO decision. Each exception: what, why, source, destination, duration, and what happens without
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for PO decision. Each exception: what, why, source, destination, duration, and what happens without
 it. Where no exception is needed, the row says so. Based on the 2026-10-30 inventory and the neXus hardening record
 (`HOST_A_HARDENING_DRAFT.md`, H1–H4, M1–M4); the root-only pass (nftables ruleset shape, sshd settings) was read on 2026-10-30 and
 its findings are folded in below.

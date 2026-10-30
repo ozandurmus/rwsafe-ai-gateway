@@ -1,6 +1,6 @@
 # ADR-003: Reverse proxy and host-based routing, including the exact neXus change
 
-Status: PROPOSED
+Status: ACCEPTED (PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE, 2026-10-30)
 Date: 2026-10-30
 Answers: brief section 2 (Browser access), section 4 rules 3 and 4; council ARCH-3, Argon P0-3, offensive seat "shared
 ingress" P1; brief 10.6 question 2 (LLM gateway on 443)

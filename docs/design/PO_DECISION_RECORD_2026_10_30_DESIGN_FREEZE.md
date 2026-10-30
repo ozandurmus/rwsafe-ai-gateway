@@ -1,7 +1,8 @@
 # PO decision record 2026-10-30: design freeze
 
-**Status:** DRAFT — awaiting the Product Owner's words in chat. On ratification this line quotes them, the document status
-lines below change to FROZEN and the ADRs to ACCEPTED in the same pull request.
+**Status:** RATIFIED — Product Owner, 2026-10-30 (chat): "Donmayı onaylıyorum" (I ratify the freeze), given after the
+draft of this record and the Q-30 to Q-36 decisions were presented in chat. Frozen at the main commit that merges pull
+request 2 of the public repository.
 
 ## Context
 The architecture design phase produced the brief's section 9 and 10.5 deliverables: eleven ADRs, the architecture and

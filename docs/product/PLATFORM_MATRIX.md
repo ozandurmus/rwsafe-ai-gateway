@@ -1,6 +1,9 @@
 # Platform matrix: domains, auth flows, controls, blind spots, evidence
 
-**Status:** DRAFT for design freeze. Answers brief 5A (per-platform matrix), 5B (surfaces), 10.4 (per-client trust),
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze. Answers brief 5A (per-platform matrix), 5B (surfaces), 10.4 (per-client trust),
 council SEC-1 (blind-spot matrix), SEC-2 (cloud-side agents), PRIV-3 (data region, DPA, zero retention), ADR-004,
 ADR-005, ADR-007. Every vendor fact carries its evidence; **UNVERIFIED** means no primary source was read for it and the
 phase-0 task that verifies it is named. Domain lists are vendor-published endpoints, not estate identifiers. Dates:

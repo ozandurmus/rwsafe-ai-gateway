@@ -1,6 +1,6 @@
 # ADR-008: Guardrail engine, build versus integrate
 
-Status: PROPOSED
+Status: ACCEPTED (PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE, 2026-10-30)
 Date: 2026-10-30
 Answers: brief 5C (detectors, prompt injection, actions, policy registry), 7 (stack), 10.4 (policy lifecycle, model and
 rule-pack supply chain); council ARCH-6, ARCH-7, Argon P1-4, offensive P1 "model and rule-pack supply chain", SEC-4

@@ -1,6 +1,9 @@
 # rwsafe-ai-gateway architecture
 
-**Status:** DRAFT for design freeze (becomes FROZEN by PO decision record). Answers brief section 9 item 1: C4 context,
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze (becomes FROZEN by PO decision record). Answers brief section 9 item 1: C4 context,
 container and component views; data flows for ICAP, the LLM gateway, the agent channel and admin; sequence diagrams for
 login enforcement, prompt capture with redaction, and a blocked request. Decisions are in `docs/adr/`; this document shows
 how they fit. Diagrams are text (Mermaid) so they diff and never carry an identifier.
