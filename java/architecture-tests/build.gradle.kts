@@ -14,6 +14,9 @@ dependencies {
     testImplementation(libs.slf4j.api)
     // Fixture for the Netty-future clause of the request-thread fence (PR 11 review D-11).
     testImplementation(libs.netty.handler)
+    // The control-module fixture calls ControlApplication, whose Spring Boot annotations javac must resolve.
+    testCompileOnly(platform(libs.spring.boot.bom))
+    testCompileOnly(libs.spring.boot.autoconfigure)
 }
 
 // The fences import exactly the classes the product modules compile (PR 7 review D-05): each module's build directory,

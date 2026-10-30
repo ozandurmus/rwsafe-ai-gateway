@@ -1,0 +1,209 @@
+package io.rwsafe.control.ingest;
+
+import io.rwsafe.control.api.ReadApiController;
+import io.rwsafe.control.privacy.PrivacyKeys;
+import io.rwsafe.control.privacy.Pseudonymiser;
+import io.rwsafe.persistence.Database;
+import io.rwsafe.persistence.FindingCount;
+import io.rwsafe.persistence.StoredVerdictEvent;
+import io.rwsafe.platform.verdict.Verdict;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+/**
+ * Validates a batch against the ingestion contract, pseudonymises the identity claim and masks the client address with
+ * rwsafe's own key, then stores metadata only (ADR-009 C1/C2/C6). The whole batch is refused when one element is invalid
+ * (the data plane's batches are all-or-nothing) and when the key is missing: nothing raw is ever stored.
+ */
+@Service
+public class IngestionService {
+
+    public static final int MAX_BATCH = 1000;
+    static final Duration MAX_AGE = Duration.ofDays(30);
+    static final Duration MAX_SKEW = Duration.ofMinutes(5);
+    private static final Set<String> TRANSPORTS = Set.of("plain_allowlisted", "mtls_verified");
+
+    private final Database database;
+    private final PrivacyKeys keys;
+    private final Pseudonymiser pseudonymiser;
+    private final Clock clock;
+
+    @Autowired
+    public IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser) {
+        this(database, keys, pseudonymiser, Clock.systemUTC());
+    }
+
+    IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser, Clock clock) {
+        this.database = database;
+        this.keys = keys;
+        this.pseudonymiser = pseudonymiser;
+        this.clock = clock;
+    }
+
+    public record Result(int accepted, int duplicates) {
+    }
+
+    public Result ingest(List<VerdictEventPayload> batch) {
+        if (batch == null) {
+            throw new InvalidEventException("the body must be a JSON array of events");
+        }
+        if (batch.size() > MAX_BATCH) {
+            throw new InvalidEventException("a batch holds at most " + MAX_BATCH + " events");
+        }
+        String keyId = keys.keyId();
+        Instant now = clock.instant();
+        List<StoredVerdictEvent> rows = new ArrayList<>(batch.size());
+        Set<UUID> ids = new HashSet<>();
+        for (int i = 0; i < batch.size(); i++) {
+            StoredVerdictEvent row = validate(i, batch.get(i), now, keyId);
+            if (ids.add(row.eventId())) {
+                rows.add(row);
+            }
+        }
+        int inserted = database.verdictEvents().insert(rows);
+        return new Result(inserted, batch.size() - inserted);
+    }
+
+    private StoredVerdictEvent validate(int i, VerdictEventPayload e, Instant now, String keyId) {
+        if (e == null) {
+            throw new InvalidEventException(i, "event");
+        }
+        UUID eventId = uuid(i, e.eventId());
+        Instant receivedAt = instant(i, e.receivedAt());
+        if (receivedAt.isBefore(now.minus(MAX_AGE)) || receivedAt.isAfter(now.plus(MAX_SKEW))) {
+            throw new InvalidEventException(i, "receivedAt");
+        }
+        String service = require(i, "service", e.service());
+        if (!service.equals("reqmod") && !service.equals("respmod")) {
+            throw new InvalidEventException(i, "service");
+        }
+        String platform = vocabulary(i, "platform", e.platform(), 64);
+        String surface = vocabulary(i, "surface", e.surface(), 32);
+        String step = vocabulary(i, "step", e.step(), 32);
+        Verdict verdict;
+        try {
+            verdict = Verdict.valueOf(require(i, "verdict", e.verdict()));
+        } catch (IllegalArgumentException ex) {
+            throw new InvalidEventException(i, "verdict");
+        }
+        String reason = e.reason();
+        if (reason != null && !token(reason, 64)) {
+            throw new InvalidEventException(i, "reason");
+        }
+        List<FindingCount> findings = findings(i, e.findings());
+        long bodyBytes = nonNegative(i, "bodyBytes", e.bodyBytes());
+        long decisionMicros = nonNegative(i, "decisionMicros", e.decisionMicros());
+        if (e.userClaim() != null && e.userClaim().length() > 256) {
+            throw new InvalidEventException(i, "userClaim");
+        }
+        if (e.clientAddress() != null && e.clientAddress().length() > 64) {
+            throw new InvalidEventException(i, "clientAddress");
+        }
+        String transport = require(i, "transport", e.transport());
+        if (!TRANSPORTS.contains(transport)) {
+            throw new InvalidEventException(i, "transport");
+        }
+        long snapshotVersion = nonNegative(i, "snapshotVersion", e.snapshotVersion());
+        String correlationId = require(i, "correlationId", e.correlationId());
+        if (!token(correlationId, 64)) {
+            throw new InvalidEventException(i, "correlationId");
+        }
+        return new StoredVerdictEvent(eventId, receivedAt, service, platform, surface, step, verdict, reason, findings,
+            bodyBytes, decisionMicros, pseudonymiser.user(e.userClaim()), pseudonymiser.subnet(e.clientAddress()),
+            transport, snapshotVersion, correlationId, keyId);
+    }
+
+    private static List<FindingCount> findings(int i, List<VerdictEventPayload.FindingPayload> findings) {
+        if (findings == null || findings.size() > 32) {
+            throw new InvalidEventException(i, "findings");
+        }
+        List<FindingCount> out = new ArrayList<>(findings.size());
+        Set<String> classes = new HashSet<>();
+        for (VerdictEventPayload.FindingPayload f : findings) {
+            if (f == null || f.dataClass() == null || !dataClass(f.dataClass()) || !classes.add(f.dataClass())
+                || f.count() == null || f.count() < 1 || f.count() > 1_000_000) {
+                throw new InvalidEventException(i, "findings");
+            }
+            out.add(new FindingCount(f.dataClass(), f.count()));
+        }
+        return out;
+    }
+
+    private static String require(int i, String field, String value) {
+        if (value == null) {
+            throw new InvalidEventException(i, field);
+        }
+        return value;
+    }
+
+    private static String vocabulary(int i, String field, String value, int max) {
+        if (value == null || !ReadApiController.vocabulary(value, max)) {
+            throw new InvalidEventException(i, field);
+        }
+        return value;
+    }
+
+    private static long nonNegative(int i, String field, Long value) {
+        if (value == null || value < 0) {
+            throw new InvalidEventException(i, field);
+        }
+        return value;
+    }
+
+    private static UUID uuid(int i, String value) {
+        try {
+            UUID id = UUID.fromString(require(i, "eventId", value));
+            if (!id.toString().equals(value.toLowerCase(java.util.Locale.ROOT))) {
+                throw new InvalidEventException(i, "eventId");
+            }
+            return id;
+        } catch (IllegalArgumentException ex) {
+            throw new InvalidEventException(i, "eventId");
+        }
+    }
+
+    private static Instant instant(int i, String value) {
+        try {
+            return Instant.parse(require(i, "receivedAt", value));
+        } catch (DateTimeParseException ex) {
+            throw new InvalidEventException(i, "receivedAt");
+        }
+    }
+
+    /** Reason classes and correlation ids: letters, digits and {@code _ . : -}. */
+    private static boolean token(String s, int max) {
+        if (s.isEmpty() || s.length() > max) {
+            return false;
+        }
+        for (int k = 0; k < s.length(); k++) {
+            char c = s.charAt(k);
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.'
+                || c == ':' || c == '-')) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean dataClass(String s) {
+        if (s.isEmpty() || s.length() > 32 || s.charAt(0) < 'A' || s.charAt(0) > 'Z') {
+            return false;
+        }
+        for (int k = 0; k < s.length(); k++) {
+            char c = s.charAt(k);
+            if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
