@@ -33,7 +33,12 @@ final class IcapTestClient implements AutoCloseable {
     private final OutputStream out;
 
     IcapTestClient(int port) throws IOException {
-        socket = new Socket("127.0.0.1", port);
+        this(new Socket("127.0.0.1", port));
+    }
+
+    /** Over an already connected socket (a TLS socket in the Secure ICAP tests). */
+    IcapTestClient(Socket connected) throws IOException {
+        socket = connected;
         socket.setSoTimeout(10_000);
         in = socket.getInputStream();
         out = socket.getOutputStream();

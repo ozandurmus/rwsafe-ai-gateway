@@ -15,9 +15,11 @@ public final class BoundedEventQueue implements EventSink {
 
     private final ArrayBlockingQueue<VerdictEvent> queue;
     private final AtomicLong dropped = new AtomicLong();
+    private final int highWater;
 
     public BoundedEventQueue(int capacity) {
         this.queue = new ArrayBlockingQueue<>(capacity);
+        this.highWater = Math.max(1, capacity - Math.max(1, capacity / 10));
     }
 
     @Override
@@ -25,6 +27,12 @@ public final class BoundedEventQueue implements EventSink {
         if (!queue.offer(event)) {
             dropped.incrementAndGet();
         }
+    }
+
+    @Override
+    public boolean saturated() {
+        // High-water mark at 90 %: the backpressure verdict's own event, and concurrent ones, still fit (D-02).
+        return queue.size() >= highWater;
     }
 
     /** Moves up to {@code max} queued events into {@code into}; never waits. */

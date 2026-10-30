@@ -127,9 +127,10 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
 
 ## Not done
 
-ICAP engine, later slices: Secure ICAP with mTLS, the signed snapshot pull, per-identity caps and the body semaphore,
-the drain window, the verdict spool, decompression and base64 layers, the file pipeline, login-step tenant rules, flow
-shape fingerprints, metrics (`docs/operations/LOCAL_RUN.md` lists them).
+ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
+fingerprints, group claims on Secure ICAP (`docs/operations/LOCAL_RUN.md` lists them). Slice 2 of the data plane (pull
+request 14) added the signed snapshot pull, Secure ICAP with a required client certificate, per-identity and pod-wide
+admission, the body budget, the drain window, the verdict spool with backpressure and fixed-label metrics.
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
 neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeScript rules for `frontend/`; control plane
 later slices (mTLS on 8092, SAML, the policy registry and snapshot feed, C3 capture store, the Incidents, Policies,
