@@ -73,9 +73,9 @@ Public GitHub repository with branch protection; pull requests 1, 2 (decisions a
 ## Pending on the Product Owner
 
 Mark the five `validation` jobs (`privacy-gate`, `gitleaks`, `java-tests`, `maven-portability`, `security-scans`) as
-required status checks on `main` (none is required today). Decisions still open: Q-7, Q-8, Q-11, Q-12, Q-17..Q-29, Q-37 (ask one batch at a time with
-the recommendation first); the twelve MVP-blocking questions are decided
-(`docs/design/PO_DECISION_RECORD_2026_10_30_MVP_BLOCKING_QUESTIONS.md`). Lab tenant
+required status checks on `main` (none is required today). Every open question is decided except the information
+requests Q-17, Q-23, Q-25 (`docs/design/PO_DECISION_RECORD_2026_10_30_*`). The PO is the proxy administrator and runs the
+ProxySG and Broadcom steps with a guide from the session (Q-20, Q-21). Lab tenant
 procurement (Q-34). Approvers and DPO identity (Q-5). Governance is settled: pull request 2 merged;
 `.claude/settings.json` committed; AGENTS.md section 1 (reviews as evidence) and section 9 (standing push/PR/merge
 authorisation) amended; the Git-authority decision record RATIFIED; `main` requires a pull request and zero approving
@@ -84,9 +84,9 @@ reviews.
 ## Not done
 
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
-neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Q-29 residual-risk signature (blocks the pilot);
-`frontend/` (and with it Semgrep TypeScript); the real Jazzer targets for the ICAP and HTTP decoders (they arrive with
-the decoders); Trivy image scanning and SBOM (with the first image, ship pipeline).
+neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); `frontend/` (and with it Semgrep TypeScript); the
+real Jazzer targets for the ICAP and HTTP decoders (they arrive with the decoders); Trivy image scanning and SBOM (with
+the first image, ship pipeline).
 
 ## Next (ROADMAP phase 0, in this order)
 

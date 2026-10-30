@@ -37,7 +37,7 @@ Metrics live from here: share of AI sign-ins on enterprise tenants (from vendor 
 
 Preconditions: phase 0 fixtures and ProxySG record; Q-1 to Q-6, Q-9, Q-10, Q-13, Q-14, Q-15, Q-16, Q-30, Q-31, Q-33 decided;
 the prerequisite neXus PR merged (ingress, health check, shared build lock); the ProxySG client certificate for Secure
-ICAP issued; lab tenants for the ICAP e2e tenant fixtures (Q-34).
+ICAP issued, or exception H-2 in force (plain ICAP for at most 30 days, REQMOD fail-closed; Q-28); lab tenants for the ICAP e2e tenant fixtures (Q-34).
 
 | Deliverable | Acceptance |
 |---|---|
@@ -51,7 +51,7 @@ ICAP issued; lab tenants for the ICAP e2e tenant fixtures (Q-34).
 | Audit triggers, SIEM out (CEF/LEEF/HEC), notifications, SNMP health, health and change-feed screens | SR-AUD-*, SR-SIEM-*, SR-NOT-1 |
 | Turkish end-user texts (notice, block, coaching) with acceptance recording | PRIV-2 tests |
 | In-cluster ICAP e2e Job, masked-role e2e, log scanner, coverage metric | AC-6 rows except deletion drill; AC-7 metric |
-| Pilot on one AD group: **Secure ICAP from day one**, then REQMOD fail-open for one to two weeks with the coverage alert armed, then fail-closed (Q-14, Q-E); plain ICAP and fail-open never at the same time | coverage ≥ 0.98, p99 within budget, zero leak-probe hits, no neXus incident attributable to rwsafe |
+| Pilot on one AD group: Secure ICAP, or plain ICAP under H-2 for at most 30 days with REQMOD **fail-closed** (Q-28); once Secure ICAP is on, REQMOD fail-open for one to two weeks with the coverage alert armed, then fail-closed (Q-14, Q-E); plain ICAP and fail-open never at the same time | coverage ≥ 0.98, p99 within budget, zero leak-probe hits, no neXus incident attributable to rwsafe |
 
 Risks: ProxySG SSE behaviour (if buffered, RESPMOD for streams is dropped and the gateway becomes the response-side
 visibility path); detector false positives on Turkish text (mitigated by the synthetic corpus and monitor-first);
