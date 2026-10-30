@@ -1,0 +1,131 @@
+package io.rwsafe.platform.enduser;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import org.junit.jupiter.api.Test;
+
+/** PRIV-2: the catalogue is complete, has no empty text and uses exactly the declared placeholders. */
+class EndUserCatalogueTest {
+
+    private static final EndUserCatalogue TR = EndUserCatalogue.turkish();
+
+    @Test
+    void everyDeclaredKeyIsPresentWithAText() {
+        assertEquals(EndUserCatalogue.KEYS.keySet(), TR.keys());
+        for (String key : EndUserCatalogue.KEYS.keySet()) {
+            assertFalse(TR.text(key).isBlank(), key);
+            assertEquals(TR.text(key), TR.text(key).strip(), key + " has surrounding whitespace");
+        }
+        assertEquals("tr-1", TR.version());
+    }
+
+    @Test
+    void placeholdersAreConsistent() {
+        Set<String> known = new HashSet<>(EndUserCatalogue.CONFIGURED);
+        known.addAll(EndUserCatalogue.FILLED);
+        Set<String> used = new HashSet<>();
+        for (String key : TR.keys()) {
+            assertEquals(EndUserCatalogue.KEYS.get(key), TR.placeholders(key), key);
+            assertTrue(known.containsAll(TR.placeholders(key)), key + " uses an unknown placeholder");
+            used.addAll(TR.placeholders(key));
+        }
+        assertEquals(known, used, "every known placeholder is used somewhere and nothing else is");
+        // Values that must never be committed are placeholders, not text: no address, mail or link in the catalogue.
+        for (String key : TR.keys()) {
+            String t = TR.text(key);
+            assertFalse(t.contains("@") || t.contains("http") || t.contains("www."), key + " holds a literal contact");
+        }
+    }
+
+    @Test
+    void theResourceHasNoDuplicateKeyAndEveryReviewMarkerPrecedesAKey() throws Exception {
+        List<String> lines = resourceLines();
+        Set<String> seen = new HashSet<>();
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            if (line.startsWith("# LEGAL-REVIEW")) {
+                assertTrue(i + 1 < lines.size() && !lines.get(i + 1).startsWith("#") && lines.get(i + 1).contains("="),
+                    "a review marker is followed by its key: " + line);
+            } else if (!line.isEmpty() && !line.startsWith("#")) {
+                String key = line.substring(0, line.indexOf('='));
+                assertTrue(seen.add(key), "duplicate key " + key);
+                assertFalse(line.endsWith("\\"), key + " continues on the next line; keep one text per line");
+            }
+        }
+    }
+
+    @Test
+    void textsAvoidJargonAndAbbreviations() {
+        // Plain Turkish an employee understands (task brief): no product or security jargon, no abbreviation; the law is
+        // named in full on first use and then "Kanun".
+        List<String> banned = List.of("KVKK", "SIEM", "DLP", "proxy", "ICAP", "rwsafe", "vb.", "örn.", "vs.", "TCKN",
+            "IBAN", "SSE", "API", "token", "redakte");
+        for (String key : TR.keys()) {
+            String t = TR.text(key);
+            for (String b : banned) {
+                assertFalse(t.toLowerCase(Locale.ROOT).contains(b.toLowerCase(Locale.ROOT)), key + " uses " + b);
+            }
+        }
+        assertTrue(TR.text("notice.intro").contains("6698 sayılı Kişisel Verilerin Korunması Kanunu"));
+        assertTrue(TR.text("notice.basis.text").contains("açık rızanıza dayanmaz"), "Q-32: consent is not a basis");
+    }
+
+    @Test
+    void anIncompleteOrWrongCatalogueIsRefused() {
+        Map<String, String> good = new LinkedHashMap<>();
+        for (String key : TR.keys()) {
+            good.put(key, TR.text(key));
+        }
+        EndUserCatalogue.of(good);
+
+        Map<String, String> missing = new LinkedHashMap<>(good);
+        missing.remove("block.class.body");
+        assertTrue(refusal(missing).contains("block.class.body: missing"));
+
+        Map<String, String> empty = new LinkedHashMap<>(good);
+        empty.put("coaching.body", "  ");
+        assertTrue(refusal(empty).contains("coaching.body: empty"));
+
+        Map<String, String> extra = new LinkedHashMap<>(good);
+        extra.put("block.unused", "metin");
+        assertTrue(refusal(extra).contains("block.unused: not a declared key"));
+
+        Map<String, String> wrongPlaceholder = new LinkedHashMap<>(good);
+        wrongPlaceholder.put("block.platform.body", "{{platfrom}} engellendi");
+        assertTrue(refusal(wrongPlaceholder).contains("block.platform.body: placeholders"));
+
+        Map<String, String> dropped = new LinkedHashMap<>(good);
+        dropped.put("stream.terminated", "Yanıt kesildi. Referans: {{ref}}");
+        assertTrue(refusal(dropped).contains("stream.terminated: placeholders"));
+
+        Map<String, String> unclosed = new LinkedHashMap<>(good);
+        unclosed.put("page.reference", "Referans: {{ref");
+        assertTrue(refusal(unclosed).contains("page.reference: an unclosed placeholder"));
+
+        Map<String, String> badVersion = new LinkedHashMap<>(good);
+        badVersion.put("catalogue.version", "1");
+        assertTrue(refusal(badVersion).contains("catalogue.version"));
+    }
+
+    private static String refusal(Map<String, String> texts) {
+        return assertThrows(IllegalStateException.class, () -> EndUserCatalogue.of(texts)).getMessage();
+    }
+
+    static List<String> resourceLines() throws Exception {
+        try (InputStream in = EndUserCatalogue.class.getResourceAsStream(EndUserCatalogue.RESOURCE)) {
+            return new ArrayList<>(new String(in.readAllBytes(), StandardCharsets.UTF_8).lines().toList());
+        }
+    }
+}

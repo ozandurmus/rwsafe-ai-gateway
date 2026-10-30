@@ -102,6 +102,21 @@ final class Schema {
     static final Field<String[]> SN_APPROVERS = DSL.field(DSL.name("policy_snapshot", "approvers"),
         SQLDataType.CLOB.array());
 
+    static final Table<Record> NOTICE_ACK = DSL.table(DSL.name("notice_acknowledgement"));
+    static final Field<Long> NA_ID = DSL.field(DSL.name("notice_acknowledgement", "acknowledgement_id"),
+        SQLDataType.BIGINT);
+    static final Field<String> NA_USER = DSL.field(DSL.name("notice_acknowledgement", "user_pseudonym"),
+        SQLDataType.CLOB);
+    static final Field<String> NA_VERSION = DSL.field(DSL.name("notice_acknowledgement", "notice_version"),
+        SQLDataType.CLOB);
+    static final Field<Instant> NA_ACKNOWLEDGED_AT = DSL.field(DSL.name("notice_acknowledgement", "acknowledged_at"),
+        SQLDataType.INSTANT);
+    static final Field<String> NA_SOURCE = DSL.field(DSL.name("notice_acknowledgement", "source"), SQLDataType.CLOB);
+    static final Field<Instant> NA_RECORDED_AT = DSL.field(DSL.name("notice_acknowledgement", "recorded_at"),
+        SQLDataType.INSTANT);
+    static final Field<String> NA_KEY_ID = DSL.field(DSL.name("notice_acknowledgement", "pseudonym_key_id"),
+        SQLDataType.CLOB);
+
     static final Table<Record> AUDIT_EVENT = DSL.table(DSL.name("audit_event"));
     static final Field<String> AUDIT_ACTOR = DSL.field(DSL.name("audit_event", "actor_fingerprint"), SQLDataType.CLOB);
     static final Field<String> AUDIT_ACTION = DSL.field(DSL.name("audit_event", "action_id"), SQLDataType.CLOB);
