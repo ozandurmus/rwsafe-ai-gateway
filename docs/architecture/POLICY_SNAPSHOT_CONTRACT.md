@@ -45,6 +45,41 @@ unchanged.
 - `platforms`: vendor-published endpoints only (PLATFORM_MATRIX §2); never an estate host name.
 - `issuedAt`: UTC. A snapshot older than 24 hours is refused (SR-DP-8).
 
+## Format 2: scoped rules (PO decision Q-39)
+
+Format 2 adds scoped rules (`PO_DECISION_RECORD_2026_10_30_POLICY_SCOPE_AND_PLATFORM_RETIREMENT.md`). Every format 1
+field keeps its meaning; `classActions` is the `ANY` scope (everyone, enforce). One new field:
+
+```json
+{
+  "format": 2,
+  "scopedRules": [
+    {"id": "<rule id>@<version>", "groups": ["<directory group>"], "mode": "enforce", "classActions": {"<CLASS>": "<ACTION>"}}
+  ]
+}
+```
+
+- `scopedRules`: an array, possibly empty, at most 256 entries. Each entry: `id` (registry rule id and version), `groups`
+  (1 to 32 non-empty strings of at most 256 characters, compared case-insensitively after trimming; directory group names
+  are runtime data, never committed), `mode` (`enforce` or `monitor`), `classActions` (a **partial** map: only the classes
+  this rule sets; known classes and actions only). An unknown field, a duplicate `id`, an empty `groups`, or a fail-closed
+  class at `ALLOW` or `WARN` refuses the whole snapshot.
+- Format 1 stays accepted; a format 1 snapshot is a format 2 snapshot with no scoped rules.
+
+Evaluation on the data plane, per transaction and per class:
+
+1. Start from `classActions` (scope `ANY`).
+2. **Trusted group claim** (the connection is mutually authenticated Secure ICAP and `X-Authenticated-Groups` parses):
+   apply every `enforce` scoped rule whose `groups` intersects the claimed groups; where several set the same class, the
+   strictest wins (`BLOCK` > `REDACT` > `WARN` > `ALLOW`). A matching scoped rule **replaces** the `ANY` action for the
+   classes it sets, so a group may be looser than `ANY` for a class that is not fail-closed.
+3. **No trusted claim** (plain ICAP, header missing or unparseable): for each class, the strictest of the `ANY` action and
+   every `enforce` scoped rule's action for that class (ICAP spec identity row, OFF2-12).
+4. `monitor` scoped rules never change the verdict; the verdict event lists the ids of monitor rules that matched and
+   whose action would differ.
+
+The verdict event carries the ids of the scoped rules applied (`appliedRuleIds`); it never carries the group names.
+
 Response headers:
 
 - `ETag: "<version>"`
