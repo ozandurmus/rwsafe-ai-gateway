@@ -14,6 +14,13 @@
       "reason": "Unaltered external review (AGENTS.md 11) names the gitleaks inline-allow marker in prose (finding D-04); no secret",
       "owner": "orchestrating ENGINEER session",
       "review_date": "2027-01-31"
+    },
+    {
+      "rule": "INTERNAL_HOST_NAME",
+      "path": "docs/reviews/PR12_2026_10_30_ARGON_CONTROL_PLANE_RECHECK.md",
+      "reason": "Unaltered external review (AGENTS.md 11) names a Spring Boot remote-IP property (internal-proxies, finding N-01) whose dotted name the host-zone rule reads as a host; no host name",
+      "owner": "control-plane ENGINEER session",
+      "review_date": "2027-01-31"
     }
   ]
 }

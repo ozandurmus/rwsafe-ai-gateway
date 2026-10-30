@@ -72,8 +72,8 @@ Public GitHub repository with branch protection; pull requests 1, 2 (decisions a
 
 ## Pending on the Product Owner
 
-Mark the five `validation` jobs (`privacy-gate`, `gitleaks`, `java-tests`, `maven-portability`, `security-scans`) as
-required status checks on `main` (none is required today). Every open question is decided except the information
+Mark the six `validation` jobs (`privacy-gate`, `gitleaks`, `java-tests`, `frontend`, `maven-portability`,
+`security-scans`) as required status checks on `main` (none is required today). Every open question is decided except the information
 requests Q-17, Q-23, Q-25 (`docs/design/PO_DECISION_RECORD_2026_10_30_*`). The PO is the proxy administrator and runs the
 ProxySG and Broadcom steps from `docs/operations/PROXYSG_PHASE0_GUIDE.md` (Q-20, Q-21); the session asks the PO and records the answers
 in `docs/operations/PHASE0_PROXYSG_RECORD.md` (first pass 2026-10-30: appliances, identity format, interception, QUIC,
@@ -96,13 +96,44 @@ before a leaking window leaves. Verdict events (metadata only) go through a boun
 ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Local run and synthetic replay:
 `docs/operations/LOCAL_RUN.md`.
 
+## Done (MVP control plane and admin UI, slice 1)
+
+- `java/persistence`: Flyway V1 and jOOQ (Q-16) over a hand-written schema that `SchemaMatchesMigrationsTest` proves
+  against the migrations. Verdict events and findings are metadata only (ADR-009 C1/C2/C6: no body, no raw claim, no raw
+  address column; findings are class + count, digest column reserved). Trigger-enforced audit ledger (C7): a mutation of
+  an audited table without the `app.*` audit context is refused, the ledger is append-only (update, delete, truncate
+  refused). Local break-glass accounts (BCrypt hash only). Tests on an embedded PostgreSQL 16 (no container runtime).
+- `java/control` (Spring Boot 4.1.1 with Spring Framework 7.0.9 and Spring Security 7.1.1, PO decision record
+  `PO_DECISION_RECORD_2026_10_30_SPRING_BOOT_4`; neXus is on 4.0.8; no Boot plugin; HTTP JSON on Jackson 2): `POST /internal/v1/verdict-events` on its own
+  connector (8092; the admin port answers 404 for it and vice versa; 2 MiB cap checked before reading) with the exact
+  contract (unknown or missing fields refuse the batch, values never echoed), idempotent on `eventId`; the identity claim
+  becomes `USR-<10 hex>` and the client address a /24 label in 240/4 under rwsafe's own HMAC key before persistence, 503
+  when the key is missing. Identity: LDAP/AD search-and-bind (Q-9) behind the `Authenticator` seam, a generated
+  break-glass account (owner-only initial password file, ledgered), every sign-in ledgered under a pseudonym, login
+  throttling per name and client, request bodies bounded as read, session + CSRF cookies, roles
+  `security_admin`, `viewer`, `replay_viewer` (read-only, masked). The masking funnel (`ResponseBodyAdvice`) serves the
+  masked role (exclusive, read-only) only `MaskedView` bodies through the `rwmask-v1-slice1` text layers, with
+  `X-RWSAFE-Masked`, and 503
+  `MASKING_UNAVAILABLE` without the key or the estate dictionary; `FunnelCoverageTest` proves every API route has a masked
+  projection. Read API: overview, traffic (keyset pages, pseudonym-only user filter), event detail, platforms, health
+  (stub). Synthetic sample events (dev profile) through the real ingestion path; `:control:runDev` starts everything
+  locally with an embedded PostgreSQL and a synthetic LDAP directory.
+- `frontend/` (React 18, TypeScript, MUI 5, Vite 7, Vitest 5): Overview, Traffic, Event detail, Health; errors show the
+  server's reason class and sentence. CI job `frontend` (tsc, Vitest, build).
+- Second review: Argon `docs/reviews/PR12_2026_10_30_ARGON_CONTROL_PLANE.md`, answered by ID in
+  `PR12_2026_10_30_RESPONSE.md`.
+- Verified end to end locally: the ICAP engine's replay scenarios reach the control plane and appear in the UI.
+- Local run: `docs/operations/LOCAL_RUN.md` "Control plane and admin UI".
+
 ## Not done
 
 ICAP engine, later slices: Secure ICAP with mTLS, the signed snapshot pull, per-identity caps and the body semaphore,
 the drain window, the verdict spool, decompression and base64 layers, the file pipeline, login-step tenant rules, flow
 shape fingerprints, metrics (`docs/operations/LOCAL_RUN.md` lists them).
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
-neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); `frontend/` (and with it Semgrep TypeScript); the
+neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeScript rules for `frontend/`; control plane
+later slices (mTLS on 8092, SAML, the policy registry and snapshot feed, C3 capture store, the Incidents, Policies,
+Platforms and Administration screens, Playwright masked-role leak probe, the cluster PostgreSQL Job); the
 Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with them); Trivy image scanning and SBOM (with
 the first image, ship pipeline).
 

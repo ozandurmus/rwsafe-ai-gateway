@@ -98,6 +98,9 @@ _GITLEAKS_INLINE_ALLOW_RE = re.compile("gitleaks" + r":allow")   # split so this
 _TR_IBAN_RE = re.compile(r"\bTR\d{2}(?:\s?\d{4}){5}\s?\d{2}\b")
 _TR_PHONE_RE = re.compile(r"(?<!\d)(?:\+90|0090|0)?\s?\(?5\d{2}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?!\d)")
 _TCKN_RE = re.compile(r"(?<!\d)[1-9]\d{10}(?!\d)")
+# A lower-case hex run of 32 or more characters is a digest (sha256 in verification metadata, a commit id): the digit runs
+# inside it are not identifiers, so the number rules do not read them (PR 12 review D-11, replacing a path allowlist).
+_HEX_DIGEST_RE = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{32,}(?![0-9A-Za-z])")
 # Cluster-internal DNS (svc.cluster.local) and the documented placeholder zone nexus.local are repository-safe shapes.
 _INTERNAL_HOST_RE = re.compile(
     r"(?i)\b[a-z0-9][a-z0-9.-]{0,252}\.(?:corp|lan|intra|internal)\b|\b[a-z0-9][a-z0-9.-]{0,252}\.local\b")
@@ -293,9 +296,10 @@ def _scan_line(line: str, hit, *, code: bool = False, mermaid: bool = False) -> 
         hit("LOCAL_HOME_PATH")
     if any(iban_valid(m.group(0)) for m in _TR_IBAN_RE.finditer(line)):
         hit("TR_IBAN")
-    if any(tckn_valid(m.group(0)) for m in _TCKN_RE.finditer(line)):
+    numbers = _HEX_DIGEST_RE.sub(" ", line)
+    if any(tckn_valid(m.group(0)) for m in _TCKN_RE.finditer(numbers)):
         hit("TCKN_WITH_VALID_CHECKSUM")
-    if _TR_PHONE_RE.search(line):
+    if _TR_PHONE_RE.search(numbers):
         hit("TR_MOBILE_NUMBER")
 
 
