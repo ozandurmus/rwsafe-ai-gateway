@@ -20,50 +20,79 @@ import java.util.List;
  * @param bodyBudgetBytes        pod-wide cap on captured REQMOD body bytes held at once (PLAT-F1)
  * @param drainServeMillis       how long a draining engine keeps serving with Connection: close
  * @param sharedAddressPrefixes  client-address prefixes that are shared by many users (runtime configuration)
+ * @param groupClaimEncoding     how the proxy encodes {@code X-Authenticated-Groups}; {@code DISABLED} by default
  */
 public record EngineConfig(int maxReqmodBody, int maxEncapsulatedHeads, int windowBytes, int windowOverlap,
                            long bodyTimeoutMillis, long respmodTimeoutMillis, int streamIdleSeconds,
                            int connectionIdleSeconds, int maxInflight, int perIdentityInflight, int perSharedAddress,
-                           long bodyBudgetBytes, long drainServeMillis, List<String> sharedAddressPrefixes) {
+                           long bodyBudgetBytes, long drainServeMillis, List<String> sharedAddressPrefixes,
+                           GroupClaimEncoding groupClaimEncoding) {
+
+    /**
+     * {@code RWSAFE_GROUP_CLAIM_ENCODING} (PR 20 review D-01, Q-1): the engine never guesses the header's encoding per
+     * value. {@code plain}: the header value is the comma-separated group list, its octets read as UTF-8. {@code base64}:
+     * the whole header value is standard base64 (RFC 4648 section 4 alphabet, padding required) of that same list in
+     * UTF-8. Unset or any other value: group claims are disabled and every transaction takes the strictest policy.
+     */
+    public enum GroupClaimEncoding {
+        DISABLED, PLAIN, BASE64;
+
+        /** Exactly {@code plain} or {@code base64}; anything else, including null, disables group claims. */
+        public static GroupClaimEncoding fromSetting(String value) {
+            if ("plain".equals(value)) {
+                return PLAIN;
+            }
+            return "base64".equals(value) ? BASE64 : DISABLED;
+        }
+    }
 
     public EngineConfig {
         sharedAddressPrefixes = List.copyOf(sharedAddressPrefixes);
+        if (groupClaimEncoding == null) {
+            groupClaimEncoding = GroupClaimEncoding.DISABLED;
+        }
     }
 
     public static EngineConfig defaults() {
         return new EngineConfig(4 * 1024 * 1024, 128 * 1024, 16 * 1024, 2 * 1024, 10_000, 300_000, 30, 300,
-            1000, 32, 256, 256L * 1024 * 1024, 15_000, List.of());
+            1000, 32, 256, 256L * 1024 * 1024, 15_000, List.of(), GroupClaimEncoding.DISABLED);
     }
 
     public EngineConfig withBodyLimits(int maxReqmodBody, long bodyBudgetBytes) {
         return new EngineConfig(maxReqmodBody, maxEncapsulatedHeads, windowBytes, windowOverlap, bodyTimeoutMillis,
             respmodTimeoutMillis, streamIdleSeconds, connectionIdleSeconds, maxInflight, perIdentityInflight,
-            perSharedAddress, bodyBudgetBytes, drainServeMillis, sharedAddressPrefixes);
+            perSharedAddress, bodyBudgetBytes, drainServeMillis, sharedAddressPrefixes, groupClaimEncoding);
     }
 
     public EngineConfig withWindow(int windowBytes, int windowOverlap) {
         return new EngineConfig(maxReqmodBody, maxEncapsulatedHeads, windowBytes, windowOverlap, bodyTimeoutMillis,
             respmodTimeoutMillis, streamIdleSeconds, connectionIdleSeconds, maxInflight, perIdentityInflight,
-            perSharedAddress, bodyBudgetBytes, drainServeMillis, sharedAddressPrefixes);
+            perSharedAddress, bodyBudgetBytes, drainServeMillis, sharedAddressPrefixes, groupClaimEncoding);
     }
 
     public EngineConfig withTimeouts(long bodyTimeoutMillis, long respmodTimeoutMillis) {
         return new EngineConfig(maxReqmodBody, maxEncapsulatedHeads, windowBytes, windowOverlap, bodyTimeoutMillis,
             respmodTimeoutMillis, streamIdleSeconds, connectionIdleSeconds, maxInflight, perIdentityInflight,
-            perSharedAddress, bodyBudgetBytes, drainServeMillis, sharedAddressPrefixes);
+            perSharedAddress, bodyBudgetBytes, drainServeMillis, sharedAddressPrefixes, groupClaimEncoding);
     }
 
     public EngineConfig withAdmission(int maxInflight, int perIdentityInflight, int perSharedAddress,
                                       List<String> sharedAddressPrefixes) {
         return new EngineConfig(maxReqmodBody, maxEncapsulatedHeads, windowBytes, windowOverlap, bodyTimeoutMillis,
             respmodTimeoutMillis, streamIdleSeconds, connectionIdleSeconds, maxInflight, perIdentityInflight,
-            perSharedAddress, bodyBudgetBytes, drainServeMillis, sharedAddressPrefixes);
+            perSharedAddress, bodyBudgetBytes, drainServeMillis, sharedAddressPrefixes, groupClaimEncoding);
     }
 
     public EngineConfig withDrainServeMillis(long drainServeMillis) {
         return new EngineConfig(maxReqmodBody, maxEncapsulatedHeads, windowBytes, windowOverlap, bodyTimeoutMillis,
             respmodTimeoutMillis, streamIdleSeconds, connectionIdleSeconds, maxInflight, perIdentityInflight,
-            perSharedAddress, bodyBudgetBytes, drainServeMillis, sharedAddressPrefixes);
+            perSharedAddress, bodyBudgetBytes, drainServeMillis, sharedAddressPrefixes, groupClaimEncoding);
+    }
+
+    public EngineConfig withGroupClaimEncoding(GroupClaimEncoding groupClaimEncoding) {
+        return new EngineConfig(maxReqmodBody, maxEncapsulatedHeads, windowBytes, windowOverlap, bodyTimeoutMillis,
+            respmodTimeoutMillis, streamIdleSeconds, connectionIdleSeconds, maxInflight, perIdentityInflight,
+            perSharedAddress, bodyBudgetBytes, drainServeMillis, sharedAddressPrefixes, groupClaimEncoding);
     }
 
     long drainServeNanos() {

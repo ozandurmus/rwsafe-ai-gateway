@@ -46,6 +46,12 @@ public final class PolicySnapshot {
         this.version = version;
         this.id = id;
         this.classActions = new EnumMap<>(classActions);
+        for (Map.Entry<DataClass, Action> e : this.classActions.entrySet()) {
+            // ADR-010 §4, PR 20 review D-04: the ANY scope never relaxes a fail-closed class, whoever builds it.
+            if (e.getKey().failClosed() && (e.getValue() == Action.ALLOW || e.getValue() == Action.WARN)) {
+                throw new IllegalArgumentException("a fail-closed class may not be ALLOW or WARN");
+            }
+        }
         for (DataClass c : DataClass.values()) {
             this.classActions.putIfAbsent(c, Action.BLOCK);
         }

@@ -49,11 +49,11 @@ public final class PolicyEvaluator {
      * The effective class actions for one transaction.
      *
      * @param trusted       the connection is mutually authenticated Secure ICAP ({@code mtls_verified})
-     * @param claimedGroups the proxy's group claim normalised by {@link ScopedRule#normaliseGroup}, or null when the
-     *                      header is missing or unparseable
+     * @param claimedGroups the proxy's group claim normalised by {@link GroupNames#normalise}, or null when the header
+     *                      is missing or unparseable; an empty set is no claim either (PR 20 review D-04)
      */
     public EffectiveActions resolve(boolean trusted, Set<String> claimedGroups) {
-        if (!trusted || claimedGroups == null) {
+        if (!trusted || claimedGroups == null || claimedGroups.isEmpty()) {
             return strictest;
         }
         boolean[] matched = null;

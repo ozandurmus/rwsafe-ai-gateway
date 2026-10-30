@@ -250,7 +250,8 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         }
         // Q-39, OFF2-12: a group claim selects scoped rules only on a mutually authenticated connection; otherwise, and
         // when the claim is missing or unreadable, the strictest action per class applies. The claim stays in this frame.
-        effective = policy.evaluator().resolve(mutualTls, GroupClaim.parse(req.head()));
+        effective = policy.evaluator().resolve(mutualTls,
+            GroupClaim.parse(req.head(), engine.config().groupClaimEncoding()));
         Admission.Ticket[] admitted = new Admission.Ticket[1];
         Admission.Refusal refusal = engine.admission().tryEnter(req.head().first("X-Authenticated-User"),
             req.head().first("X-Client-IP"), admitted);
@@ -655,7 +656,10 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         byte[] notice = resHttp.mediaType().equals("text/event-stream")
             ? BlockPages.sseTermination(reason, correlation) : BlockPages.terminatedText(reason, correlation);
         ctx.write(Unpooled.wrappedBuffer(IcapResponses.chunk(notice, 0, notice.length)));
-        emit(Verdict.STREAM_ABORTED, reason, nonVerdictReason != null ? List.of() : streamFindings);
+        // PR 20 review D-06: the decision behind a finding abort names its scoped rules like any other.
+        Decision decision = nonVerdictReason != null ? null
+            : policy.evaluator().onFindings(streamFindings, false, effective);
+        emit(Verdict.STREAM_ABORTED, reason, nonVerdictReason != null ? List.of() : streamFindings, decision);
         held = null;
         pending = null;
         if (decoder.done()) {

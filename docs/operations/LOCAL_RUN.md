@@ -26,6 +26,7 @@ card numbers are redacted; the AI-category flow is fail-closed). Environment var
 | `RWSAFE_SNAPSHOT_CACHE` | unset | directory for the last good snapshot, verified again at start |
 | `RWSAFE_METRICS_PORT` | `9090` | `GET /metrics` (Prometheus text, fixed labels only) and `GET /ready` |
 | `RWSAFE_SHARED_ADDRESS_PREFIXES` | unset | client-address prefixes shared by many users (VDI, terminal servers): 256 transactions in flight instead of 32 |
+| `RWSAFE_GROUP_CLAIM_ENCODING` | unset (disabled) | how the proxy encodes `X-Authenticated-Groups`: exactly `plain` or `base64` (below); unset or any other value disables group claims, so every transaction takes the strictest policy |
 
 In a second terminal, replay the synthetic sample traffic:
 
@@ -44,10 +45,21 @@ Any ICAP client works as well, for example `c-icap-client` against `icap://127.0
 ### Scoped rules (snapshot format 2)
 
 A format 2 snapshot adds group-scoped rules on top of the `ANY` class actions (POLICY_SNAPSHOT_CONTRACT.md, PO decision
-Q-39). The engine reads the proxy's `X-Authenticated-Groups` claim (comma-separated, trimmed, case-insensitive; a
-base64-encoded value is decoded; the estate proxy's exact format is UNVERIFIED) and trusts it only on the Secure ICAP
-listener. On plain ICAP, or with the header missing or unreadable, each class takes the strictest of `ANY` and every
-enforce scoped rule. The verdict event names the rules (`appliedRuleIds`, `monitorRuleIds`), never the groups.
+Q-39). The engine reads the proxy's `X-Authenticated-Groups` claim only when `RWSAFE_GROUP_CLAIM_ENCODING` says how it
+is encoded, and trusts it only on the Secure ICAP listener; it never guesses the encoding per value (PR 20 review D-01).
+Which encoding the estate proxy uses is UNVERIFIED.
+
+- `plain`: the header value is a comma-separated list of short group names (no commas inside a name, PR 20 review Q-2),
+  its octets read as UTF-8.
+- `base64`: the whole header value is standard base64 (RFC 4648 section 4 alphabet, padding required) of that same
+  UTF-8 list.
+
+Each name is compared in one form shared with the snapshot (`GroupNames`): white space stripped, Unicode NFC, Turkish
+`İ`, `I` and `ı` folded to `i`, lower case (`Locale.ROOT`), a combining dot above after `i` removed, NFC again. A header
+that is repeated, holds a control character, a name over 256 characters, more than 256 comma-separated tokens (empty
+and repeated ones counted), octets that are not UTF-8 or invalid base64 is no claim. On plain ICAP, with group claims
+disabled, or with no readable claim, each class takes the strictest of `ANY` and every enforce scoped rule. The verdict
+event names the rules (`appliedRuleIds`, `monitorRuleIds`), never the groups.
 
 The quickest local check is the synthetic end-to-end suite, which runs one engine with a stricter, a looser and a monitor
 rule over both listeners:
@@ -57,7 +69,8 @@ rule over both listeners:
 ```
 
 By hand: the built-in development snapshot has no scoped rules, so point the engine at a control plane that issues
-format 2 (`RWSAFE_SNAPSHOT_URL`, `RWSAFE_SNAPSHOT_PUBLIC_KEYS`), approve a group-scoped version there, and send a REQMOD
+format 2 (`RWSAFE_SNAPSHOT_URL`, `RWSAFE_SNAPSHOT_PUBLIC_KEYS`), set `RWSAFE_GROUP_CLAIM_ENCODING=plain`, approve a
+group-scoped version there, and send a REQMOD
 with `-x "X-Authenticated-Groups: <synthetic group>"` from `c-icap-client`. On port 1344 a stricter group rule applies to
 every user and a looser one has no effect; group selection needs the Secure ICAP listener (`RWSAFE_TLS_*`) and a client
 that presents a certificate issued by `RWSAFE_TLS_CLIENT_CA`.

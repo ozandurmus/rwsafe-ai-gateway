@@ -51,6 +51,10 @@ class ScopedPolicyEndToEndTest {
     @TempDir
     static Path tmp;
 
+    private static PolicySnapshot scoped;
+    private static final EngineConfig BASE = EngineConfig.defaults().withBodyLimits(64 * 1024, 256L * 1024 * 1024)
+        .withTimeouts(2_000, 3_000);
+
     @BeforeAll
     static void start() throws Exception {
         PolicySnapshot any = Snapshots.builtinDevelopment();
@@ -58,15 +62,14 @@ class ScopedPolicyEndToEndTest {
         for (DataClass c : DataClass.values()) {
             anyActions.put(c, any.actionFor(c));
         }
-        PolicySnapshot scoped = new PolicySnapshot(2, "registry-synthetic-scoped", anyActions, true, any.platforms(),
+        scoped = new PolicySnapshot(2, "registry-synthetic-scoped", anyActions, true, any.platforms(),
             null, List.of(
                 new ScopedRule(STRICT, Set.of("finance"), ScopedRule.Mode.ENFORCE, Map.of(DataClass.TCKN, Action.BLOCK)),
                 new ScopedRule(LOOSE, Set.of("platform-devs"), ScopedRule.Mode.ENFORCE,
                     Map.of(DataClass.SECRET, Action.REDACT)),
                 new ScopedRule(MONITOR, Set.of("finance"), ScopedRule.Mode.MONITOR,
                     Map.of(DataClass.TR_IBAN, Action.BLOCK))));
-        EngineConfig config = EngineConfig.defaults().withBodyLimits(64 * 1024, 256L * 1024 * 1024)
-            .withTimeouts(2_000, 3_000);
+        EngineConfig config = BASE.withGroupClaimEncoding(EngineConfig.GroupClaimEncoding.PLAIN);
         server = new IcapServer(new IcapEngine(scoped, DetectorSet.standard(), EVENTS::add, config), 0);
         plainPort = server.start("127.0.0.1", 0);
         pki = new TestPki(tmp);
@@ -88,7 +91,11 @@ class ScopedPolicyEndToEndTest {
     }
 
     private static Outcome send(boolean mtls, String groups, String prompt) throws Exception {
-        Socket socket = mtls ? pki.proxySocket(securePort) : new Socket("127.0.0.1", plainPort);
+        return sendTo(mtls ? securePort : plainPort, mtls, groups, prompt);
+    }
+
+    private static Outcome sendTo(int port, boolean mtls, String groups, String prompt) throws Exception {
+        Socket socket = mtls ? pki.proxySocket(port) : new Socket("127.0.0.1", port);
         IcapTestClient.Response r;
         try (IcapTestClient c = new IcapTestClient(socket)) {
             c.write(Frames.reqmodWithGroups(Frames.fixture("claude/api/messages.http", prompt), groups));
@@ -156,9 +163,8 @@ class ScopedPolicyEndToEndTest {
         assertEquals(Verdict.BLOCK, finance.event().verdict());
         assertEquals(List.of(STRICT), finance.event().appliedRuleIds());
 
-        // UNVERIFIED ProxySG convention: the whole value base64-encoded.
-        String encoded = Base64.getEncoder().encodeToString("platform-devs,other-group".getBytes(StandardCharsets.UTF_8));
-        assertEquals(Verdict.REDACT, send(true, encoded, secretPrompt()).event().verdict());
+        Outcome upper = send(true, "OTHER-GROUP, FINANCE", tcknPrompt());
+        assertEquals(List.of(STRICT), upper.event().appliedRuleIds(), "one comparison form on both sides (D-02)");
     }
 
     @Test
@@ -195,5 +201,64 @@ class ScopedPolicyEndToEndTest {
         VerdictEvent clean = send(true, "finance", "synthetic: summarise the release notes").event();
         String cleanJson = VerdictEventJson.array(List.of(clean));
         assertFalse(cleanJson.contains("RuleIds"), "no scoped rule took part: the field set is unchanged");
+    }
+
+    // ---- PR 20 second review (Argon) ----
+
+    private static int[] startOther(IcapServer other) throws Exception {
+        return new int[] {other.start("127.0.0.1", 0), other.startSecure("127.0.0.1", 0, pki.serverFiles.chain(),
+            pki.serverFiles.key(), pki.serverFiles.caFile())};
+    }
+
+    /** D-01, Q-1: the encoding is configured; base64 decodes a single all-alphabet group, a plain value is no claim. */
+    @Test
+    void base64EncodingIsConfiguredNeverGuessed() throws Exception {
+        EngineConfig config = BASE.withGroupClaimEncoding(EngineConfig.GroupClaimEncoding.BASE64);
+        try (IcapServer other = new IcapServer(new IcapEngine(scoped, DetectorSet.standard(), EVENTS::add, config), 0)) {
+            int secure = startOther(other)[1];
+            String devs = Base64.getEncoder().encodeToString("platform-devs".getBytes(StandardCharsets.UTF_8));
+            Outcome o = sendTo(secure, true, devs, secretPrompt());
+            assertEquals(Verdict.REDACT, o.event().verdict(), "the base64 claim selects the looser group rule");
+            assertEquals(List.of(LOOSE), o.event().appliedRuleIds());
+            String finance = Base64.getEncoder().encodeToString("finance".getBytes(StandardCharsets.UTF_8));
+            assertEquals(List.of(STRICT), sendTo(secure, true, finance, tcknPrompt()).event().appliedRuleIds(),
+                "a single group of base64-alphabet letters is decoded, never read literally");
+            assertEquals(Verdict.BLOCK, sendTo(secure, true, "platform-devs", secretPrompt()).event().verdict(),
+                "a value that is not base64 is no claim: strictest");
+        }
+    }
+
+    /** D-01: unset (or any other value) disables group claims: strictest for everyone, also on Secure ICAP. */
+    @Test
+    void groupClaimsAreDisabledByDefault() throws Exception {
+        try (IcapServer other = new IcapServer(new IcapEngine(scoped, DetectorSet.standard(), EVENTS::add, BASE), 0)) {
+            int secure = startOther(other)[1];
+            Outcome o = sendTo(secure, true, "platform-devs", secretPrompt());
+            assertEquals(Verdict.BLOCK, o.event().verdict());
+            assertEquals(List.of(), o.event().appliedRuleIds());
+        }
+    }
+
+    /** D-06: a streamed response aborted on a finding reports the scoped rules behind the class action. */
+    @Test
+    void streamedAbortReportsTheRuleIds() throws Exception {
+        String tckn = Synthetic.tckn(11);
+        byte[] body = ("data: " + "s".repeat(2000) + " customer " + tckn + " end\n\n").getBytes(StandardCharsets.UTF_8);
+        Frames.Http request = Frames.fixture("openai/web/chat.http", "synthetic hi");
+        try (IcapTestClient c = new IcapTestClient(plainPort)) {
+            c.write(Frames.respmodChunked(request, "HTTP/1.1 200 OK\nContent-Type: text/event-stream\n", body, 1024));
+            IcapTestClient.Response r = c.read();
+            assertFalse(r.bodyText().contains(tckn));
+        }
+        VerdictEvent e = null;
+        for (int i = 0; i < 100 && e == null; i++) {
+            e = EVENTS.poll();
+            if (e == null) {
+                Thread.sleep(20);
+            }
+        }
+        assertEquals(Verdict.STREAM_ABORTED, e.verdict());
+        assertEquals(List.of(STRICT), e.appliedRuleIds(), "plain ICAP: the stricter finance rule set TCKN to BLOCK");
+        assertEquals(List.of(), e.monitorRuleIds());
     }
 }

@@ -11,6 +11,7 @@ import io.rwsafe.platform.verdict.Verdict;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -55,7 +56,7 @@ class ScopedRulesTest {
         assertEquals("scope.pilot@2", r.id());
         assertEquals(Set.of("pilot-group"), r.groups());
         assertEquals(ScopedRule.Mode.ENFORCE, r.mode());
-        assertEquals(java.util.Map.of(DataClass.TR_IBAN, Action.BLOCK), r.classActions());
+        assertEquals(Map.of(DataClass.TR_IBAN, Action.BLOCK), r.classActions());
         assertTrue(parse(doc("")).scopedRules().isEmpty(), "an empty array is a format 2 snapshot without rules");
         assertTrue(!r.toString().contains("pilot-group"), "a rule never prints its groups");
     }
@@ -110,7 +111,7 @@ class ScopedRulesTest {
             }
         }
         assertThrows(IllegalArgumentException.class, () -> new ScopedRule("a@1", Set.of("g"), ScopedRule.Mode.ENFORCE,
-            java.util.Map.of(DataClass.TCKN, Action.ALLOW)), "the model refuses it too");
+            Map.of(DataClass.TCKN, Action.ALLOW)), "the model refuses it too");
     }
 
     // ---- evaluation ----
@@ -206,6 +207,82 @@ class ScopedRulesTest {
             "without a trusted claim a monitor rule is reported when, enforced, it would raise the class");
         assertEquals(List.of(), e.onFindings(List.of(found(DataClass.TR_IBAN)), true, support).monitorRuleIds(),
             "only rules about the found classes are reported");
+    }
+
+    // ---- PR 20 second review (Argon) ----
+
+    /** D-02: the snapshot's group and the claim meet in one comparison form, Turkish I included. */
+    @Test
+    void turkishGroupNamesMatchWhateverTheCase() throws Exception {
+        PolicyEvaluator e = evaluator(rule("tckn.audit@1", "\"İç-Denetim\"", "enforce", "\"TCKN\":\"REDACT\""));
+        for (String claimed : List.of("İÇ-DENETİM", "IÇ-DENETIM", "ıç-denetım")) {
+            EffectiveActions x = e.resolve(true, Set.of(GroupNames.normalise(claimed)));
+            assertEquals(Action.REDACT, x.actionFor(DataClass.TCKN), claimed);
+            assertEquals(List.of("tckn.audit@1"), x.appliedFor(DataClass.TCKN));
+        }
+    }
+
+    /** D-04: a rule built in code is validated and normalised like one read from a snapshot. */
+    @Test
+    void aRuleBuiltInCodeIsNormalisedAndValidated() {
+        Map<DataClass, Action> block = Map.of(DataClass.TCKN, Action.BLOCK);
+        ScopedRule r = new ScopedRule("a@1", Set.of(" Finance "), ScopedRule.Mode.ENFORCE, block);
+        assertEquals(Set.of("finance"), r.groups());
+        assertThrows(IllegalArgumentException.class,
+            () -> new ScopedRule("a@1", Set.of("g"), ScopedRule.Mode.ENFORCE, Map.of()), "empty class map");
+        for (String bad : List.of("  ", "a,b", "g\u0001", "g".repeat(257))) {
+            assertThrows(IllegalArgumentException.class,
+                () -> new ScopedRule("a@1", Set.of(bad), ScopedRule.Mode.ENFORCE, block), bad.length() + " chars");
+        }
+        PolicyEvaluator e = new PolicyEvaluator(new PolicySnapshot(2, "registry-synthetic",
+            Map.of(DataClass.TCKN, Action.REDACT), true, List.of(), null, List.of(r)));
+        assertEquals(Action.BLOCK, e.resolve(true, Set.of("finance")).actionFor(DataClass.TCKN));
+    }
+
+    /** D-04: the ANY scope refuses a relaxed fail-closed class whoever builds it. */
+    @Test
+    void aSnapshotBuiltInCodeCannotRelaxAFailClosedClass() {
+        for (Action weak : List.of(Action.ALLOW, Action.WARN)) {
+            assertThrows(IllegalArgumentException.class, () -> new PolicySnapshot(2, "registry-synthetic",
+                Map.of(DataClass.TCKN, weak), true, List.of()), weak.name());
+        }
+    }
+
+    /** D-04: an empty claim is no claim. */
+    @Test
+    void anEmptyTrustedClaimTakesTheStrictest() throws Exception {
+        PolicyEvaluator e = evaluator(LOOSE_TCKN, STRICT_IBAN);
+        assertSame(e.strictest(), e.resolve(true, Set.of()));
+    }
+
+    /** D-05: exact fields on the document and on platform rows, non-empty rule class maps, strict UTF-8. */
+    @Test
+    void refusesUnknownFieldsEmptyRuleMapsAndInvalidUtf8() throws Exception {
+        String extra = "\"platforms\":[],\"extra\":1";
+        assertEquals("FIELDS", reason(doc("").replace("\"platforms\":[]", extra)));
+        String one = doc("").replace("\"format\":2", "\"format\":1").replace(",\"scopedRules\":[]", "");
+        assertEquals("FIELDS", reason(one.replace("\"platforms\":[]", extra)));
+        assertEquals("FIELDS", reason(one.replace(",\"platforms\":[]", "")), "missing field");
+        String platform = "{\"platform\":\"claude\",\"hostSuffixes\":[\"anthropic.com\"],\"apiHosts\":[],"
+            + "\"loginHosts\":[]";
+        assertEquals(1, parse(doc("").replace("\"platforms\":[]", "\"platforms\":[" + platform + "}]"))
+            .platforms().size());
+        assertEquals("FIELDS", reason(doc("").replace("\"platforms\":[]",
+            "\"platforms\":[" + platform + ",\"note\":\"x\"}]")));
+        assertEquals("SCOPE_CLASS_ACTIONS", reason(doc(rule("a@1", "\"g\"", "enforce", ""))));
+        String tckn = "\"TCKN\":\"BLOCK\"";
+        assertEquals("SCOPE_GROUPS", reason(doc(rule("a@1", "\"finance,audit\"", "enforce", tckn))),
+            "Q-2: no comma in a group name");
+        assertEquals("SCOPE_GROUPS", reason(doc(rule("a@1", "\"fin\\u0001ance\"", "enforce", tckn))),
+            "control character");
+        assertEquals(1, parse(doc(rule("a@1", "\"  " + "g".repeat(256) + "  \"", "enforce", tckn)))
+            .scopedRules().size(), "the length counts after strip");
+        byte[] bytes = doc("").getBytes(StandardCharsets.UTF_8);
+        int at = doc("").indexOf("registry-synthetic");
+        bytes[at] = (byte) 0xC3;
+        bytes[at + 1] = (byte) 0x28;
+        assertEquals("MALFORMED", assertThrows(SnapshotCodec.Rejected.class,
+            () -> SnapshotCodec.parse(bytes, NOW)).reason(), "malformed UTF-8 is refused, not replaced");
     }
 
     @Test

@@ -45,7 +45,10 @@ public final class DataPlaneApplication {
         // With Secure ICAP configured, plain ICAP (H-2) runs only when RWSAFE_ICAP_PORT asks for it (D-09).
         int port = Integer.parseInt(env("RWSAFE_ICAP_PORT", blank(cert) ? "1344" : "0"));
         EngineConfig config = EngineConfig.defaults()
-            .withAdmission(1000, 32, 256, list(env("RWSAFE_SHARED_ADDRESS_PREFIXES", "")));
+            .withAdmission(1000, 32, 256, list(env("RWSAFE_SHARED_ADDRESS_PREFIXES", "")))
+            // PR 20 review D-01: `plain` or `base64`; unset or anything else disables group claims (strictest for all).
+            .withGroupClaimEncoding(EngineConfig.GroupClaimEncoding.fromSetting(
+                System.getenv("RWSAFE_GROUP_CLAIM_ENCODING")));
 
         BoundedEventQueue queue = new BoundedEventQueue(10_000);
         String events = System.getenv("RWSAFE_CONTROL_EVENTS_URL");

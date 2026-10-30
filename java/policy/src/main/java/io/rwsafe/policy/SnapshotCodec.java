@@ -14,8 +14,10 @@ import java.util.Set;
 /**
  * Reads a signed policy snapshot body (docs/architecture/POLICY_SNAPSHOT_CONTRACT.md) into a {@link PolicySnapshot}. Any
  * deviation from the contract refuses the whole snapshot: a missing or unknown class, an unknown action, a fail-closed
- * class set to ALLOW or WARN in any scope, a stale or future issue time, an unknown format, and for format 2 a scoped rule
- * with an unknown or missing field, a duplicate id, an empty or oversized group list, or an unknown mode.
+ * class set to ALLOW or WARN in any scope, a stale or future issue time, an unknown format, an unknown or missing field on
+ * the document or a platform row, bytes that are not UTF-8, and for format 2 a scoped rule with an unknown or missing
+ * field, a duplicate id, an empty or oversized group list, an invalid group name ({@link GroupNames}), an empty class map
+ * or an unknown mode.
  */
 public final class SnapshotCodec {
 
@@ -25,10 +27,14 @@ public final class SnapshotCodec {
     /** Format 2 bounds (POLICY_SNAPSHOT_CONTRACT.md); the rule id bound is this codec's, see {@link #MAX_RULE_ID}. */
     private static final int MAX_SCOPED_RULES = 256;
     private static final int MAX_GROUPS_PER_RULE = 32;
-    private static final int MAX_GROUP_NAME = 256;
     /** Rule ids travel on every verdict event; the contract names no bound, so this codec sets one. */
     public static final int MAX_RULE_ID = 128;
     private static final Set<String> SCOPED_RULE_FIELDS = Set.of("id", "groups", "mode", "classActions");
+    private static final Set<String> ROOT_FIELDS_1 =
+        Set.of("format", "version", "id", "issuedAt", "enforceFailClosed", "classActions", "platforms");
+    private static final Set<String> ROOT_FIELDS_2 =
+        Set.of("format", "version", "id", "issuedAt", "enforceFailClosed", "classActions", "platforms", "scopedRules");
+    private static final Set<String> PLATFORM_FIELDS = Set.of("platform", "hostSuffixes", "apiHosts", "loginHosts");
 
     /** Why a snapshot was refused; the reason is a short fixed token for metrics and events. */
     public static final class Rejected extends Exception {
@@ -69,6 +75,10 @@ public final class SnapshotCodec {
         if (scoped != m.containsKey("scopedRules")) {
             throw new Rejected(scoped ? "SCOPE_FIELD" : "FORMAT");
         }
+        // PR 20 review D-05: exactly the contract's fields, nothing unknown.
+        if (!(scoped ? ROOT_FIELDS_2 : ROOT_FIELDS_1).equals(m.keySet())) {
+            throw new Rejected("FIELDS");
+        }
         long version = number(m.get("version"));
         if (version < 1) {
             throw new Rejected("VERSION");
@@ -96,6 +106,9 @@ public final class SnapshotCodec {
         List<PlatformRule> platforms = new ArrayList<>();
         for (Object o : list(m.get("platforms"))) {
             Map<String, Object> p = object(o);
+            if (!PLATFORM_FIELDS.equals(p.keySet())) {
+                throw new Rejected("FIELDS");
+            }
             platforms.add(new PlatformRule(text(p.get("platform")), texts(p.get("hostSuffixes")),
                 texts(p.get("apiHosts")), texts(p.get("loginHosts"))));
         }
@@ -152,17 +165,23 @@ public final class SnapshotCodec {
             }
             Set<String> groups = new HashSet<>();
             for (Object g : rawGroups) {
-                if (!(g instanceof String name) || name.isBlank() || name.length() > MAX_GROUP_NAME) {
+                // Length 1..256 after strip, no comma (PR 20 review Q-2), no control character (D-05).
+                String name = g instanceof String str ? GroupNames.normalise(str) : null;
+                if (name == null) {
                     throw new Rejected("SCOPE_GROUPS");
                 }
-                groups.add(ScopedRule.normaliseGroup(name));
+                groups.add(name);
             }
             ScopedRule.Mode mode = switch (text(r.get("mode"))) {
                 case "enforce" -> ScopedRule.Mode.ENFORCE;
                 case "monitor" -> ScopedRule.Mode.MONITOR;
                 default -> throw new Rejected("SCOPE_MODE");
             };
-            out.add(new ScopedRule(id, groups, mode, classActions(r.get("classActions"))));
+            Map<DataClass, Action> actions = classActions(r.get("classActions"));
+            if (actions.isEmpty()) {
+                throw new Rejected("SCOPE_CLASS_ACTIONS");
+            }
+            out.add(new ScopedRule(id, groups, mode, actions));
         }
         return out;
     }
