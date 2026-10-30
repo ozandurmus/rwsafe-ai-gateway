@@ -8,6 +8,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.timeout.IdleState;
 import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.util.concurrent.ScheduledFuture;
+import io.rwsafe.dataplane.events.CapturedText;
 import io.rwsafe.dataplane.events.VerdictEvent;
 import io.rwsafe.dataplane.icap.ChunkedDecoder;
 import io.rwsafe.dataplane.icap.HeaderBlock;
@@ -405,7 +406,8 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             result = null;
             decision = policy.evaluator().onNonVerdict(Verdict.INSPECTION_FAILED, "INTERNAL");
         }
-        emit(decision.verdict(), decision.reason(), result == null ? List.of() : result.findings(), decision);
+        emit(decision.verdict(), decision.reason(), result == null ? List.of() : result.findings(), decision,
+            captureOf(decision, result));
         Action action = decision.action();
         if (action == Action.REDACT && result != null && result.redactedBody() != null) {
             byte[] redacted = result.redactedBody();
@@ -521,7 +523,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         // D-07: a class whose action is BLOCK (a secret) never leaves partially; only REDACT classes are rewritten.
         if (decision.action() == Action.REDACT && result.redactedBody() != null) {
             byte[] replacement = result.redactedBody();
-            emit(Verdict.REDACT, decision.reason(), result.findings(), decision);
+            emit(Verdict.REDACT, decision.reason(), result.findings(), decision, captureOf(decision, result));
             ctx.writeAndFlush(msg(IcapResponses.modified(isTag(), "res-hdr",
                 identityWithLength(resHttp, replacement.length), replacement, false)));
             resetTransaction();
@@ -767,6 +769,26 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
 
     /** @param decision the policy decision behind the verdict, for its scoped rule ids; null when none took part */
     private void emit(Verdict verdict, String reason, List<Finding> findings, Decision decision) {
+        emit(verdict, reason, findings, decision, null);
+    }
+
+    /**
+     * The C3 content of a decision (Q-4 b, ADR-009): only when capture is on, the flow is a known AI flow and the policy
+     * rewrote the body (verdict and action REDACT, a rewrite exists). A block, an allow, a non-verdict or a stream abort
+     * carries none, so a secret that blocks never travels, and an unchanged body (the original bytes) never does. The
+     * request thread wraps the array the redaction already made; nothing is copied or decoded here.
+     */
+    private CapturedText captureOf(Decision decision, InspectionResult result) {
+        if (!engine.config().captureRedacted() || flow == null || result == null || decision.action() != Action.REDACT
+            || decision.verdict() != Verdict.REDACT || result.nonVerdict() != null || !result.redactable()) {
+            return null;
+        }
+        byte[] redacted = result.redactedBody();
+        return redacted == null ? null : CapturedText.ofRedacted(redacted, engine.config().captureMaxBytes());
+    }
+
+    private void emit(Verdict verdict, String reason, List<Finding> findings, Decision decision,
+                      CapturedText capture) {
         Map<String, Integer> counts = new HashMap<>();
         for (Finding f : findings) {
             counts.merge(f.dataClass().name(), 1, Integer::sum);
@@ -784,7 +806,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             VerdictEvent.bounded(req.head().first("X-Client-IP"), 64), mutualTls ? "mtls_verified" : "plain_allowlisted",
             policy == null ? 0 : policy.snapshot().version(), correlation,
             decision == null ? List.of() : decision.appliedRuleIds(),
-            decision == null ? List.of() : decision.monitorRuleIds()));
+            decision == null ? List.of() : decision.monitorRuleIds(), capture));
     }
 
     private void resetTransaction() {

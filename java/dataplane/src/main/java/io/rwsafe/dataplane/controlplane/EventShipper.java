@@ -3,9 +3,13 @@ package io.rwsafe.dataplane.controlplane;
 import io.rwsafe.dataplane.events.BoundedEventQueue;
 import io.rwsafe.dataplane.events.VerdictEvent;
 import io.rwsafe.dataplane.events.VerdictEventJson;
+import io.rwsafe.platform.capacity.WatermarkBreaker;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.nio.file.FileStore;
+import java.time.Instant;
+import java.util.function.DoubleSupplier;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -41,7 +45,11 @@ import java.util.concurrent.atomic.AtomicLong;
  *       and the engine blocks fail-closed flows;</li>
  *   <li>on shutdown the shipper drains the queue to the control plane or the spool before it returns (D-01), within the
  *       flush bound it is stopped with: what is left when the bound ends is counted lost, so the pod's termination
- *       stays inside its grace period (PR 18 review D-02).</li>
+ *       stays inside its grace period (PR 18 review D-02);</li>
+ *   <li>events that carry redacted content (Q-4 b) are posted in arrays of at most
+ *       {@link VerdictEventJson#MAX_ARRAY_CHARS} characters, under the control plane's request cap; the spool keeps that
+ *       content only while its filesystem is below the Q-3 redacted watermark (SR-HOST-2, read every 30 s), otherwise the
+ *       events are spooled without it and counted in {@link #captureStripped()}.</li>
  * </ul>
  * Without a configured endpoint the events are counted and discarded (local runs).
  */
@@ -72,6 +80,13 @@ public final class EventShipper implements Runnable {
     private final AtomicLong discarded = new AtomicLong();
     private final AtomicLong lost = new AtomicLong();
     private final AtomicLong spoolBytes = new AtomicLong();
+    private final AtomicLong captureShipped = new AtomicLong();
+    private final AtomicLong captureStripped = new AtomicLong();
+    /** CAPACITY §2: the watermark is read every 30 s. */
+    static final Duration WATERMARK_INTERVAL = Duration.ofSeconds(30);
+    private final WatermarkBreaker spoolWatermark = new WatermarkBreaker();
+    private final DoubleSupplier spoolUsage;
+    private Instant lastProbe;
     private final Object wake = new Object();
     private volatile boolean running = true;
     private volatile long stopDeadlineNanos;
@@ -92,6 +107,14 @@ public final class EventShipper implements Runnable {
      */
     public EventShipper(BoundedEventQueue queue, URI endpoint, Path spoolDir, long spoolCap, long segmentBytes,
                         Duration retryPause) {
+        this(queue, endpoint, spoolDir, spoolCap, segmentBytes, retryPause,
+            spoolDir == null ? () -> Double.NaN : () -> usedFraction(spoolDir));
+    }
+
+    /** @param spoolUsage the used fraction of the spool's filesystem (the product reads it with statvfs; tests set it) */
+    public EventShipper(BoundedEventQueue queue, URI endpoint, Path spoolDir, long spoolCap, long segmentBytes,
+                        Duration retryPause, DoubleSupplier spoolUsage) {
+        this.spoolUsage = spoolUsage;
         if (segmentBytes <= 0) {
             throw new IllegalArgumentException("segmentBytes must be positive");
         }
@@ -211,17 +234,72 @@ public final class EventShipper implements Runnable {
                 discarded.addAndGet(batch.size());
                 continue;
             }
-            String json = VerdictEventJson.array(batch);
-            if (!spoolPending && post(json)) {
-                shipped.addAndGet(batch.size());
-            } else if (spoolAppend(json)) {
-                if (!spoolPending) {
-                    // The control plane just refused: wait the back-off before replaying what was spooled (N-01).
-                    nextReplayAtNanos = System.nanoTime() + Math.max(retryPause.toNanos() * 5, 1_000_000L);
+            // Arrays stay under the control plane's request cap now that an event may carry redacted content.
+            boolean toSpool = spoolPending;
+            for (VerdictEventJson.Chunk chunk : VerdictEventJson.chunks(batch, true, VerdictEventJson.MAX_ARRAY_CHARS)) {
+                int n = chunk.events().size();
+                if (!toSpool && post(chunk.json())) {
+                    shipped.addAndGet(n);
+                    captureShipped.addAndGet(chunk.captures());
+                } else if (spoolChunk(chunk)) {
+                    if (!toSpool) {
+                        // The control plane just refused: wait the back-off before replaying what was spooled (N-01).
+                        nextReplayAtNanos = System.nanoTime() + Math.max(retryPause.toNanos() * 5, 1_000_000L);
+                        toSpool = true;
+                    }
+                } else if (hold(chunk.json(), n)) {
+                    captureShipped.addAndGet(chunk.captures());
                 }
-            } else {
-                hold(json, batch.size());
             }
+        }
+    }
+
+    /**
+     * Spools a chunk. Redacted content is persisted in the spool only while the spool's filesystem is below the Q-3
+     * redacted watermark (SR-HOST-2); above it the events are spooled without their content, and only what was actually
+     * written stripped is counted in {@link #captureStripped()} (PR 25 review D-05); metadata and verdicts keep their
+     * path. False when there is no spool or no room in it (the chunk is then held, content included).
+     */
+    private boolean spoolChunk(VerdictEventJson.Chunk chunk) {
+        if (spoolDir == null) {
+            return false;
+        }
+        if (chunk.captures() == 0 || spoolAllowsRedacted()) {
+            return spoolAppend(chunk.json());
+        }
+        boolean written = spoolAppend(
+            VerdictEventJson.array(chunk.events().stream().map(VerdictEvent::withoutCapture).toList()));
+        if (written) {
+            captureStripped.addAndGet(chunk.captures());
+        }
+        return written;
+    }
+
+    /** Reads the spool filesystem at most every {@link #WATERMARK_INTERVAL}; false until a reading allows it. */
+    public synchronized boolean spoolAllowsRedacted() {
+        Instant now = Instant.now();
+        if (lastProbe == null || Duration.between(lastProbe, now).compareTo(WATERMARK_INTERVAL) >= 0) {
+            lastProbe = now;
+            spoolWatermark.record(spoolUsage.getAsDouble(), now);
+        }
+        return spoolWatermark.state(now).allowsRedacted();
+    }
+
+    /** The used fraction of the filesystem that holds {@code dir} (its nearest existing ancestor), NaN when unknown. */
+    public static double usedFraction(Path dir) {
+        Path p = dir;
+        while (p != null && !Files.exists(p)) {
+            p = p.getParent();
+        }
+        if (p == null) {
+            return Double.NaN;
+        }
+        try {
+            FileStore store = Files.getFileStore(p);
+            long total = store.getTotalSpace();
+            return total <= 0 ? Double.NaN : 1.0 - (double) store.getUsableSpace() / total;
+        } catch (IOException e) {
+            return Double.NaN;
         }
     }
 
@@ -238,17 +316,21 @@ public final class EventShipper implements Runnable {
         return empty;
     }
 
-    /** Spool full or absent: keep this batch until the control plane takes it; the queue fills behind it. */
-    private void hold(String json, int size) {
+    /**
+     * Spool full or absent: keep this batch until the control plane takes it; the queue fills behind it. True when it was
+     * shipped, false when it was counted lost at shutdown.
+     */
+    private boolean hold(String json, int size) {
         int attempts = 0;
         while (!post(json)) {
             if (!running && (++attempts >= SHUTDOWN_ATTEMPTS || flushBoundPassed())) {
                 lost.addAndGet(size);
-                return;
+                return false;
             }
             pause();
         }
         shipped.addAndGet(size);
+        return true;
     }
 
     private boolean post(String json) {
@@ -448,6 +530,16 @@ public final class EventShipper implements Runnable {
 
     public long spoolBytes() {
         return spoolBytes.get();
+    }
+
+    /** Events whose redacted content the control plane took directly. */
+    public long captureShipped() {
+        return captureShipped.get();
+    }
+
+    /** Events spooled without their redacted content because the spool was above the redacted watermark. */
+    public long captureStripped() {
+        return captureStripped.get();
     }
 
     /** The most spool bytes this shipper has had on disk at once, a compaction's temporary file included. */

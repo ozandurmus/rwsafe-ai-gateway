@@ -277,7 +277,7 @@ class SiemTransportTest {
     }
 
     private SiemExportService service(ControlProperties.Siem siem, io.rwsafe.control.privacy.PrivacyKeys keys) {
-        return new SiemExportService(new ControlProperties(null, null, null, null, null, null, siem), fx.db, keys,
+        return new SiemExportService(new ControlProperties(null, null, null, null, null, null, siem, null), fx.db, keys,
             fx.pseudonymiser);
     }
 
@@ -317,10 +317,10 @@ class SiemTransportTest {
         for (io.rwsafe.control.privacy.PrivacyKeys keys : List.of(
             new io.rwsafe.control.privacy.PrivacyKeys(new ControlProperties(null, null, new ControlProperties.Privacy(
                 absent, io.rwsafe.control.support.ControlTestEnvironment.dir().resolve("dictionary.txt")), null, null,
-                null, null)),
+                null, null, null)),
             new io.rwsafe.control.privacy.PrivacyKeys(new ControlProperties(null, null, new ControlProperties.Privacy(
                 io.rwsafe.control.support.ControlTestEnvironment.dir().resolve("key"), absent), null, null, null,
-                null)))) {
+                null, null)))) {
             SiemExportService service = service(enabled(syslog, null), keys);
             service.start();
             SiemExportService.Health h = service.health();

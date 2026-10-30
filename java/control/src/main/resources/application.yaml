@@ -95,6 +95,14 @@ rwsafe:
   sample:
     events: 0
     seed: 1
+  # Redacted capture (Q-4 b, ADR-009 C3): off unless the deploy says `redacted`; the capture key is its own Secret.
+  capture:
+    mode: ${RWSAFE_CAPTURE_MODE:off}
+    key-dir: ${RWSAFE_CAPTURE_KEY_DIR:/run/secrets/rwsafe-capture-key}
+    store-dir: ${RWSAFE_CAPTURE_STORE_DIR:/var/lib/rwsafe/capture}
+    max-store-bytes: ${RWSAFE_CAPTURE_MAX_STORE_BYTES:85899345920}
+    retention: P90D
+    watermark-paths: ${RWSAFE_CAPTURE_WATERMARK_PATHS:}
   # SIEM export (LOCAL_RUN.md "SIEM export"): syslog over TLS (CEF or LEEF) and/or Splunk HEC over HTTPS. Destinations
   # and the CA bundle come from the uncommitted ConfigMap rwsafe-siem-destination, the HEC token from the Secret
   # rwsafe-siem-credentials as a file (deploy/rwsafe/contracts/runtime-contracts.json). No UDP and no plain TCP exist.

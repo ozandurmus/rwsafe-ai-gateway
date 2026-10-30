@@ -31,6 +31,8 @@ import java.util.Map;
  *   <li>{@code RWSAFE_SNAPSHOT_URL}, {@code RWSAFE_SNAPSHOT_PUBLIC_KEYS} (comma-separated {@code <key id>.pem} files),
  *       {@code RWSAFE_SNAPSHOT_CACHE} (directory): the signed policy pull; unset, the built-in development snapshot</li>
  *   <li>{@code RWSAFE_CONTROL_EVENTS_URL} and {@code RWSAFE_SPOOL_DIR}: verdict events and their spool</li>
+ *   <li>{@code RWSAFE_CAPTURE_MODE} ({@code redacted} or unset/off) and {@code RWSAFE_CAPTURE_MAX_BYTES} (default
+ *       32768, at most 65536): redacted content on REDACT verdict events (Q-4 b)</li>
  *   <li>{@code RWSAFE_METRICS_PORT} (default 9401, PORTS_AND_RESOURCES §3; {@code /metrics}, {@code /ready} and the
  *       preStop drain {@code /admin/drain}), {@code RWSAFE_SHARED_ADDRESS_PREFIXES} (comma-separated)</li>
  * </ul>
@@ -55,7 +57,10 @@ public final class DataPlaneApplication {
             .withAdmission(1000, 32, 256, list(env("RWSAFE_SHARED_ADDRESS_PREFIXES", "")))
             // PR 20 review D-01: `plain` or `base64`; unset or anything else disables group claims (strictest for all).
             .withGroupClaimEncoding(EngineConfig.GroupClaimEncoding.fromSetting(
-                System.getenv("RWSAFE_GROUP_CLAIM_ENCODING")));
+                System.getenv("RWSAFE_GROUP_CLAIM_ENCODING")))
+            // Q-4 b: `redacted` lets REDACT verdict events carry the rewritten text (bounded); unset or other: off.
+            .withCapture(EngineConfig.captureBytesFromSetting(System.getenv("RWSAFE_CAPTURE_MODE"),
+                System.getenv("RWSAFE_CAPTURE_MAX_BYTES")));
 
         BoundedEventQueue queue = new BoundedEventQueue(10_000);
         String events = System.getenv("RWSAFE_CONTROL_EVENTS_URL");

@@ -282,6 +282,72 @@ egress to the SIEM follow in the deploy lane.
 - **UNVERIFIED (2026-10-30)**: LEEF header and value escaping in the corporate QRadar. Send one test event per format
   before production.
 
+## Redacted capture (Q-4 b)
+
+Off by default on both sides; metadata and verdicts flow in every mode. With capture on, a REDACT verdict event carries
+the text the engine already rewrote (class tokens, never the original bytes); a BLOCK, an ALLOW, a non-verdict and a
+stream abort carry none. The control plane stores it only for a user with an acknowledgement of the current notice
+(SR-PRIV-10), below the disk watermark (SR-HOST-2), when its re-run of the Tier-1 detectors finds nothing (SR-PRIV-11),
+after the masking layers ran at persistence. ADR-009's storage model: the text is cut into content-defined chunks
+(8-64 KiB), each chunk encrypted under its own data key into a file on the capture volume, a repeated chunk stored once;
+PostgreSQL holds only the record, its manifest, the keyed chunk addresses, the wrapped keys, the byte counter, the read
+ledger, the receipts and the key events.
+
+| Side | Variable | Default | Meaning |
+|---|---|---|---|
+| data plane | `RWSAFE_CAPTURE_MODE` | unset (off) | exactly `redacted` turns capture on |
+| data plane | `RWSAFE_CAPTURE_MAX_BYTES` | `32768` | bound of one event's text (at most `65536`); the rest is cut and marked `truncated` |
+| control | `RWSAFE_CAPTURE_MODE` | `off` | exactly `redacted` stores content |
+| control | `RWSAFE_CAPTURE_STORE_DIR` | `/var/lib/rwsafe/capture` | the capture store's own volume (a PVC in the deploy) |
+| control | `RWSAFE_CAPTURE_MAX_STORE_BYTES` | `85899345920` (80 GiB) | ADR-009 MAX_STORE_BYTES: above it the oldest records without a hold are evicted |
+| control | `RWSAFE_CAPTURE_KEY_DIR` | `/run/secrets/rwsafe-capture-key` | the capture-key Secret: `<key id>.key` files (base64 of 32 random bytes), an `active` file naming the key new material uses (one key needs none), an optional `shredded` list |
+| control | `RWSAFE_CAPTURE_WATERMARK_PATHS` | empty | comma-separated paths watched besides the store volume (the database volume's filesystem), read every 30 s |
+
+A local key and store, generated and never committed:
+
+```bash
+mkdir -p java/build/dev/capture-key java/build/dev/capture-store
+head -c 32 /dev/urandom | base64 > java/build/dev/capture-key/cap-local.key
+RWSAFE_CAPTURE_MODE=redacted RWSAFE_CAPTURE_KEY_DIR="$PWD/java/build/dev/capture-key" \
+  RWSAFE_CAPTURE_STORE_DIR="$PWD/java/build/dev/capture-store" ./java/gradlew -p java :control:runDev
+RWSAFE_CAPTURE_MODE=redacted RWSAFE_CONTROL_EVENTS_URL=http://127.0.0.1:8092/internal/v1/verdict-events \
+  ./java/gradlew -p java :dataplane:runIcap
+```
+
+Nothing is stored until the user has acknowledged the current notice (`POST /internal/v1/notice-acknowledgements`, the
+`RWSAFE_ENDUSER_*` values set). Health shows two components: `capture` (mode, active key, records, chunks and bytes
+against the cap, records on hold, what a rotation still has to re-wrap from an older mounted key, held records left
+under a shredded key, records under a key that is missing (DEGRADED), and why content was not stored, counted
+since start) and `capture-watermark` (UP below 75 % used; DEGRADED above 75 %: raw off; DOWN above 85 % or with no
+reading for 5 minutes: redacted off). A tripped level resumes 5 points below its threshold. The data plane applies the
+same breaker to its spool: above 85 % it spools events without their text (`icap_capture_spool_stripped_total`).
+
+Reading one record: `security_admin` or `privacy_officer` (the MVP reader roles), never the viewer or a masked session,
+with a reason code (`INCIDENT_INVESTIGATION`, `LEGAL_HOLD_REVIEW`, `FALSE_POSITIVE_REVIEW`, `REGULATOR_REQUEST`, and
+`DSAR` for the privacy officer only) and a case id:
+
+```bash
+curl -b cookies -H "X-XSRF-TOKEN: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"reasonCode":"INCIDENT_INVESTIGATION","caseId":"CASE-0001"}' \
+  http://127.0.0.1:8080/api/v1/captures/<event id>/read
+```
+
+Every request, a refused one included, is a `capture_read` row and an audit-ledger row; `SERVED` is written only after
+the record opened. An expired record without a hold answers 404; a record that does not authenticate (a changed chunk
+file, expiry, user, rule set or chunk list) answers 409 `CAPTURE_INTEGRITY`.
+
+Maintenance runs at 00:20, 06:20, 12:20 and 18:20 Europe/Istanbul: retention (90 days from the event's own time), the
+byte cap, the two key operations below, and a sweep of files without a row older than an hour, each step receipted or
+ledgered (the SIEM export reads the ledger).
+
+- **Planned rotation.** Add a key file and point `active` at it. The next run re-wraps every record within retention or
+  on hold, and every chunk they use, under the new key (`REWRAP` key events; content is never decrypted). Remove the old
+  key file only when Health shows nothing left under older keys.
+- **Emergency crypto-shredding.** Add the key id to the Secret's `shredded` file (one id per line) and remove its key
+  file. The key is never used again; the next run deletes every record sealed under it or using a chunk under it, with a
+  `KEY_SHREDDED` receipt and an `EMERGENCY_SHRED` key event. Records on hold stay, unreadable, and Health counts them. A
+  key that is only missing, not listed, deletes nothing: its records stay unreadable until it returns.
+
 ## What the engine does not do yet
 
 The file pipeline (multipart, documents, archives, and files found inside a base64 layer, which are
