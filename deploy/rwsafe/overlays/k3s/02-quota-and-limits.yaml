@@ -1,4 +1,5 @@
-# ADR-001 §3, PORTS_AND_RESOURCES §4.2, CAPACITY §1: the ceiling rwsafe may never exceed on HOST-A. Requests sum with
+# ADR-001 §3, PORTS_AND_RESOURCES §4.2, CAPACITY §1: the ceiling rwsafe may never exceed on HOST-A. Every emptyDir in the
+# workload manifests carries a sizeLimit (512Mi runtime, 256Mi verdict spool, 4Gi build); the manifest test enforces it (PLAT-F6). Requests sum with
 # neXus and system stays under 75 % of the node (AC-1). PORT-3: this object exists only in the k3s overlay.
 apiVersion: v1
 kind: ResourceQuota
@@ -15,7 +16,7 @@ spec:
     pods: "40"
     persistentvolumeclaims: "6"
     requests.storage: 150Gi
-    services.loadbalancers: "1"
+    services.loadbalancers: "3"
     services.nodeports: "0"
 ---
 apiVersion: v1
@@ -32,3 +33,66 @@ spec:
       max: { cpu: "4", memory: 8Gi }
     - type: PersistentVolumeClaim
       max: { storage: 100Gi }
+---
+# PLAT-F6: the build and scanner namespaces are bounded too; build Jobs run at rwsafe-batch priority.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: rwsafe-build-compute
+  namespace: rwsafe-build
+  labels: { app.kubernetes.io/part-of: rwsafe }
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 2Gi
+    limits.cpu: "3"
+    limits.memory: 6Gi
+    pods: "6"
+    persistentvolumeclaims: "3"
+    requests.storage: 20Gi
+    services.loadbalancers: "0"
+    services.nodeports: "0"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: rwsafe-build-defaults
+  namespace: rwsafe-build
+  labels: { app.kubernetes.io/part-of: rwsafe }
+spec:
+  limits:
+    - type: Container
+      default: { cpu: "1", memory: 1Gi, ephemeral-storage: 4Gi }
+      defaultRequest: { cpu: 250m, memory: 512Mi, ephemeral-storage: 1Gi }
+      max: { cpu: "3", memory: 4Gi, ephemeral-storage: 8Gi }
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: rwsafe-security-compute
+  namespace: rwsafe-security
+  labels: { app.kubernetes.io/part-of: rwsafe }
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 2Gi
+    limits.cpu: "2"
+    limits.memory: 4Gi
+    pods: "6"
+    persistentvolumeclaims: "2"
+    requests.storage: 30Gi
+    services.loadbalancers: "0"
+    services.nodeports: "0"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: rwsafe-security-defaults
+  namespace: rwsafe-security
+  labels: { app.kubernetes.io/part-of: rwsafe }
+spec:
+  limits:
+    - type: Container
+      default: { cpu: 500m, memory: 512Mi, ephemeral-storage: 2Gi }
+      defaultRequest: { cpu: 100m, memory: 128Mi, ephemeral-storage: 512Mi }
+      max: { cpu: "2", memory: 4Gi, ephemeral-storage: 4Gi }

@@ -76,7 +76,7 @@ replaced by an explicit 404 default backend, and a per-host TLS Secret per produ
 |---|---|---|---|---|
 | Admin UI and API (`rwsafe.<corp-domain>`) | HTTPS | Traefik 443 by host name | container 8080 → Service 8080 | same convention as neXus; no new host port |
 | LLM API gateway (`ai-api.<corp-domain>`) | HTTPS (HTTP/1.1 and HTTP/2, SSE) | Traefik 443 by host name (council ARCH-3, Q2 recommendation: yes) | container 8090 → Service 8090 | no new host port, no firewall exception; SDK `*_BASE_URL` values take a URL, so a path or host is enough |
-| ICAP (ProxySG → rwsafe) | ICAP/1.0 over TCP, plain or TLS (Secure ICAP) | **Service of type LoadBalancer through ServiceLB on the node address** (same mechanism Traefik uses, so a second pod can run during rollout: no `hostPort` in the rwsafe pod spec, council ARCH-5) | **1344** plain ICAP, **11344** Secure ICAP (TLS, mTLS) | 1344 is the IANA-registered ICAP port and ProxySG's default; 11344 is the common Secure-ICAP convention (UNVERIFIED as a ProxySG default: ProxySG lets the port be set per ICAP service, so the number is a choice, not a constraint) |
+| ICAP (ProxySG → rwsafe) | ICAP/1.0 over TCP, plain or TLS (Secure ICAP) | **Service of type LoadBalancer through ServiceLB on the node address** (same mechanism Traefik uses, so a second pod can run during rollout: no `hostPort` in the rwsafe pod spec, council ARCH-5). ServiceLB masquerades the source address (PLAT-F2), so the ProxySG allowlist is enforced by the **host firewall** and peer identity by **mTLS**, not by the engine's view of the TCP source | **1344** plain ICAP (pilot only, H-2), **11344** Secure ICAP (TLS, mTLS) | 1344 is the IANA-registered ICAP port and ProxySG's default; 11344 is the common Secure-ICAP convention (UNVERIFIED as a ProxySG default: ProxySG lets the port be set per ICAP service, so the number is a choice, not a constraint) |
 | Chained forward proxy for WebSocket (optional, ADR-004/005) | HTTP CONNECT / TLS | ServiceLB on the node address | **3128** | squid convention, free on the host; only if phase 0 shows ProxySG cannot hand WebSocket to ICAP |
 | Agent channel (off-net agents, ADR-006) | HTTPS + mTLS | Traefik 443 by host name (`agent.<corp-domain>`) or the gateway host | container 8095 | no new port |
 | SNMP agent (health, polled by the corporate NMS) | UDP | ServiceLB on the node address | **1161** (UDP) | 161 is free, but binding 161 needs a privileged pod or NET_BIND_SERVICE; 1161 keeps the pod unprivileged; the NMS polls a non-standard port, or the host firewall redirects 161→1161 as a hardening exception (PO choice, HARDENING_EXCEPTIONS H-3) |
@@ -110,12 +110,12 @@ exist; `ui2` has no namespace default-deny.
 
 | Object | Value | Reason |
 |---|---|---|
-| Namespace `rwsafe` | labels `pod-security.kubernetes.io/enforce=restricted`, `app.kubernetes.io/part-of=rwsafe` | distinct label value so no selector written for `nexus-ui2` matches |
+| Namespaces | `rwsafe` and `rwsafe-security`: PSA `restricted`; `rwsafe-build`: PSA `baseline` (kaniko); label `app.kubernetes.io/part-of=rwsafe` | distinct label value so no selector written for `nexus-ui2` matches; the build relaxation is the one documented exception (PLAT-F6) |
 | PriorityClass `rwsafe-dataplane` | value **1000**, `preemptionPolicy: Never`, `globalDefault: false` | above the default 0 so a build pod (default 0) is evicted before the ICAP engine, far below every neXus class (ARCH-2) |
 | PriorityClass `rwsafe-control` | value **500**, Never | below the data plane: under pressure the admin UI goes before ICAP |
 | PriorityClass `rwsafe-batch` | value **−200**, Never | below `ui2-low`; workers, async classifiers, e2e |
 | Tolerations | none; in particular no `node.kubernetes.io/disk-pressure` toleration | rwsafe is evicted before neXus when the disk fills (ARCH-2) |
-| ResourceQuota `rwsafe-compute` | requests.cpu **4**, requests.memory **8Gi**, limits.cpu **8**, limits.memory **16Gi**, pods 40, persistentvolumeclaims 6, requests.storage **150Gi** | fits inside the headroom computed in CAPACITY_AND_SLO_MODEL §3 |
+| ResourceQuota `rwsafe-compute` | requests.cpu **4**, requests.memory **8Gi**, limits.cpu **8**, limits.memory **16Gi**, pods 40, persistentvolumeclaims 6, requests.storage **150Gi**, services.loadbalancers **3** | fits inside the headroom computed in CAPACITY_AND_SLO_MODEL §3; `rwsafe-build` and `rwsafe-security` carry their own smaller quotas (PLAT-F6) |
 | LimitRange `rwsafe-defaults` | default request 100m/128Mi, default limit 500m/512Mi, max per container 4 CPU / 8Gi | no container runs unlimited |
 | NetworkPolicy `default-deny` | deny all ingress and egress in `rwsafe` | then explicit allows: Traefik → admin/gateway pods; ServiceLB → ICAP pods on 1344/11344; control plane → `rwsafe-db`; data plane → control plane 8091/8092; egress to DNS, the AI platforms' upstreams through the corporate proxy (gateway only), LDAP, SIEM, SMTP. No rule names a `ui2*` namespace |
 | PodDisruptionBudget | ICAP and gateway: `minAvailable: 1` | with 2 replicas, a rollout or a drain never takes both |
@@ -125,12 +125,12 @@ exist; `ui2` has no namespace default-deny.
 
 | Workload | Replicas | Request | Limit | PriorityClass | Strategy |
 |---|---|---|---|---|---|
-| `rwsafe-icap` (Netty) | 2 | 500m, 768Mi each | 2 CPU, 2Gi each | rwsafe-dataplane | RollingUpdate maxUnavailable 0, maxSurge 1, PDB minAvailable 1 |
+| `rwsafe-icap` (Netty) | 2 | 500m, 1Gi each | 1.5 CPU, **2Gi** each (512 MiB direct + 256 MiB full-body semaphore + heap; PLAT-F1) | rwsafe-dataplane | RollingUpdate maxUnavailable 0, maxSurge 1, PDB minAvailable 1 |
 | `rwsafe-gateway` (Netty) | 2 | 250m, 512Mi each | 1 CPU, 1.5Gi each | rwsafe-dataplane | same |
 | `rwsafe-control` (Spring Boot admin, API, policy feed, capture sink) | 1 | 500m, 1Gi | 2 CPU, 3Gi | rwsafe-control | Recreate (migrations), the data plane keeps serving from its snapshot |
 | `rwsafe-worker` (async classifiers, SIEM out, retention, exports) | 1 | 250m, 1Gi | 2 CPU, 4Gi | rwsafe-batch | Recreate |
 | `rwsafe-db` (PostgreSQL 16) | 1 | 250m, 1Gi | 2 CPU, 3Gi | rwsafe-control | StatefulSet |
-| Sum | | **3.0 CPU, 6.3 GiB** | **12 CPU, 17 GiB** limits (quota caps limits at 8 CPU / 16 GiB → initial limits are trimmed: ICAP 1.5 CPU/1.5Gi, gateway 0.75/1Gi, control 1.5/3Gi, worker 1/3Gi, db 1.5/3Gi = **7.75 CPU, 15 GiB**) | | |
+| Sum | | **3.5 CPU, 6.8 GiB** | within the 8 CPU / 16 GiB quota: ICAP 2 × (1.5 CPU, 2Gi), gateway 2 × (0.75, 1Gi), control 1.5/3Gi, worker 1/2Gi, db 1.5/3Gi = **7.75 CPU, 14 GiB** | | |
 
 ## 5. Conflict check against neXus
 

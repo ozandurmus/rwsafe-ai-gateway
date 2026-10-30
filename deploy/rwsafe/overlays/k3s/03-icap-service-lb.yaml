@@ -1,8 +1,9 @@
 # ADR-004, DEPLOY runbook §1.1, council ARCH-5: ICAP is exposed on the node address through a LoadBalancer Service that
 # k3s ServiceLB implements with its own svclb pod (the way Traefik is exposed today), so the rwsafe ICAP pods carry no
-# hostPort and two of them can run during a rollout. externalTrafficPolicy Local keeps the ProxySG source address visible
-# to the engine for the allowlist and the surrogate classification. The host firewall admits 1344/11344 only from the
-# ProxySG set (HARDENING_EXCEPTIONS H-1); 1344 exists only while H-2 is open.
+# hostPort and two of them can run during a rollout. ServiceLB MASQUERADES the source address to its own pod address
+# (PLAT-F2), so the ProxySG allowlist is enforced by the host firewall (@icap_clients, HARDENING H-1) and the peer is
+# identified by its client certificate on 11344; the engine and the NetworkPolicy admit the ServiceLB pods. The ICAP
+# header X-Client-IP (the end user's address, set by ProxySG) is unaffected. 1344 exists only while H-2 is open.
 apiVersion: v1
 kind: Service
 metadata:

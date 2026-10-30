@@ -8,7 +8,7 @@ its findings are folded in below.
 | ID | Exception | Reason | Source | Destination | Duration | If refused |
 |---|---|---|---|---|---|---|
 | H-1 | Inbound TCP **1344** (ICAP) and **11344** (Secure ICAP) on the node's host firewall | ProxySG must reach rwsafe's ICAP Service (ServiceLB on the node address) | **only the ProxySG appliances' addresses** (the proxy team supplies them; they live in the uncommitted `rwsafe-estate` ConfigMap and in the nftables set, never in the repository) | HOST-A node address | permanent while the product is in service; reviewed yearly | no inline inspection: the product cannot do jobs 1–3 |
-| H-2 | Pilot only: plain ICAP on 1344 without TLS | Secure ICAP needs the ProxySG client certificate and SGOS support (UNVERIFIED for the installed version); the pilot may start plain while the certificates are issued | ProxySG addresses | node 1344 | **pilot period, maximum 60 days**, then 1344 closed and 11344 only | pilot delayed until mTLS is in place |
+| H-2 | Pilot only: plain ICAP on 1344 without TLS | Secure ICAP needs the ProxySG client certificate and SGOS support (UNVERIFIED for the installed version). **Recommendation after the freeze council (Q-E, Q-28): Secure ICAP from day one**; this exception is kept only for the case that the certificate cannot be issued before the pilot, and it never coexists with REQMOD fail-open | ProxySG addresses | node 1344 | **maximum 30 days**, then 1344 closed | pilot delayed until mTLS is in place |
 | H-3 | Inbound UDP **1161** (SNMP agent), or a host firewall redirect 161→1161 | the corporate NMS polls rwsafe health by SNMP (brief 5F) | the NMS addresses | node | permanent | SNMP polling unavailable; health is still exposed over HTTPS and syslog |
 | H-4 | Outbound TCP **6514** (syslog over TLS) or UDP/TCP 514 from rwsafe pods to the SIEM | SIEM export (brief 5B, 10.4) | rwsafe worker pods | the SIEM collector | permanent | no SIEM export; the audit stays local |
 | H-5 | Outbound TCP 389/636 (LDAP/LDAPS) from the control plane to the directory | LDAP/AD login and group-to-role binding | rwsafe control pod | the directory servers (through the same path neXus already uses) | permanent | local break-glass accounts only |
@@ -28,8 +28,9 @@ its findings are folded in below.
 
 ## Kubernetes-level hardening rwsafe brings for itself (no exception needed)
 
-PSA `restricted` on all three rwsafe namespaces; default-deny NetworkPolicy; no hostPath; no hostPort in pod specs
-(ServiceLB holds the node port); `automountServiceAccountToken: false`; read-only root filesystems; all capabilities
+PSA `restricted` on `rwsafe` and `rwsafe-security`, `baseline` on `rwsafe-build` (kaniko; PLAT-F6); default-deny
+NetworkPolicy; no hostPath; no hostPort in pod specs (ServiceLB holds the node port; its masquerading is why the host
+firewall, not the engine, enforces the ProxySG allowlist, PLAT-F2); `automountServiceAccountToken: false`; read-only root filesystems; all capabilities
 dropped including `NET_RAW`; Secrets encrypted at rest (k3s setting already on, verified); image signature and
 provenance verification at deploy; heap dumps disabled (`-XX:-HeapDumpOnOutOfMemoryError`) and JFR recordings off in
 production (PRIV-10).

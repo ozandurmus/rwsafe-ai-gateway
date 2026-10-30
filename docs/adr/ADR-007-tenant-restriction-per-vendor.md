@@ -36,10 +36,19 @@ read, the record says `tenant_check=NOT_EVALUABLE` and the coverage metric count
 
 ### 3. Identity is a proxy claim (SEC-3)
 
-The user behind a tenant decision is `X-Authenticated-User` from ProxySG, labelled `proxy_claim`; the tenant decision
-does not depend on it (it depends on the vendor-side identity in the login flow), but the audit record does, so a
-spoofed claim could only mislabel who, never which tenant. Secure ICAP with mTLS and the source allowlist make the
-claim trustworthy enough for audit; VDI and terminal-server addresses are labelled shared.
+The user and groups behind a decision are `X-Authenticated-User` and `X-Authenticated-Groups` from ProxySG, labelled
+`proxy_claim`. The tenant decision itself depends on the vendor-side identity in the login flow, but **group claims select
+policy entries, rollout groups, exceptions and the per-identity thresholds, so a spoofed claim is enforcement-relevant**
+(OFF2-12). Therefore: group claims drive policy selection only on `mtls_verified` connections; on `plain_allowlisted`
+connections (pilot exception H-2) the strictest group policy applies, no exception is honoured and the residual is
+recorded; a fixture proves a spoofed group yields no exception. VDI and terminal-server addresses are labelled shared.
+
+### 3a. Transfer instrument before any traffic (PC-4)
+
+A vendor row in the platform matrix is **fail-closed for every class, not only the sensitive ones, until its KVKK
+article 9 instrument is recorded** (adequacy decision, or a standard contract notified to the Board within the statutory
+period; wording UNVERIFIED for counsel): the employee's account identity and free text are personal data leaving Türkiye
+on every request, whatever the DLP class. The instrument is a precondition of the allowlist row (Q-7, Q-33).
 
 ### 4. Staged rollout
 

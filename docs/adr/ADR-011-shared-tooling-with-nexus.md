@@ -23,8 +23,9 @@ lockfiles and verification metadata and asks that deviations be justified.
    same change is proposed to neXus as its own PR (`.nexus-delivery.json`), after which both repositories can consume one
    `rwsafe-platform` tooling package. Blind copying is forbidden (AGENTS.md 13).
 2. **Shared-host build lock and protected windows** (`SHIP_PIPELINE_PLAN.md` §3) are part of the manifest contract and
-   must be adopted by both products before rwsafe's first host build; until neXus adopts the lock, rwsafe builds check the
-   neXus build namespace for a running build pod and wait (read-only check, no neXus change).
+   must be adopted by both products before rwsafe's first host build: the `flock` line goes into neXus's `hosta_deploy.sh`
+   in the **same prerequisite neXus PR** as the ingress change (ADR-003; PLAT-F9), so a one-sided lock never exists.
+   Until that PR is merged rwsafe runs no host build at all.
 3. **Registry GC** (`SHIP_PIPELINE_PLAN.md` §4) is proposed as a neXus change and is not run by rwsafe tooling until
    accepted.
 4. **Build tool: Gradle**, as the brief prescribes: lockfiles and `verification-metadata.xml` give dependency pinning and

@@ -26,7 +26,8 @@ home: no `/tmp`, kickoff brief section 8), `images.{registry,repositories}`, `mo
 Both products' build and deploy scripts take the same host-level lock (`flock` on the path both manifests name) before any
 in-cluster build or rollout and release it when the rollout reaches an end state. The lock waits at most 45 minutes and
 says whose build it is waiting for. Builds never start inside a protected window (neXus job windows 00/06/12/18 and the
-02:00 backup hour, Europe/Istanbul) and never while the other product's deploy is in flight.
+02:00 backup hour, Europe/Istanbul) and never while the other product's deploy is in flight. The lock is added to neXus's
+`hosta_deploy.sh` in the same prerequisite neXus PR as the ingress change (PLAT-F9); rwsafe runs no host build before it.
 
 ## 4. Registry garbage collection
 

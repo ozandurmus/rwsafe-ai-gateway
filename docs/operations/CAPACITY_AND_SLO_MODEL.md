@@ -43,8 +43,9 @@ quota is a ceiling, not a plan; the plan is 100 GiB for the capture store with a
 recommendation yes): when node-filesystem usage crosses **75 %** (it is 80 % today, so the breaker starts tripped) rwsafe
 stops persisting raw bodies, keeps metadata, verdicts, redacted features and audit, and keeps enforcing; at **85 %** it
 also stops persisting redacted content and keeps only metadata and verdicts; enforcement never stops for disk. The
-watermark is read from the kubelet summary API (node fs) by the control plane every 30 s and pushed to the data plane in
-the policy snapshot; with no reading for 5 minutes the breaker trips (fail closed for persistence).
+watermark is read by the control plane every 30 s with `statvfs` on the mounted capture-store path (on local-path this is
+the root filesystem, on OpenShift the PVC; PLAT-F7: no kubelet API, no cluster RBAC) and pushed to the data plane in the
+policy snapshot; with no reading for 5 minutes the breaker trips (fail closed for persistence).
 
 **Until HOST-A is below 75 %, day-one capture stores metadata, verdicts and redacted content, not raw bodies.** This is a
 capacity fact the PO's capture decision meets, and it coincides with the privacy seat's recommendation; it is presented
@@ -78,7 +79,7 @@ is re-derived from the phase-0 measurement before the MVP capture store size is 
 | Identity resolution (proxy-claimed user, group cache) | 0.5 ms | 1 ms | in-memory snapshot, no directory call inline |
 | Policy decision (platform, tenant, DLP class routing) | 0.5 ms | 1 ms | compiled snapshot |
 | Deterministic inspection, 4 KB body | 3 ms | 6 ms | RE2/J + Aho-Corasick, measured CPU-ms budget 2 ms |
-| Deterministic inspection, 64 KB body | 15 ms | 30 ms | budget 12 ms; above 256 KB inspection samples head, tail and structured fields and records `PARTIAL_INSPECTION` |
+| Deterministic inspection, 64 KB body | 15 ms | 30 ms | budget 12 ms; bodies up to the 4 MiB limit are inspected **in full** (a 1 MiB coding-agent body is about 192 ms at the stated budget, inside the 2 s decision time); repeated repository-context chunks are skipped by a 16 KiB content-addressed clean-chunk cache (PLAT-F5); nothing is sampled |
 | Verdict and response encoding | 0.5 ms | 1 ms | |
 | **Total added by rwsafe (REQMOD, 64 KB)** | **≤ 20 ms** | **≤ 40 ms** | SLO; measured by the ICAP e2e Job and Micrometer histograms |
 | RESPMOD sliding window per chunk | 2 ms | 5 ms | window 16 KB, overlap 2 KB |
@@ -91,8 +92,8 @@ path (no modification) is expected for ≥ 95 % of transactions; its ratio is a 
 
 | Scenario | Behaviour | Source of truth |
 |---|---|---|
-| rwsafe rollout | 2 ICAP replicas, RollingUpdate `maxUnavailable: 0`, PDB; preStop drains ProxySG's pooled connections (ICAP `Connection: close` on in-flight responses, 20 s grace) | ADR-010, ICAP spec §7 |
-| rwsafe control plane down | data plane keeps the last compiled snapshot (TTL 24 h), keeps enforcing, buffers capture events in its bounded queue, drops the oldest capture events when full and counts the drops; audit events are never dropped before verdict events | ADR-010 |
+| rwsafe rollout | 2 ICAP replicas, RollingUpdate `maxUnavailable: 0`, PDB; preStop: OPTIONS 503 at once, transactions still served for 15 s with `Connection: close`, refusal only afterwards (PLAT-F3) | ADR-010, ICAP spec §7 |
+| rwsafe control plane down | data plane keeps the last compiled snapshot (TTL 24 h), keeps enforcing, drops the oldest capture events when its queue is full and counts them; verdict and audit events spool to a 256 MiB emptyDir ring file and drain later; a full spool turns fail-closed flows to block (PLAT-F9) | ADR-010 |
 | rwsafe data plane down | ProxySG's own per-service fail-open/fail-closed setting applies; the PO decides per category (ADR-010): fail-closed for the AI domain category (no AI without inspection) is the recommendation, with ProxySG health checks every 5 s and a 2-second ICAP timeout | ADR-010 |
 | HOST-A down | neXus and rwsafe are both down; AI traffic follows the ProxySG setting above | out of scope for rwsafe design |
 | Disk above watermark | raw persistence stops first, then redacted; enforcement continues | §2 |

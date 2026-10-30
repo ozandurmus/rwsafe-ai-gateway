@@ -22,17 +22,19 @@ change.
 ```
 Deployment rwsafe-icap: replicas 2, RollingUpdate {maxSurge: 1, maxUnavailable: 0}, PodDisruptionBudget minAvailable 1
 readinessProbe: ICAP OPTIONS on 1344 must return 200 with a loaded policy snapshot (not just an open socket)
-preStop: POST /admin/drain (local) -> engine stops accepting new ICAP connections, answers OPTIONS unhealthy,
-         sends "Connection: close" on every in-flight response, waits up to 20 s for in-flight transactions
+preStop: POST /admin/drain (local) -> OPTIONS and readiness answer 503 at once; transactions arriving on pooled or
+         raced connections during the first 15 s are still SERVED, each response carrying "Connection: close";
+         new transactions are refused only after 15 s; exit at zero in-flight or 20 s (PLAT-F3)
 terminationGracePeriodSeconds: 30
 ```
 
 1. New pod starts, loads the snapshot from the control plane (or the last persisted snapshot on its emptyDir cache),
    passes readiness only when it can serve OPTIONS 200.
 2. Endpoints add the new pod; ServiceLB (iptables) starts distributing new connections to it.
-3. Old pod gets SIGTERM after preStop: the drain marks OPTIONS unhealthy so ProxySG's health check stops choosing it,
-   refuses new connections, closes pooled ProxySG connections gracefully after their current transaction (ICAP has no
-   GOAWAY; `Connection: close` on the response is the protocol's mechanism).
+3. The old pod's preStop marks OPTIONS and readiness unhealthy so ProxySG's health check and the Service stop choosing
+   it; transactions that still arrive in the convergence window (endpoint removal and the 5 s health-check interval)
+   are served with `Connection: close`, so pooled ProxySG connections end at a transaction boundary (ICAP has no GOAWAY).
+   Only after 15 s are new transactions refused.
 4. Endpoints remove the old pod; it exits within the grace period.
 
 **Proof** (AC-2 test, phase 1): an in-cluster load generator holds 50 pooled ICAP connections at 200 transactions/s
@@ -41,6 +43,11 @@ connection resets, recorded in `docs/reviews/` with the run id. The same test ru
 
 **ProxySG side**: the ICAP service points at the node address and port 1344/11344 with health checks every 5 s; connection
 reuse on; fail behaviour per ADR-010. Nothing in ProxySG changes during an rwsafe rollout.
+
+**Source addresses**: k3s ServiceLB masquerades the TCP source to its own pod address before the packet reaches the
+ICAP pod (PLAT-F2). The ProxySG allowlist is therefore enforced by the host firewall (`@icap_clients`, HARDENING H-1) and
+the peer is identified by its client certificate on 11344; the NetworkPolicy admits the ServiceLB pods of the rwsafe ICAP
+Service. `externalTrafficPolicy: Local` keeps traffic on the node but does not preserve the source address through ServiceLB.
 
 ### 1.3 Control plane and worker
 
@@ -52,7 +59,10 @@ terminal state (brief section 8, "stale locks").
 
 Every release renders the committed kustomize overlay with the candidate image digests, runs `kubectl diff
 --server-side` first, prints the drift summary (objects that differ: name and field count, never values), and applies
-only after the drain. A hand-made object or `kubectl set env` disappears at the next apply, by design; the deploy prints
+only after the drain. **Real names never touch the working tree** (PLAT-F8): the deploy reads the host names and other
+estate values from the in-cluster ConfigMap `rwsafe-estate`, builds a transient kustomize patch in memory and streams the
+rendered manifests to `kubectl diff -f -` and `kubectl apply -f -` on stdin; no rendered file with a real value is written
+to disk or committed. A hand-made object or `kubectl set env` disappears at the next apply, by design; the deploy prints
 the diff so nobody is surprised. Secrets are never applied over existing ones: their manifests carry name and keys only;
 values are created once by the operator procedure in §4 and patched.
 
