@@ -10,13 +10,18 @@ council response. Test kinds: `unit`, `arch` (ArchUnit), `fuzz` (Jazzer), `it` (
 | Id | Requirement | Test |
 |---|---|---|
 | SR-DP-1 | No backtracking regex on the inline path: only RE2/J (or an equivalent linear engine) may be referenced from `dataplane` and `detect` | arch: forbid `java.util.regex` imports in those modules (AC-3) |
-| SR-DP-2 | Explicit limits: REQMOD body 4 MiB, RESPMOD window 16 KiB/64 KiB max in memory, decompression 8× and ≤ body limit, JSON depth 64, decoding depth 2, header sizes, 1 000 in-flight, 1 MiB per connection | unit per limit; fuzz; load (AC-3) |
+| SR-DP-2 | Explicit limits: REQMOD body 4 MiB inspected in full (no sampling), RESPMOD window 16 KiB/64 KiB max in memory with one window of delay, decompression 8× and ≤ body limit, JSON depth 64, decoding depth 2 with residual blobs > 256 B uninspectable, header sizes, 1 000 in-flight, per-connection buffer ≥ body limit + 64 KiB, 256 MiB pod-wide full-body semaphore, per-identity in-flight cap 32 (256 per shared address), body receive rate ≥ 64 KiB/s and 10 s receive timeout (OFF2-10, PLAT-F1, PLAT-F5) | unit per limit; fuzz; load (AC-3) |
 | SR-DP-3 | A parse failure or inspection exception yields an explicit verdict (`MALFORMED`, `INSPECTION_FAILED`) and the ADR-010 action; never a silent 204 | unit with malformed fixtures; fuzz corpus asserts no 204 on crash paths |
 | SR-DP-4 | ICAP and HTTP decoders are fuzzed in CI (line, headers, `Encapsulated`, chunked, preview/ieof, SSE, JSON extractor, normaliser) with a committed corpus; a crash or timeout fails the gate | fuzz in the ship gate |
 | SR-DP-5 | Inline decision time ≤ 2 s wall clock, ≤ 200 ms per RESPMOD chunk; p95/p99 budgets of CAPACITY §4 | load (ICAP e2e load profile), histograms |
 | SR-DP-6 | The data plane makes no JDBC call, no blocking disk write, no synchronous HTTP to anything but the control plane, and no Internet egress (ICAP role) | arch (no `java.sql`, no Spring MVC); manifest (NetworkPolicy); it |
 | SR-DP-7 | Capture events may be dropped under overflow (counted, alerted); verdict and audit events are never dropped | unit (queue policy), load |
-| SR-DP-8 | Snapshot signature verified before activation; unsigned or stale (> 24 h) snapshots are refused; without any snapshot the engine is not ready | unit; e2e-icap (OPTIONS 503 without snapshot) |
+| SR-DP-8 | Snapshot signature verified before activation; unsigned, stale (> 24 h) or **lower-versioned than the active one** (OFF2-11) snapshots are refused; without any snapshot the engine is not ready | unit (signed older snapshot refused); e2e-icap (OPTIONS 503 without snapshot) |
+| SR-DP-10 | A 204 on a Preview is sent only when the preview carries `ieof`; otherwise the full body is received and inspected (OFF2-1) | unit fixture: 4 KiB benign prefix + secret after the preview → BLOCK |
+| SR-DP-11 | Every JSON string leaf is inspected regardless of schema; base64 leaves with a file magic go to the file pipeline; unknown fields are counted, not ignored (OFF2-6) | unit fixture: secret in an unknown field → detected |
+| SR-DP-12 | Verdict and audit events spool to a bounded emptyDir ring file (256 MiB) during a control-plane outage; a full spool turns fail-closed flows to block (PLAT-F9) | unit, it (outage drill) |
+| SR-DP-13 | Drain: OPTIONS/readiness 503 at once, transactions served with `Connection: close` for 15 s, refusal only afterwards (PLAT-F3) | load drill (AC-2) |
+| SR-DLP-1 | The fail-closed class set (`secret`, `customer_data`, `special_category`, `internal_identity`) is a registry constant; a **fail-closed flow** (an enforce-mode policy entry containing one of them) blocks on every non-verdict (`UNINSPECTABLE`, `MALFORMED`, `INSPECTION_FAILED`, `INSPECTION_TIMEOUT`); fail-closed classes have no monitor mode and no analyst-granted exception (OFF2-2, OFF2-4, PC-5) | unit per non-verdict; registry test (analyst exception refused) |
 | SR-DP-9 | Tier-1 detectors cost ≤ 2 CPU-ms per 4 KiB and ≤ 12 CPU-ms per 64 KiB on the pinned JDK image | perf test in CI with recorded numbers (ARCH-7) |
 
 ## ICAP interface (SR-ICAP)
@@ -24,7 +29,7 @@ council response. Test kinds: `unit`, `arch` (ArchUnit), `fuzz` (Jazzer), `it` (
 | Id | Requirement | Test |
 |---|---|---|
 | SR-ICAP-1 | Secure ICAP on 11344 requires a client certificate chained to the ProxySG CA; plain 1344 exists only while the pilot exception H-2 is open and is removed by manifest | unit (TLS handshake), manifest, e2e-icap |
-| SR-ICAP-2 | Connections from addresses outside the ProxySG allowlist are closed before parsing and counted | unit, manifest (NetworkPolicy), e2e-icap |
+| SR-ICAP-2 | The ProxySG source allowlist is enforced at the host firewall (ServiceLB masquerades the TCP source, PLAT-F2); the engine admits the ServiceLB pods and identifies the peer by client certificate on 11344; group claims on plain connections select no exception (OFF2-12) | manifest (NetworkPolicy), e2e-icap, firewall rule review |
 | SR-ICAP-3 | Every record carries `identity_source`, mTLS state and the shared-address label | unit, it |
 | SR-ICAP-4 | rwsafe's body limit is below ProxySG's ICAP max object size; oversize yields `OVERSIZE` with the ADR-010 action | unit; phase-0 configuration record |
 | SR-ICAP-5 | Zero dropped transactions during `kubectl rollout restart` under load (50 pooled connections, 200 tx/s) | load drill (AC-2) |
@@ -34,7 +39,7 @@ council response. Test kinds: `unit`, `arch` (ArchUnit), `fuzz` (Jazzer), `it` (
 
 | Id | Requirement | Test |
 |---|---|---|
-| SR-GW-1 | Client credentials are short-lived (≤ 8 h), bound to user and device fingerprint, revocable | unit, it |
+| SR-GW-1 | Client credentials are short-lived (≤ 8 h), bound to the MDM client certificate (mTLS) where present, otherwise to a directory session with re-authentication; the device fingerprint is an anomaly signal only, never the binding (OFF2-14); revocable | unit, it |
 | SR-GW-2 | Unauthenticated requests get 401; no path serves the corporate key without a credential | unit, e2e |
 | SR-GW-3 | Upstream hosts, models and regions come from the snapshot allowlist per data class; client-supplied URLs or unknown headers are rejected or stripped (no SSRF) | unit, fuzz (header injection) |
 | SR-GW-4 | Token counts and cost per request are recorded and exported per team | it |
@@ -55,6 +60,7 @@ council response. Test kinds: `unit`, `arch` (ArchUnit), `fuzz` (Jazzer), `it` (
 | SR-ADM-6 | Group → role bindings are integrity-protected and audited | it |
 | SR-ADM-7 | Every UI action has a CLI counterpart using the same routes and gates | e2e (CLI parity suite) |
 | SR-ADM-8 | Error responses carry the server's reason code and message; the UI never shows a bare "Request failed" | e2e-ui |
+| SR-ADM-9 | Client-chosen metadata fields (file names, tool and MCP names, model, URL path and query, user agent, SSE event names, upstream error text) and justification free text are content-grade: length-capped, control characters stripped, rendered inert, untrusted-framed in the masked API, digest or enum in the SIEM (OFF2-8) | unit, e2e-ui hostile fixtures per field |
 
 ## Privacy and masking (SR-PRIV)
 
@@ -69,7 +75,10 @@ council response. Test kinds: `unit`, `arch` (ArchUnit), `fuzz` (Jazzer), `it` (
 | SR-PRIV-7 | Missing masking dictionary or HMAC key → 503 for masked requests, never unmasked | unit, e2e-ui (AC-6) |
 | SR-PRIV-8 | Deletion (retention or DSAR) removes rows and manifests, shreds data keys, writes receipts, emits SIEM deletion events; restore replays receipts | it, drill (AC-6 "after deletion nothing remains in backups or the SIEM") |
 | SR-PRIV-9 | The DSAR search finds a person's records by employee identifier or by a digest match and is audited with a case id | it, e2e-ui (AC-6) |
-| SR-PRIV-10 | Content capture for a user without a notice acceptance record stores metadata and verdict only | it (AC-6 privacy seat test) |
+| SR-PRIV-10 | Content capture for a user without a notice **acknowledgement** record from any source (banner, IDE first run, directory attribute, gateway credential issue) stores metadata and verdict only (PC-2, PC-3) | it (AC-6 privacy seat test, both sources) |
+| SR-PRIV-14 | A blocked non-corporate login stores class, platform and the corporate pseudonym only; the personal identifier is neither stored nor digested (PC-9) | unit, it |
+| SR-PRIV-15 | A record with a C5 special-category flag persists no C3 text; masking layers 4 and 5 run at persistence (PC-7) | unit, it |
+| SR-PRIV-16 | Break-glass raw access needs a P1 case opened by another person or a system alert id; DPO notified at grant; 1 h, no extension; monthly cap (PC-8) | it |
 | SR-PRIV-11 | Findings store class, offset, length and digest, never the value; the capture sink rejects C3 text in which a detector still hits | unit, it |
 | SR-PRIV-12 | Exports for masked roles are masked by column meaning, including spreadsheet cells | unit, e2e-ui (AC-6) |
 | SR-PRIV-13 | The repository privacy gate rejects real IPs, host names, serials, account names, secret shapes, TCKN/IBAN/phone values and unmarked prompt fixtures; allowlist entries carry owner and review date | gate self-test in CI |
@@ -128,4 +137,4 @@ are specified with ADR-006's implementation.
 
 AC-1 SR-HOST-1, SR-HOST-4; AC-2 SR-ICAP-5, SR-AVL-1; AC-3 SR-DP-1, SR-DP-2, SR-DP-6; AC-4 SR-HOST-3; AC-5 SR-PRIV-2;
 AC-6 SR-PRIV-5, SR-PRIV-7, SR-PRIV-12, SR-PRIV-6, SR-PRIV-9, SR-PRIV-8, SR-PRIV-3; AC-7 SR-DET-3, SR-DET-4; AC-8
-`docs/reviews/COUNCIL_RESPONSE.md`.
+`docs/reviews/COUNCIL_RESPONSE.md`. Council-added: SR-DP-10..13, SR-DLP-1, SR-ADM-9, SR-PRIV-14..16.

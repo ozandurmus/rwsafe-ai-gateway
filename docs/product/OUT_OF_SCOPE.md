@@ -36,6 +36,14 @@ WebSocket frames after the upgrade (the upgrade request is inspectable, the fram
 ProxySG's ICAP size limit (configured to **deny** rather than fail open, Broadcom KB 167551), gRPC trailers, and uploads
 of archives or images (inspected only as far as `BYPASS_CATALOGUE.md` says: no OCR in the MVP).
 
+## 3a. Storage-integrated and embedded AI (OFF2-13)
+
+Content reaches AI through integrations the ICAP category does not see: Drive attachments to Gemini, SharePoint and
+OneDrive to M365 Copilot, repositories to Copilot and Codex cloud, Slack to Devin; and Gemini in Workspace apps or Copilot
+in Office share domains with the non-AI product. Compensating controls: the vendors' own DLP (Workspace DLP, Purview,
+GitHub app installation policy), tenant settings, and an explicit phase-0 decision on which collaboration domains join
+the ICAP category. These surfaces are marked T or L in the platform matrix.
+
 ## 4. People and use outside scope (PO decision Q-6)
 
 Contractors on unmanaged devices, BYOD, and personal AI use on personal devices are outside the gateway unless the PO

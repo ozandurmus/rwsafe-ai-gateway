@@ -16,7 +16,7 @@ group at grant time, copied to the SIEM immediately, and audited per page view.
 | Request | `security_admin` or `security_analyst` (C3 with a case id needs no grant beyond the case; C4 always needs a grant) or `privacy_officer` (DSAR) |
 | Approve | a different person holding `privacy_officer` (for security requests) or `security_admin` (for DSAR requests); never the requester; never the same person twice in a row for the same case (rotation) |
 | Notified | the DPO directory group (mail route `raw_access`), the SIEM (immediate CEF event), the requester's manager group if configured |
-| Emergency (break-glass) | a `security_admin` may self-approve **only** for an active incident class `INCIDENT_P1`, with a mandatory free-text reason, a 1-hour limit, an immediate SIEM event and a next-business-day review by the `privacy_officer`, who can mark it abusive (which locks the requester's grant ability) |
+| Emergency (break-glass) | never single-person (PC-8): requires an `INCIDENT_P1` case **opened by another person** or originated by a **system alert id**; the `security_admin` then grants to themself for **1 hour, no extension**, with a mandatory reason; the DPO group is notified **at grant time**, the SIEM copy is immediate, the `privacy_officer` reviews next business day and can mark it abusive (locks the requester's grant ability); a monthly cap on break-glass uses (3) triggers a review |
 
 ## 3. Grant object
 

@@ -15,4 +15,7 @@ version recorded in each acceptance (class C12).
 | `tr/stream_terminated.md` | the message delivered when a streamed response is aborted |
 
 Placeholders: `{{class}}` (the DLP class name, never the value), `{{ref}}` (correlation id), `{{platform}}`,
-`{{policy_link}}`, `{{dpo_contact}}` (filled from configuration, never a literal here), `{{exception_link}}`.
+`{{policy_link}}`, `{{dpo_contact}}`, `{{controller_name}}` (the data controller's legal name), `{{retention_metadata}}`,
+`{{retention_redacted}}`, `{{retention_raw}}`, `{{notice_version}}`, `{{exception_link}}` (rendered **only** for classes
+that are not fail-closed; PC-5), `{{duration_options}}`. All filled from configuration, never a literal here. Rule (PC-1):
+any change to a placeholder value or to the text bumps `notice_version` and requires re-acknowledgement.

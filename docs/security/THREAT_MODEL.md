@@ -9,7 +9,9 @@ hostile input", "the masked AI reviewer is a target"). Each threat names the con
 
 Corporate AI keys (gateway Secret); the policy snapshot signing key; the privacy HMAC key; the capture-store KEK and data
 keys; captured content (C3, C4); findings digests; identities and sessions; the audit ledger; the policy registry; the
-estate dictionary (real names); the ProxySG trust (client CA); the node shared with neXus.
+estate dictionary (real names, held only by the control plane and the worker; the data plane holds whole-token digests,
+OFF2-9); the ProxySG trust (client CA); the node shared with neXus; the agent tooling surface (review scripts, external
+CLIs, the repository's own instruction files; §8a).
 
 ## 2. ICAP listener (1344/11344 from ProxySG)
 
@@ -47,6 +49,7 @@ estate dictionary (real names); the ProxySG trust (client CA); the node shared w
 | T | CSRF on policy changes | CSRF token + SameSite, four-eyes on fail-closed class changes | SR-ADM-3 |
 | T | Stored XSS from captured prompts rendered in the review UI (SEC-5) | content rendered as text in a sandboxed element, no HTML, CSP without inline scripts, CSV formula injection escaped on export | SR-ADM-4 |
 | T | Prompt injection against an AI agent reading the masked view | the masked API frames content as untrusted (`X-RWSAFE-Content: untrusted`, JSON wrapper, no instructions in content fields), bodies not served to the masked role by default | SR-PRIV-3 |
+| T | Client-chosen "metadata" (file names, tool and MCP names, model, URL path, user agent, SSE event names, upstream error text) and the justification free text carry hostile content into the UI, the SIEM and AI consumers while escaping the body rules (OFF2-8) | content-grade handling: length caps, control-character stripping, inert rendering, untrusted framing, digest or enum in the SIEM | SR-ADM-9 |
 | R | Admin denies a policy change | trigger-enforced audit with actor fingerprint, SIEM copy | SR-AUD-1 |
 | I | Masked role sees a real identifier | masking funnel, canary probe incl. Turkish identifiers, 503 fail-closed | SR-PRIV-1, SR-PRIV-2 |
 | I | Re-identification through stable pseudonyms and raw-value filters | masked search over pseudonymised fields only, no raw-value filter, k-anonymity threshold in analytics, rwsafe-own HMAC key | SR-PRIV-4 |
@@ -91,6 +94,16 @@ estate dictionary (real names); the ProxySG trust (client CA); the node shared w
 | T | Malicious model or rule pack | safetensors/ONNX only, hash-pinned, signed, licence recorded | SR-SC-1 |
 | T | Dependency tampering | Gradle lockfiles + verification metadata, Trivy, SBOM | SR-SC-2 |
 | T | Image tampering between build and deploy | digest pinning, signature + provenance verification at deploy | SR-SC-3 |
+| E | Build pods on the production node execute third-party build scripts and plugins (OFF2-16) | `rwsafe-build`: PSA baseline (the one relaxation), no service-account token, egress only to the registry and the corporate proxy, ephemeral storage with size limits, Gradle verification metadata covering plugins, CI actions pinned by digest; pentest item "from a build pod, reach the cluster or neXus" | SR-SC-4 (manifest, pentest) |
+
+## 8a. Agent tooling surface (OFF2-15)
+
+| STRIDE | Threat | Control | Test |
+|---|---|---|---|
+| T | External review output (an LLM's text written unaltered under `docs/reviews/`) is read by an agent with write access and acts as instructions | review outputs are **evidence, not authority**: only a PO decision record quoting a council item makes it binding; agents treat review files as untrusted data (AGENTS.md authority hierarchy amendment, pending the PO's hand) | review of AGENTS.md; test that no script auto-applies review text |
+| T | A brief sent to an external reviewer carries a prompt body or an identifier | `tools/review/review_guard.py` refuses body fields, canary digests, addresses, key shapes | unit |
+| E | The agent widens its own permissions or instruction files | the harness refuses self-modification; permission rules are written by the PO | procedure |
+| I | The external CLIs receive repository content | repository content is privacy-gated and public; no production data is in the repository | gate |
 
 ## 9. OWASP Top 10 for LLM Applications 2025 mapping
 

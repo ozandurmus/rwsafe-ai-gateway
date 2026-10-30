@@ -10,13 +10,13 @@ captured content). Pilot acceptance requires every MVP row green. Columns: Phase
 | Id | Technique | Expected result | Test | Phase |
 |---|---|---|---|---|
 | BY-ENC-1 | Base64-encoded secret or TCKN in the prompt | decoded at depth 1, detected, redacted | unit fixture with base64 of synthetic values | MVP |
-| BY-ENC-2 | Double encoding (base64 of base64, hex of base64) | decoded to depth 2, detected; depth 3+ marked `PARTIAL_INSPECTION` and warned | unit | MVP |
+| BY-ENC-2 | Double encoding (base64 of base64, hex of base64) | decoded to depth 2, detected; depth 3+ → the residual blob is `UNINSPECTABLE` → block on fail-closed flows (OFF2-3) | unit | MVP |
 | BY-ENC-3 | Zero-width characters inside a TCKN or key | stripped by normalisation, detected | unit | MVP |
 | BY-ENC-4 | Homoglyphs (Cyrillic/Greek look-alikes) in a key or IBAN | folded to ASCII, detected | unit | MVP |
 | BY-ENC-5 | Unicode tag characters (U+E0000 range) carrying hidden text | tag characters stripped and **flagged as an injection signal** (warn) | unit | MVP |
 | BY-ENC-6 | URL-encoding, HTML entities | decoded, detected | unit | MVP |
 | BY-ENC-7 | Digits spelled out or separated ("1 2 3 4 5 ...", "one two") | separators removed before checksum; spelled-out digits: **not detected** (documented limitation, Tier-2 candidate) | unit (negative, documented) | later |
-| BY-ENC-8 | ROT13, custom substitution | not detected deterministically; the ML tier flags "encoded payload" shapes | unit (negative), Tier-2 | later |
+| BY-ENC-8 | ROT13, custom substitution, any undecodable high-entropy blob > 256 B in a prompt field | `UNINSPECTABLE(UNDECODABLE_BLOB)` → block on fail-closed flows, warn otherwise (OFF2-3) | unit | MVP |
 | BY-ENC-9 | Compressed text (gzip in base64) | decompressed within caps (8×), detected; beyond caps → `OVERSIZE` verdict | unit | MVP |
 
 ## 2. Fragmentation and volume
@@ -24,6 +24,10 @@ captured content). Pilot acceptance requires every MVP row green. Columns: Phase
 | Id | Technique | Expected result | Test | Phase |
 |---|---|---|---|---|
 | BY-FRAG-1 | Splitting an IBAN or key across two prompts | not detected per prompt; **per-user volume and entropy thresholds** over a 10-minute window raise a warn; session-level reassembly is a later feature | unit on the window counter | MVP (warn) |
+| BY-PAD-1 | 4 KiB benign prefix so the secret sits after the ICAP preview | 204 on preview only with `ieof`; full body inspected → BLOCK (OFF2-1) | unit fixture | MVP |
+| BY-PAD-2 | Padding the body past the 4 MiB limit | `UNINSPECTABLE(OVERSIZE)` → block on fail-closed flows (OFF2-2) | unit | MVP |
+| BY-PAD-3 | Padding 130 KB before and after sensitive data | no head/tail sampling exists; full inspection (PLAT-F5) | unit | MVP |
+| BY-FIELD-1 | Secret in an unknown JSON field or a vendor-ignored field | every string leaf inspected (OFF2-6) | unit fixture | MVP |
 | BY-FRAG-2 | Many small prompts each with one customer record | per-user rate of findings per class over the window → block after a threshold (policy) | unit | MVP |
 | BY-FRAG-3 | Slow exfiltration over days | weekly analytics (k ≥ 5 aggregate) and per-user class counts flagged to analysts | report test | later |
 

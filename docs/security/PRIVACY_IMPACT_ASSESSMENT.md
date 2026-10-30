@@ -23,11 +23,12 @@ anything an employee typed, including special-category data of third persons), C
 
 | Flow | Personal data | Leaves the organisation? | Control |
 |---|---|---|---|
-| Employee → ProxySG → rwsafe ICAP → AI vendor | prompt content, identity (proxy claim) | the prompt goes to the vendor **only** if the policy allows the class for that platform; customer data, banking secret, special-category never (fail-closed) | ADR-007, ADR-010, Q-7 |
+| Employee → ProxySG → rwsafe ICAP → AI vendor | prompt content, identity (proxy claim) | **every request to a vendor is a transfer abroad of personal data** (the account identity and free text), whatever the DLP class (PC-4); a vendor receives traffic only after its KVKK art. 9 instrument is recorded (ADR-007 §3a); customer data, banking secret and special-category never (fail-closed) | ADR-007, ADR-010, Q-7, Q-33 |
 | rwsafe → capture store (HOST-A) | C3, C4 | no (HOST-A in Türkiye, treated as a primary system) | ADR-009 |
 | rwsafe → SIEM | C1, C2, C6, C7 (pseudonyms, classes, digests) | no (corporate SIEM) | SR-SIEM-2 |
 | rwsafe → mail relay | notification digests (no content) | no | SR-NOT-1 |
-| rwsafe → external reviewers (AI models used by the engineering team) | derived features only, never bodies | yes, under the engineering team's own tooling rules | AGENTS.md 4.6, 4.7 |
+| rwsafe → external reviewers (AI models used by the engineering team) | **synthetic fixtures and aggregates (k ≥ 5) only** (PC-11); never per-record pseudonymised rows, never bodies | yes, under the engineering team's own tooling rules | AGENTS.md 4.6, 4.7 |
+| AI agent working as `replay_viewer` on production data | pseudonymised per-record data, which is still personal data | yes (the model is operated abroad) | residual the PO signs (Q-29) or the agent is restricted to aggregates (PC-11) |
 | gateway → AI vendor | prompt content for API tools | yes, within the allowlist | SR-GW-3 |
 
 ## 4. Necessity and proportionality (per class, for the DPO's balancing)
@@ -35,7 +36,7 @@ anything an employee typed, including special-category data of third persons), C
 | Class | Why necessary | Lighter alternative considered | Why rejected | Residual |
 |---|---|---|---|---|
 | C1/C2/C6 | enforcement and audit are impossible without who/what/when and the verdict | none that enforces | — | pseudonymised for most viewers |
-| C3 redacted | incident investigation needs the text around a finding; policy tuning needs examples | verdicts only | analysts cannot judge a block without context; false positives cannot be corrected | 90-day limit, case-bound access, redaction removes the sensitive spans |
+| C3 redacted | incident investigation needs the text around a finding; deterministic rule review needs examples | verdicts only | analysts cannot judge a block without context; false positives cannot be corrected | 90-day limit, case-bound access; **redaction removes only what a detector matched: names, addresses and free-text context that no detector caught remain readable in C3 for 90 days** (PC-7). Mitigation: masking layers 4 and 5 run at persistence; a record with a C5 flag has no C3 at all |
 | C4 raw | only for a confirmed incident where the redacted text is insufficient (e.g. to prove what exactly left) | C3 only | evidence quality in a serious incident | off by default (Q-4b), JIT grant, 30 days, crypto-shred |
 | C5 flag | to block special-category exfiltration | none | — | flag only, no text |
 | C12 | legal proof of notice | none | — | — |
@@ -58,13 +59,16 @@ anything an employee typed, including special-category data of third persons), C
 ## 6. Breach runbook (72 hours to the Board, art. 12)
 
 T+0: detection (SIEM alert, audit anomaly, scanner); the `security_admin` opens a P1 case; raw-access break-glass rules apply.
-T+2 h: scope: which classes, which record ids, which time window; the DSAR search enumerates affected persons by
-pseudonym; `privacy_officer` and the DPO group are notified automatically by the case type.
+T+2 h: scope: which classes, which record ids, which time window; the DSAR search enumerates affected **employees** by
+pseudonym; **third persons inside C3/C4 can only be identified by reading content under a DSAR grant** (PC-12);
+`privacy_officer` and the DPO group are notified automatically by the case type.
 T+24 h: containment (revoke grants, rotate keys: capture KEK rotation re-wraps data keys; pseudonym key rotation is
 avoided unless the key itself leaked), evidence preserved under legal hold.
 T+48 h: the DPO drafts the Board notification from the case record (counts, classes, persons, measures); affected
 persons' notification prepared where required.
 T+72 h: submission; the root-cause log entry; retrospective within two weeks.
+Sector regulator: the DPO group with compliance owns the BDDK incident notification (timing UNVERIFIED for counsel;
+PC-12); the notification of affected persons under art. 12/5 is owned by the DPO.
 The runbook is drilled annually with synthetic data.
 
 ## 7. Open legal questions for the DPO and counsel

@@ -142,6 +142,8 @@ Perplexity, Replit, Lovable: all start as **category-blocked** by the uncategori
 | Off-net laptops, Edge SWG users | nothing | I | ADR-006 agent path; tenant settings |
 | Cloud-side agents | console login only | T | OUT_OF_SCOPE §1 |
 | QUIC | nothing | I | block UDP 443 (UNVERIFIED estate policy) |
+| Storage-integrated AI (Drive attachments to Gemini, SharePoint/OneDrive to M365 Copilot, repositories to Copilot and Codex cloud, Slack to Devin) | the attach or share action, not the content the vendor pulls server-side | T | vendor DLP (Workspace DLP, Purview, GitHub app policy); phase 0 decides which collaboration domains are in the ICAP category (OFF2-13) |
+| Embedded AI sharing a domain with the non-AI product (Gemini in Workspace apps, Copilot in Office web) | the same domain as the productivity app; a category cannot separate them | L or T | per-vendor admin controls; the embedded surface is marked log-only in the matrix (OFF2-13) |
 
 ## 4. Per-client trust matrix (phase 0 fills the measured column)
 

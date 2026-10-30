@@ -107,3 +107,72 @@ portability PORT-1/PORT-3 (ADR-001). All answered.
 The ADRs, ARCHITECTURE, ICAP spec, CAPACITY, PORTS, HARDENING, THREAT_MODEL, SECURITY_REQUIREMENTS, MASKING, DATA_CLASSES,
 RAW_CONTENT_ACCESS, PIA, REGULATORY_MAPPING, BYPASS_CATALOGUE, PLATFORM_MATRIX, OUT_OF_SCOPE, ROADMAP, OPEN_QUESTIONS and
 this response, through `tools/review/` (masked material, no prompt bodies), one seat per lens as in the kickoff council.
+
+## 7. Design-freeze council (2026-10-30): dissents and what changed
+
+Three seats, run through `tools/review/` (outputs unaltered: `FREEZE_2026_10_30_SEAT_FABLE_PRIVACY_COMPLIANCE.md`,
+`FREEZE_2026_10_30_SEAT_FABLE_OFFENSIVE.md`, `FREEZE_2026_10_30_SEAT_ARGON_PLATFORM.md`). All three: **ACCEPT WITH
+CORRECTIONS**. Every dissent is answered below with the correction made or the reason it is deferred to the PO.
+
+### 7.1 Privacy and compliance (PC-1..PC-14)
+
+| ID | Correction | Where |
+|---|---|---|
+| PC-1 | Notice gains controller identity, automated collection via the proxy, transfer to vendors abroad under an art. 9 instrument, SIEM metadata transfer, objection consequence, "not consent" sentence; placeholder table and the re-acknowledgement rule added | `docs/i18n/tr/notice_first_use.md`, `docs/i18n/README.md` |
+| PC-2 | "Acceptance" → "acknowledgement" everywhere; explicit consent excluded as a basis (Q-32) | ADR-009, DATA_CLASSES, MASKING, REGULATORY art. 5, SR-PRIV-10 |
+| PC-3 | C12 has four sources incl. the directory attribute (HR acknowledgement) and gateway credential issuance (Q-35) | DATA_CLASSES C12, SR-PRIV-10 |
+| PC-4 | A vendor row is fail-closed for every class until its art. 9 instrument is recorded (Q-33) | ADR-007 §3a, REGULATORY art. 9, PIA §3 |
+| PC-5 | No monitor-only on fail-closed classes (shadow evaluation instead); exceptions need `privacy_officer` + `security_admin` and a legal instrument; block page hides the exception link | ADR-010 §4, ADR-008 §4, SR-DLP-1, `tr/block_page.md` |
+| PC-6 | C6 split: PII and customer-identifier digests 90 d then tombstone; digest key rotation; reversibility added to Q-29 | ADR-009 §1, DATA_CLASSES C6, Q-29 |
+| PC-7 | Residual stated: undetected names and context remain in C3; layers 4 and 5 run at persistence; a C5 flag means no C3 | ADR-009 §2, DATA_CLASSES, PIA §4, SR-PRIV-15 |
+| PC-8 | Break-glass needs another person's P1 case or a system alert id; DPO at grant time; 1 h, no extension; monthly cap | RAW_CONTENT_ACCESS §2, SR-PRIV-16 |
+| PC-9 | Personal-account logins store class and corporate pseudonym only; the personal identifier is neither stored nor digested | ADR-009 §2, DATA_CLASSES §4, SR-PRIV-14 |
+| PC-10 | `viewer` and `auditor` see pseudonymised C1 by default; resolve is a per-action audited step | MASKING B1, ADR-009 §5 |
+| PC-11 | External reviewers: synthetic fixtures and aggregates only; AI agents as `replay_viewer` on production data added to Q-29 | MASKING A7, ADR-009 §5, PIA §3, Q-29 |
+| PC-12 | BDDK incident notification owner added; third persons identified only by a content read under a grant | PIA §6, REGULATORY art. 12 |
+| PC-13 | Q-12 backup target must be in Türkiye; C10 row records the location | OPEN_QUESTIONS Q-12, DATA_CLASSES C10 |
+| PC-14 | New class C15 for case, grant and exception notes; "policy tuning" defined as deterministic rule review | DATA_CLASSES, ADR-009 §8 |
+
+### 7.2 Offensive security (OFF2-1..OFF2-17)
+
+| ID | Correction | Where |
+|---|---|---|
+| OFF2-1 | 204 on a preview only with `ieof`; otherwise full-body decision; fixture BY-PAD-1 | ICAP spec §4.3, SR-DP-10, BYPASS |
+| OFF2-2 | `OVERSIZE` is `UNINSPECTABLE`; block on fail-closed flows; one body limit (4 MiB) on the engine, ProxySG denies above it | ICAP spec §3, ADR-010 §1–3, BY-PAD-2 |
+| OFF2-3 | Residual blobs > 256 B uninspectable; a finding inside a decoded layer replaces the whole field; BY-ENC-8 to MVP | ICAP spec §3, BYPASS |
+| OFF2-4 | Fail behaviour by **flow policy** ("fail-closed flow" defined); SR-DLP-1 added; dangling SR-DLP-* reference resolved | ADR-010 §1, SECURITY_REQUIREMENTS |
+| OFF2-5 | Coverage-metric limit stated; header-only metadata mode for uncategorised domains (Q-30) | ADR-004, ADR-010 §2, CAPACITY §7 note |
+| OFF2-6 | Every JSON string leaf inspected; base64 leaves with file magic → file pipeline; fingerprint on required fields only | ICAP spec §4.3, §5, SR-DP-11, BY-FIELD-1 |
+| OFF2-7 | Tool-result and web-content blocks run injection detectors at REQMOD (block possible); RESPMOD abort set on agentic surfaces; monitor first (Q-31) | ADR-005 §2, 3a; ADR-008 §2; ICAP spec §4.3–4.4 |
+| OFF2-8 | Client-chosen metadata and justification text are content-grade | ADR-008 §2, ADR-009 §1, DATA_CLASSES, THREAT_MODEL §4, SR-ADM-9 |
+| OFF2-9 | Estate names matched whole-token over keyed digests in the data plane; plaintext dictionary only in the control plane and worker; limitation documented | ADR-008 §2, THREAT_MODEL §1 |
+| OFF2-10 | Per-identity in-flight cap, body receive rate and receive timeout; pool never exhausted by one identity | ICAP spec §3, SR-DP-2, PENTEST |
+| OFF2-11 | Monotonic snapshot version; replayed older snapshot refused | ICAP spec §4.2, ADR-008 §4, SR-DP-8 |
+| OFF2-12 | Group claims drive policy only on mTLS connections; strictest policy and no exception on plain connections | ADR-007 §3, ICAP spec §2, SR-ICAP-2 |
+| OFF2-13 | Storage-integrated and embedded AI blind spots with compensating controls | PLATFORM_MATRIX §3, OUT_OF_SCOPE §3a |
+| OFF2-14 | Gateway credentials bound to the MDM certificate or a directory session; fingerprint is a signal | SR-GW-1 |
+| OFF2-15 | Agent tooling surface added to the threat model; demotion of `docs/reviews/` to evidence proposed (Q-36, needs the PO's hand on AGENTS.md) | THREAT_MODEL §8a, Q-36 |
+| OFF2-16 | Build pods hardened (baseline PSA, no token, egress to registry and proxy only, size-limited ephemeral storage); pentest item added | THREAT_MODEL §8, PENTEST |
+| OFF2-17 | Pentest scope extended (lab tenants Q-34, CRLF/smuggling after rewrite, fail-open flipping, injection against AI consumers) | PENETRATION_TEST_PLAN §2 |
+| Q-E | Secure ICAP first, then the fail-open window; never both | ADR-010 §2, HARDENING H-2, ROADMAP MVP, Q-28 |
+
+### 7.3 Platform and architecture (PLAT-F1..PLAT-F9)
+
+| ID | Correction | Where |
+|---|---|---|
+| PLAT-F1 | Per-connection buffer ≥ body limit + 64 KiB; 256 MiB pod-wide full-body semaphore; ICAP pod memory 2 GiB, worker trimmed | ICAP spec §3, PORTS §4.3 |
+| PLAT-F2 | ServiceLB masquerade acknowledged: allowlist at the host firewall, peer identity by mTLS, NetworkPolicy admits ServiceLB pods | ICAP spec §2, PORTS §3, HARDENING, runbook §1.2, `03-icap-service-lb.yaml` |
+| PLAT-F3 | Drain keeps serving for 15 s with `Connection: close`; refusal only afterwards | ICAP spec §7, runbook §1.2, SR-DP-13 |
+| PLAT-F4 | RESPMOD timeout 300 s with 30 s idle; 204 only within Preview; one-window delay so the offending window never leaves; `Accept-Encoding` stripped for SSE | ICAP spec §4.4, §6; ADR-005 |
+| PLAT-F5 | No head/tail sampling; full inspection up to 4 MiB with a clean-chunk cache; no `PARTIAL_INSPECTION` | CAPACITY §4, ADR-010 §1 |
+| PLAT-F6 | `services.loadbalancers: 3`; quotas and LimitRanges for `rwsafe-build` and `rwsafe-security`; PSA baseline on the build namespace stated consistently; emptyDir `sizeLimit` rule | `02-quota-and-limits.yaml`, `00-namespaces.yaml`, ADR-001 §3, HARDENING, PORTS §4.2 |
+| PLAT-F7 | Disk watermark read by `statvfs` on the PVC path; `automountServiceAccountToken: false` on every pod | ADR-001 §3, CAPACITY §2 |
+| PLAT-F8 | No 404 backend pod (Traefik's native 404); host names injected as a transient kustomize patch on stdin, never written to the tree | ADR-003, runbook §2 |
+| PLAT-F9 | Verdict/audit spool on emptyDir (256 MiB) with fail-closed-on-full; the shared build lock lands in the same prerequisite neXus PR | ADR-010 §3, ADR-011 §2, SHIP plan §3, SR-DP-12 |
+| Q1–Q3 | PriorityClass relation (Q-10), prerequisite neXus PR scope (Q-13 + lock), MVP capture under the watermark (Q-3/Q-4): recommendations unchanged, confirmations requested from the PO | OPEN_QUESTIONS |
+
+### 7.4 Status
+
+All P0-grade corrections named by the seats (PC-1, PC-4, PC-5, PC-8; OFF2-1..7; PLAT-F1..F9) are applied in the documents.
+Open for the PO: Q-30..Q-36 and the AGENTS.md changes that need the PO's hand (Q-36 and the Git-authority sentence). The
+freeze is accepted when the PO ratifies by decision record.
