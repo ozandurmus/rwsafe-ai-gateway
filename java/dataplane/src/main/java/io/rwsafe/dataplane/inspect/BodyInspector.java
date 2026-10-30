@@ -111,18 +111,19 @@ public final class BodyInspector {
         }
         List<Finding> found = detectors.scan(normalised);
         if (DetectorSet.overLimit(found)) {
-            return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "FINDING_LIMIT");
+            return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "FINDING_LIMIT", found, false, null);
         }
         Base64Layers.Outcome layers = Base64Layers.inspect(normalised, detectors);
-        if (layers.reason() != null) {
-            return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, layers.reason());
-        }
         if (!layers.findings().isEmpty()) {
             found = new ArrayList<>(found);
             found.addAll(layers.findings());
             if (DetectorSet.overLimit(found)) {
-                return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "FINDING_LIMIT");
+                return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "FINDING_LIMIT", found, false, null);
             }
+        }
+        if (layers.reason() != null) {
+            // D-01: the findings travel with the non-verdict; a finding that blocks still blocks.
+            return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, layers.reason(), found, false, null);
         }
         return InspectionResult.inspected(found, false, null);
     }
@@ -138,25 +139,28 @@ public final class BodyInspector {
         ByteArrayOutputStream rewritten = null;
         int cursor = 0;
         long normalisedChars = 0;
+        String blobReason = null;
         for (JsonLeaf leaf : leaves) {
             String normalised = Normaliser.normalise(leaf.text());
             normalisedChars += normalised.length();
             if (normalisedChars > (long) MAX_EXPANSION * len + 64) {
-                return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "NORMALISATION");
+                return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "NORMALISATION", all, false, null);
             }
             List<Finding> found = detectors.scan(normalised);
             Base64Layers.Outcome layers = leaf.number() ? Base64Layers.Outcome.NONE
                 : Base64Layers.inspect(normalised, detectors);
-            if (layers.reason() != null) {
-                return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, layers.reason());
+            all.addAll(found);
+            all.addAll(layers.findings());
+            if (layers.stops() || DetectorSet.overLimit(all)) {
+                String reason = layers.stops() ? layers.reason() : "FINDING_LIMIT";
+                return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, reason, all, false, null);
+            }
+            if (blobReason == null) {
+                // D-01: an embedded file or blob is remembered and the rest of the body is still inspected and redacted.
+                blobReason = layers.reason();
             }
             if (found.isEmpty() && layers.findings().isEmpty()) {
                 continue;
-            }
-            all.addAll(found);
-            all.addAll(layers.findings());
-            if (DetectorSet.overLimit(all)) {
-                return InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, "FINDING_LIMIT");
             }
             if (rewritten == null) {
                 rewritten = new ByteArrayOutputStream(len);
@@ -168,11 +172,13 @@ public final class BodyInspector {
             rewritten.writeBytes(JsonLeafScanner.encode(replacement));
             cursor = leaf.rawEnd();
         }
-        if (rewritten == null) {
-            return InspectionResult.inspected(all, true, null);
+        byte[] redacted = null;
+        if (rewritten != null) {
+            rewritten.write(bytes, cursor, len - cursor);
+            redacted = rewritten.toByteArray();
         }
-        rewritten.write(bytes, cursor, len - cursor);
-        return InspectionResult.inspected(all, true, rewritten.toByteArray());
+        return blobReason == null ? InspectionResult.inspected(all, true, redacted)
+            : InspectionResult.nonVerdict(Verdict.UNINSPECTABLE, blobReason, all, true, redacted);
     }
 
     /** Any token of any Content-Encoding value other than {@code identity} (D-03). */
@@ -194,14 +200,24 @@ public final class BodyInspector {
         if (len < 2) {
             return false;
         }
-        int b0 = b[0] & 0xff;
-        int b1 = b[1] & 0xff;
-        if ((b0 == 0x1f && b1 == 0x8b) || (b0 == 0x78 && (b1 == 0x01 || b1 == 0x5e || b1 == 0x9c || b1 == 0xda))) {
+        if (ContentDecoding.compressed(b, len)) {
             return true;
         }
         return startsWith(b, len, 'P', 'K', 3, 4) || startsWith(b, len, '%', 'P', 'D', 'F')
             || startsWith(b, len, '7', 'z', 0xbc, 0xaf) || startsWith(b, len, 0xfd, '7', 'z', 'X')
-            || startsWith(b, len, 0x28, 0xb5, 0x2f, 0xfd) || startsWith(b, len, 'B', 'Z', 'h');
+            || startsWith(b, len, 0x28, 0xb5, 0x2f, 0xfd) || bzip2(b, len);
+    }
+
+    /** PR 17 review D-04: "BZh" alone is text; bzip2 is BZh, a level 1-9, then the block or end-of-stream magic. */
+    private static boolean bzip2(byte[] b, int len) {
+        if (len < 10 || !startsWith(b, len, 'B', 'Z', 'h') || b[3] < '1' || b[3] > '9') {
+            return false;
+        }
+        boolean block = (b[4] & 0xff) == 0x31 && (b[5] & 0xff) == 0x41 && (b[6] & 0xff) == 0x59
+            && (b[7] & 0xff) == 0x26 && (b[8] & 0xff) == 0x53 && (b[9] & 0xff) == 0x59;
+        boolean end = (b[4] & 0xff) == 0x17 && (b[5] & 0xff) == 0x72 && (b[6] & 0xff) == 0x45
+            && (b[7] & 0xff) == 0x38 && (b[8] & 0xff) == 0x50 && (b[9] & 0xff) == 0x90;
+        return block || end;
     }
 
     private static boolean startsWith(byte[] b, int len, int... sig) {

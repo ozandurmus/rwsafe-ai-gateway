@@ -269,6 +269,114 @@ class BodyDecodingTest {
         }
     }
 
+    // ---- PR 17 second review ----
+
+    static byte[] concat(byte[] a, byte[] b) {
+        byte[] out = java.util.Arrays.copyOf(a, a.length + b.length);
+        System.arraycopy(b, 0, out, a.length, b.length);
+        return out;
+    }
+
+    /** D-01: an embedded file or blob never discards findings, before or after it; the rewrite still applies. */
+    @Test
+    void findingsSurviveAnEmbeddedFileOrABlob() {
+        String key = Synthetic.awsKey();
+        String tckn = Synthetic.tckn(31);
+        String pdf = b64(utf8("%PDF-1.4\nsynthetic\n"));
+        InspectionResult r = inspect(JSON, utf8("{\"a\":\"synthetic " + key + "\",\"b\":\"" + pdf
+            + "\",\"c\":\"customer " + tckn + "\"}"));
+        assertEquals(Verdict.UNINSPECTABLE, r.nonVerdict());
+        assertEquals("EMBEDDED_FILE", r.reason());
+        assertTrue(has(r, DataClass.SECRET));
+        assertTrue(has(r, DataClass.TCKN), "a field after the file is still inspected");
+        String out = new String(r.redactedBody(), StandardCharsets.UTF_8);
+        assertFalse(out.contains(tckn));
+        assertTrue(out.contains("[REDACTED:TCKN]"));
+        InspectionResult text = inspect("Content-Type: text/plain\n",
+            utf8("synthetic " + key + " " + b64(random(300, 5))));
+        assertEquals("UNDECODABLE_BLOB", text.reason());
+        assertTrue(has(text, DataClass.SECRET));
+        InspectionResult sameField = inspect(JSON, utf8(prompt(b64("customer " + tckn) + " " + b64(random(300, 6)))));
+        assertEquals("UNDECODABLE_BLOB", sameField.reason());
+        assertTrue(has(sameField, DataClass.TCKN), "a decoded-layer finding before the blob is kept");
+    }
+
+    /** D-02 (1): a NUL, an invalid byte or UTF-16LE does not hide a value inside a decoded layer. */
+    @Test
+    void nulInvalidAndUtf16LayersAreStillScanned() {
+        String key = Synthetic.awsKey();
+        String tckn = Synthetic.tckn(32);
+        byte[][] layers = {
+            concat(new byte[] {0}, utf8("synthetic " + key)),
+            concat(new byte[] {(byte) 0xff}, utf8("synthetic " + key)),
+            ("synthetic " + key).getBytes(StandardCharsets.UTF_16LE),
+            concat(new byte[] {(byte) 0xff, 0}, utf8("customer " + tckn)),
+        };
+        DataClass[] expected = {DataClass.SECRET, DataClass.SECRET, DataClass.SECRET, DataClass.TCKN};
+        for (int i = 0; i < layers.length; i++) {
+            InspectionResult r = inspect(JSON, utf8(prompt(b64(layers[i]))));
+            assertTrue(has(r, expected[i]), "case " + i);
+        }
+    }
+
+    /** D-02 (2): a third layer that decodes to text is a residual blob at any length. */
+    @Test
+    void aReadableThirdLayerIsABlobAtAnyLength() {
+        String[] values = {b64(b64(b64(Synthetic.awsKey()))), b64(b64(b64(Synthetic.tckn(33))))};
+        for (String v : values) {
+            assertTrue(v.length() <= 256);
+            InspectionResult r = inspect(JSON, utf8(prompt(v)));
+            assertEquals(Verdict.UNINSPECTABLE, r.nonVerdict());
+            assertEquals("UNDECODABLE_BLOB", r.reason());
+        }
+    }
+
+    /** D-02 (3): low-entropy padding around random bytes does not dilute the entropy below the limit. */
+    @Test
+    void paddingDoesNotDiluteEntropy() {
+        byte[] nulPadded = concat(new byte[600], random(200, 34));
+        byte[] letterPadded = concat(utf8("a".repeat(500)), random(200, 35));
+        for (byte[] layer : new byte[][] {nulPadded, letterPadded}) {
+            assertEquals("UNDECODABLE_BLOB", inspect(JSON, utf8(prompt(b64(layer)))).reason());
+        }
+    }
+
+    /** D-03: a base64 run glued to a prefix or a URL path is realigned and decoded. */
+    @Test
+    void prefixedAndPathGluedBase64IsRealigned() {
+        String enc = b64("synthetic " + Synthetic.awsKey());
+        for (String prefix : new String[] {"-", "/", "_+", "v1/items/", "x", "xy", "abc"}) {
+            assertTrue(has(inspect(JSON, utf8(prompt(prefix + enc))), DataClass.SECRET), prefix);
+        }
+    }
+
+    /** D-04: "x^" and "BZh" are text; bzip2 needs its full header. */
+    @Test
+    void textThatStartsLikeAMagicIsText() throws Exception {
+        String[] texts = {"x^2 + y^2 = 1 is a synthetic circle", "BZh synthetic notes"};
+        for (String t : texts) {
+            assertNull(inspect("Content-Type: text/plain\n", utf8(t)).nonVerdict(), t);
+            assertNull(inspect(JSON, utf8(prompt(b64(t + " for the synthetic review")))).nonVerdict(), t);
+            assertNull(inspect("Content-Type: text/plain\nContent-Encoding: gzip\n", gzip(utf8(t))).nonVerdict(), t);
+        }
+        byte[] bzip2 = concat(new byte[] {'B', 'Z', 'h', '9', 0x31, 0x41, 0x59, 0x26, 0x53, 0x59}, random(20, 36));
+        assertEquals("BINARY", inspect("Content-Type: text/plain\n", bzip2).reason());
+        assertEquals("EMBEDDED_FILE", inspect(JSON, utf8(prompt(b64(bzip2)))).reason());
+    }
+
+    /** Q-2: a WebP image above 256 characters is an embedded file; a small one is not. */
+    @Test
+    void webpAbove256CharactersIsAnEmbeddedFile() {
+        byte[] large = random(400, 37);
+        byte[] small = random(60, 38);
+        for (byte[] b : new byte[][] {large, small}) {
+            System.arraycopy(utf8("RIFF"), 0, b, 0, 4);
+            System.arraycopy(utf8("WEBP"), 0, b, 8, 4);
+        }
+        assertEquals("EMBEDDED_FILE", inspect(JSON, utf8(prompt(b64(large)))).reason());
+        assertNull(inspect(JSON, utf8(prompt(b64(small)))).nonVerdict());
+    }
+
     /** A PNG-signature byte array of {@code n} bytes (a synthetic image header, no real image). */
     static byte[] png(int n) {
         byte[] b = random(n, n);

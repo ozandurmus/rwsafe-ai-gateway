@@ -93,7 +93,12 @@ This section records which rows the engine meets and by which test; it amends no
 
 | Id | Status | Test | Note |
 |---|---|---|---|
-| BY-ENC-1 | met (REQMOD body, JSON leaves and text bodies) | `BodyDecodingTest`, `DecodingEndToEndTest` | a finding inside a decoded layer replaces the whole field with the class token; runs from 12 characters, so a bare base64 TCKN is found |
-| BY-ENC-2 | met for base64 of base64; hex of base64 open | `BodyDecodingTest.doubleBase64IsFound`, `thirdLayerIsAResidualBlob` | a third layer above 256 characters with entropy over 4.5 bits per character is `UNINSPECTABLE(UNDECODABLE_BLOB)`; hex decoding is a later slice |
-| BY-ENC-8 | met for base64-alphabet blobs | `BodyDecodingTest.randomBlobAbove256BytesIsUndecodable` | residual = a run that does not decode, decodes to binary or is a third layer; ROT13 and substitutions of spaced text keep low entropy and stay a documented limitation |
+| BY-ENC-1 | met (REQMOD body, JSON leaves and text bodies) | `BodyDecodingTest`, `DecodingEndToEndTest` | a finding inside a decoded layer replaces the whole field with the class token; runs from 12 characters, so a bare base64 TCKN is found; a decoded layer with NUL or invalid bytes, or in UTF-16LE, is still scanned; a run glued to a prefix or a URL path is realigned (PR 17 review D-02, D-03) |
+| BY-ENC-2 | met for base64 of base64; hex of base64 open | `BodyDecodingTest.doubleBase64IsFound`, `thirdLayerIsAResidualBlob` | a third layer that decodes to text is `UNINSPECTABLE(UNDECODABLE_BLOB)` at any length (PR 17 review D-02); hex decoding is a later slice |
+| BY-ENC-8 | met for base64-alphabet blobs | `BodyDecodingTest.randomBlobAbove256BytesIsUndecodable` | residual = a run above 256 characters that does not decode to text and whose entropy, the highest over any 256-character window, is over 4.5 bits per character (padding cannot dilute it); findings made before or beside the blob are kept and still decide (PR 17 review D-01); ROT13 and substitutions of spaced text stay a documented limitation |
 | BY-PROTO-7 | met: declared single gzip or deflate is decoded (8x and body cap); undeclared raw gzip is `UNINSPECTABLE(BINARY)` | `BodyDecodingTest`, `DecodingEndToEndTest`, `IcapEngineEndToEndTest.unreadableBodiesAreUninspectable` | `br`, stacked or nested codings and over-cap output stay `UNINSPECTABLE(ENCODED)`; a redacted rewrite is sent identity-encoded with `Content-Length` recomputed |
+
+ICAP spec §3 reads "gzip/deflate/br ... when declared or detected by magic bytes". The MVP reading, accepted with the
+PR 17 review (Q-1): a declared single gzip or deflate layer is decoded; `br` and an undeclared compressed body are not
+decoded and stay `UNINSPECTABLE` (`ENCODED`, `BINARY`), which blocks on fail-closed flows. Base64 images above 256
+characters (PNG, JPEG, GIF, WebP) are `EMBEDDED_FILE` (Q-2).

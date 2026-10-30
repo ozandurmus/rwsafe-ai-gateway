@@ -50,14 +50,23 @@ final class ContentDecoding {
         }
     }
 
-    /** gzip or zlib magic: a compressed layer inside a decoded one is a nested encoding. */
+    /**
+     * gzip or zlib magic: a compressed layer inside a decoded one is a nested encoding. {@code 0x78 0x5e} is also the text
+     * "x^", so it counts only when the bytes are not strict UTF-8 (PR 17 review D-04).
+     */
     static boolean compressed(byte[] b, int len) {
         if (len < 2) {
             return false;
         }
         int b0 = b[0] & 0xff;
         int b1 = b[1] & 0xff;
-        return (b0 == 0x1f && b1 == 0x8b) || (b0 == 0x78 && (b1 == 0x01 || b1 == 0x5e || b1 == 0x9c || b1 == 0xda));
+        if (b0 == 0x1f && b1 == 0x8b) {
+            return true;
+        }
+        if (b0 != 0x78) {
+            return false;
+        }
+        return b1 == 0x01 || b1 == 0x9c || b1 == 0xda || (b1 == 0x5e && BodyInspector.strictUtf8(b, len) == null);
     }
 
     /** RFC 1952, one member: header, raw deflate, CRC-32 and ISIZE trailer, nothing after it. */

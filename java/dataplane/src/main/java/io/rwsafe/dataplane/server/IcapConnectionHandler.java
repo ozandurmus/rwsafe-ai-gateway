@@ -51,7 +51,8 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         List.of("Content-Length", "Transfer-Encoding", "Content-Type", "Content-Encoding", "Host");
 
     /** Non-verdicts that can hide findings: a response with them is terminated, not passed (PR 11 recheck N-01). */
-    private static final java.util.Set<String> TERMINATING_REASONS = java.util.Set.of("FINDING_LIMIT", "NORMALISATION");
+    private static final java.util.Set<String> TERMINATING_REASONS = java.util.Set.of("FINDING_LIMIT", "NORMALISATION",
+        "UNDECODABLE_BLOB");
     /** Spec §3: never more than 64 KiB of a response held per transaction. */
     private static final int MAX_HELD = 64 * 1024;
 
@@ -390,9 +391,9 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         }
         try {
             result = engine.inspector().inspect(body, reqHttp);
-            decision = result.nonVerdict() != null
-                ? policy.evaluator().onNonVerdict(result.nonVerdict(), result.reason())
-                : policy.evaluator().onFindings(result.findings(), result.redactable());
+            decision = result.nonVerdict() == null
+                ? policy.evaluator().onFindings(result.findings(), result.redactable())
+                : stronger(policy.evaluator().onNonVerdict(result.nonVerdict(), result.reason()), result);
         } catch (RuntimeException e) {
             result = null;
             decision = policy.evaluator().onNonVerdict(Verdict.INSPECTION_FAILED, "INTERNAL");
@@ -409,6 +410,18 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             return;
         }
         resetTransaction();
+    }
+
+    /**
+     * PR 17 review D-01: a non-verdict reached after findings never weakens them; the stronger action wins, the non-verdict
+     * on a tie.
+     */
+    private Decision stronger(Decision nonVerdict, InspectionResult result) {
+        if (result.findings().isEmpty()) {
+            return nonVerdict;
+        }
+        Decision found = policy.evaluator().onFindings(result.findings(), result.redactable());
+        return found.action().max(nonVerdict.action()) == nonVerdict.action() ? nonVerdict : found;
     }
 
     /**
@@ -483,9 +496,10 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         }
         InspectionResult result = engine.inspector().inspect(body, resHttp);
         if (result.nonVerdict() != null) {
-            if (TERMINATING_REASONS.contains(result.reason())) {
-                // N-01: the limit was reached because of findings (or text that hides them); the response never leaves.
-                terminateWholeResponse(ctx, result.reason(), List.of());
+            if (TERMINATING_REASONS.contains(result.reason()) || !result.findings().isEmpty()) {
+                // N-01, PR 17 D-01: a limit reached because of findings, a blob that may hide them, or findings made
+                // before the non-verdict: the response never leaves.
+                terminateWholeResponse(ctx, result.reason(), result.findings());
                 return;
             }
             // RESPMOD is the visibility path: an uninspectable response is passed and recorded (ADR-010 §2).
