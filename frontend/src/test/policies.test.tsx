@@ -2,6 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Registry, RuleVersion } from '../api';
+import { foldGroupName } from '../pages/PoliciesPage';
 import { fakeServer } from './fakeServer';
 import { renderApp } from './render';
 
@@ -28,6 +29,9 @@ function version(ruleId: string, v: number, over: Partial<RuleVersion>): RuleVer
     createdAt: '2026-10-30T09:00:00Z',
     activatedAt: '2026-10-30T09:00:00Z',
     supersededAt: null,
+    scope: { kind: 'ANY', groups: [] },
+    retirement: null,
+    withdrawal: null,
     approvals: [],
     inSnapshot: true,
     ...over,
@@ -50,9 +54,9 @@ function registry(): Registry {
         subject: 'TCKN',
         failClosed: true,
         versions: [
-          version('class.TCKN', 2, {
+          version('class.TCKN', 3, {
             action: 'BLOCK',
-            rolloutStage: 'pct25',
+            scope: { kind: 'GROUPS', groups: ['GRP-ALPHA', 'GRP-GAMMA'] },
             status: 'pending',
             source: 'registry',
             author: 'USR-00000000a1',
@@ -60,6 +64,13 @@ function registry(): Registry {
             activatedAt: null,
             inSnapshot: false,
             approvals: [{ role: 'security_admin', approver: 'USR-00000000a1', approvedAt: '2026-10-30T10:00:00Z' }],
+          }),
+          version('class.TCKN', 2, {
+            action: 'BLOCK',
+            scope: { kind: 'GROUPS', groups: ['GRP-BETA'] },
+            source: 'registry',
+            author: 'USR-00000000a1',
+            reasonCode: 'RISK_REVIEW',
           }),
           version('class.TCKN', 1, { action: 'REDACT' }),
         ],
@@ -84,6 +95,22 @@ function registry(): Registry {
           }),
         ],
       },
+      {
+        ruleId: 'platform.github',
+        kind: 'platform',
+        subject: 'github',
+        failClosed: false,
+        versions: [
+          version('platform.github', 1, {
+            hostSuffixes: ['github.com'],
+            apiHosts: ['api.github.com'],
+            loginHosts: [],
+            status: 'retired',
+            inSnapshot: false,
+            retirement: { retiredAt: '2026-10-30T11:00:00Z', retiredBy: 'USR-00000000a1', reason: 'Synthetic retirement' },
+          }),
+        ],
+      },
     ],
     snapshot: {
       version: 3,
@@ -98,6 +125,8 @@ function registry(): Registry {
     actions: ['ALLOW', 'WARN', 'REDACT', 'BLOCK'],
     modes: ['monitor', 'enforce'],
     stages: ['pilot', 'pct25', 'pct50', 'all'],
+    scopeKinds: ['ANY', 'GROUPS'],
+    maxScopeGroups: 32,
   };
 }
 
@@ -113,9 +142,9 @@ describe('policies screen', () => {
     const server = fakeServer({
       'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-officer', ['privacy_officer']) }),
       'GET /api/v1/policy/rules': () => ({ status: 200, body: registry() }),
-      'POST /api/v1/policy/rules/class.TCKN/versions/2/approvals': () => ({
+      'POST /api/v1/policy/rules/class.TCKN/versions/3/approvals': () => ({
         status: 200,
-        body: version('class.TCKN', 2, { action: 'BLOCK', status: 'pending' }),
+        body: version('class.TCKN', 3, { action: 'BLOCK', status: 'pending' }),
       }),
     });
     renderApp('/policies');
@@ -124,7 +153,11 @@ describe('policies screen', () => {
     expect(within(table).getByText('Yapay zekâ kategorisi akışı')).toBeInTheDocument();
     expect(within(table).queryByText('Claude')).not.toBeInTheDocument();
     expect(within(table).getByText('1 onay bekliyor')).toBeInTheDocument();
-    expect(within(table).getByRole('img', { name: 'Yayılım aşaması: %25' })).toBeInTheDocument();
+    expect(within(table).queryByRole('img', { name: /Yayılım aşaması/ })).not.toBeInTheDocument();
+    expect(within(table).getByRole('columnheader', { name: 'Kapsam' })).toBeInTheDocument();
+    expect(within(table).getAllByText('Herkes').length).toBeGreaterThan(0);
+    expect(within(table).getByText('GRP-BETA')).toBeInTheDocument();
+    expect(within(table).queryByText('GRP-ALPHA')).not.toBeInTheDocument();
     expect(screen.getByText(/Etkin anlık görüntü v3/)).toBeInTheDocument();
 
     await userEvent.click(within(table).getByText('TCKN'));
@@ -196,9 +229,59 @@ describe('policies screen', () => {
     expect(JSON.parse(String(post.init.body))).toEqual({
       action: 'BLOCK',
       mode: 'enforce',
-      rolloutStage: 'pilot',
+      scope: { kind: 'ANY', groups: [] },
       reasonCode: 'RISK_REVIEW',
     });
+  });
+
+  it('drafts a group-scoped version with the scope picker', async () => {
+    const server = fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-admin', ['security_admin']) }),
+      'GET /api/v1/policy/rules': () => {
+        const r = registry();
+        r.maxScopeGroups = 2;
+        return { status: 200, body: r };
+      },
+      'POST /api/v1/policy/rules/class.SECRET/versions': () => ({
+        status: 201,
+        body: version('class.SECRET', 2, { action: 'REDACT', status: 'pending' }),
+      }),
+    });
+    renderApp('/policies');
+    await userEvent.click(within(await screen.findByRole('table', { name: 'Politika kuralları' })).getByText('Gizli anahtar'));
+    expect(screen.queryByRole('textbox', { name: 'Dizin grubu' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('radio', { name: 'Seçilen dizin grupları' }));
+    expect(screen.getByText('En az bir grup ekleyin.')).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('Gerekçe kodu'), 'risk_review');
+    expect(screen.getByRole('button', { name: 'Onaya gönder' })).toBeDisabled();
+    const field = screen.getByRole('textbox', { name: 'Dizin grubu' });
+    expect(screen.getByText(/Kısa dizin grubu adını virgül kullanmadan yazıp/)).toBeInTheDocument();
+    await userEvent.type(field, 'GRP-ALPHA,GRP-BETA{Enter}');
+    expect(screen.getByText(/grup adında virgül olmaz/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Grubu ekle' })).toBeDisabled();
+    expect(screen.getByText('En az bir grup ekleyin.')).toBeInTheDocument();
+    await userEvent.clear(field);
+    await userEvent.type(field, '  GRP-ALPHA {Enter}');
+    await userEvent.type(field, 'grp-alpha{Enter}');
+    await userEvent.type(field, 'GRP-ALPHA{Enter}');
+    expect(screen.getAllByText(/^GRP-ALPHA$/i)).toHaveLength(1);
+    await userEvent.type(field, 'GRP-BETA');
+    await userEvent.click(screen.getByRole('button', { name: 'Grubu ekle' }));
+    expect(screen.getByText('En çok 2 grup eklenebilir.')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Dizin grubu' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'GRP-BETA grubunu çıkar' }));
+    expect(screen.getAllByText('GRP-BETA')).toHaveLength(1); // the table's chip only
+    await userEvent.type(screen.getByRole('textbox', { name: 'Dizin grubu' }), 'GRP-DELTA{Enter}');
+    await userEvent.click(screen.getByRole('button', { name: 'Onaya gönder' }));
+    expect(await screen.findByText('Sürüm 2 iki onay bekliyor.')).toBeInTheDocument();
+    const post = server.calls.find((c) => c.method === 'POST')!;
+    expect(JSON.parse(String(post.init.body))).toEqual({
+      action: 'BLOCK',
+      mode: 'enforce',
+      scope: { kind: 'GROUPS', groups: ['GRP-ALPHA', 'GRP-DELTA'] },
+      reasonCode: 'RISK_REVIEW',
+    });
+    expect(JSON.stringify(window.localStorage)).not.toContain('GRP-');
   });
 
   it('shows a masked session the registry without any action', async () => {
@@ -222,7 +305,7 @@ describe('policies screen', () => {
         r.rules[1]!.versions[0]!.approvals = [];
         return { status: 200, body: r };
       },
-      'POST /api/v1/policy/rules/class.TCKN/versions/2/approvals': () => ({
+      'POST /api/v1/policy/rules/class.TCKN/versions/3/approvals': () => ({
         status: 409,
         body: { reason: 'APPROVER_ALREADY_APPROVED', message: 'The two approvals must come from two different people.' },
       }),
@@ -236,8 +319,98 @@ describe('policies screen', () => {
   });
 });
 
+describe('group name folding', () => {
+  it('folds the Turkish and Latin i forms, case, NFC and spaces like the server', () => {
+    const expected = 'grp-istanbul-iki';
+    for (const raw of [
+      'GRP-\u0130STANBUL-\u0130K\u0130',
+      '  grp-Istanbul-Iki ',
+      'grp-\u0131stanbul-\u0131k\u0131',
+      'grp-i\u0307stanbul-iki',
+      'GRP-I\u0307STANBUL-IKI',
+    ]) {
+      expect(foldGroupName(raw)).toBe(expected);
+    }
+    expect(foldGroupName('GRP-E\u0301QUIPE')).toBe('grp-\u00e9quipe');
+  });
+});
+
+describe('withdrawing a group scope', () => {
+  it('sends a withdrawal request with a reason and a confirmation step, then shows its approval steps', async () => {
+    let requested = false;
+    const server = fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-admin', ['security_admin']) }),
+      'GET /api/v1/policy/rules': () => {
+        const r = registry();
+        const tckn = r.rules[1]!;
+        tckn.versions = tckn.versions.filter((v) => v.status !== 'pending');
+        if (requested) {
+          tckn.versions.unshift(
+            version('class.TCKN', 4, {
+              action: 'BLOCK',
+              status: 'pending',
+              source: 'registry',
+              author: 'USR-00000000a1',
+              reasonCode: 'SCOPE_WITHDRAWAL',
+              activatedAt: null,
+              inSnapshot: false,
+              scope: { kind: 'GROUPS', groups: ['GRP-BETA'] },
+              withdrawal: { withdrawsVersion: 2, reason: 'Pilot finished', withdrawnAt: null },
+            }),
+          );
+        }
+        return { status: 200, body: r };
+      },
+      'POST /api/v1/policy/rules/class.TCKN/versions/2/withdrawal': () => {
+        requested = true;
+        return {
+          status: 201,
+          body: version('class.TCKN', 4, {
+            status: 'pending',
+            withdrawal: { withdrawsVersion: 2, reason: 'Pilot finished', withdrawnAt: null },
+          }),
+        };
+      },
+    });
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+    renderApp('/policies');
+    await userEvent.click(within(await screen.findByRole('table', { name: 'Politika kuralları' })).getByText('TCKN'));
+    const buttons = screen.getAllByRole('button', { name: 'Geri çek' });
+    expect(buttons).toHaveLength(1);
+    await userEvent.click(buttons[0]!);
+    const form = screen.getByRole('form', { name: 'Sürüm 2 gruplarından geri çekilsin' });
+    expect(within(form).getByRole('button', { name: 'Devam et' })).toBeDisabled();
+    await userEvent.type(within(form).getByRole('textbox', { name: /Gerekçe/ }), 'Pilot finished');
+    await userEvent.click(within(form).getByRole('button', { name: 'Devam et' }));
+    expect(within(form).getByText(/İki onay verilene kadar gruplarına uygulanmaya devam eder/)).toBeInTheDocument();
+    expect(server.calls.some((c) => c.method === 'POST')).toBe(false);
+    await userEvent.click(within(form).getByRole('button', { name: 'Evet, onaya gönder' }));
+    expect(await screen.findByText('Geri çekme isteği (sürüm 4) iki onay bekliyor.')).toBeInTheDocument();
+    const post = server.calls.find((c) => c.method === 'POST')!;
+    expect(JSON.parse(String(post.init.body))).toEqual({ reason: 'Pilot finished' });
+    expect(await screen.findByText(/Sürüm 4: GRP-BETA için sürüm 2 geri çekiliyor/)).toBeInTheDocument();
+    expect(screen.getByText(/Sürüm 2 için geri çekme · GRP-BETA · Onay bekliyor · Pilot finished/)).toBeInTheDocument();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('offers no withdrawal to the privacy officer or a masked session', async () => {
+    for (const me of [user('synthetic-officer', ['privacy_officer']), user('', ['replay_viewer', 'security_admin'], true)]) {
+      fakeServer({
+        'GET /api/v1/auth/me': () => ({ status: 200, body: me }),
+        'GET /api/v1/policy/rules': () => ({ status: 200, body: registry() }),
+      });
+      const view = renderApp('/policies');
+      await userEvent.click(within(await screen.findByRole('table', { name: 'Politika kuralları' })).getByText('TCKN'));
+      expect(screen.queryByRole('button', { name: 'Geri çek' })).not.toBeInTheDocument();
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('platforms screen', () => {
-  it('lists the platform rows with their vendor hosts', async () => {
+  it('lists the platform rows with their vendor hosts and a retired row greyed with its reason', async () => {
     fakeServer({
       'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-viewer', ['viewer']) }),
       'GET /api/v1/policy/rules': () => ({ status: 200, body: registry() }),
@@ -248,5 +421,87 @@ describe('platforms screen', () => {
     expect(within(table).getByText('api.anthropic.com')).toBeInTheDocument();
     expect(within(table).getByText('Anlık görüntüde')).toBeInTheDocument();
     expect(within(table).queryByText('TCKN')).not.toBeInTheDocument();
+    const retired = within(table).getByText('github').closest('tr')!;
+    expect(retired).toHaveAttribute('data-retired', 'true');
+    expect(within(retired).getByText('Kullanımdan kaldırıldı')).toBeInTheDocument();
+    expect(within(retired).getByText(/Gerekçe: Synthetic retirement/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Kullanımdan kaldır' })).not.toBeInTheDocument();
+  });
+
+  it('offers no retire action to a masked session', async () => {
+    fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('', ['replay_viewer', 'security_admin'], true) }),
+      'GET /api/v1/policy/rules': () => ({ status: 200, body: registry() }),
+    });
+    renderApp('/platforms');
+    await screen.findByRole('table', { name: 'Platform satırları' });
+    expect(screen.queryByRole('button', { name: 'Kullanımdan kaldır' })).not.toBeInTheDocument();
+  });
+
+  it('lets the security administrator retire a platform with a reason and a confirmation step', async () => {
+    let retired = false;
+    const server = fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-admin', ['security_admin']) }),
+      'GET /api/v1/policy/rules': () => {
+        const r = registry();
+        if (retired) {
+          r.rules[3]!.versions[0]!.status = 'retired';
+          r.rules[3]!.versions[0]!.retirement = {
+            retiredAt: '2026-10-30T12:00:00Z',
+            retiredBy: 'USR-00000000a1',
+            reason: 'Synthetic vendor change',
+          };
+        }
+        return { status: 200, body: r };
+      },
+      'POST /api/v1/policy/rules/platform.claude/retirement': () => {
+        retired = true;
+        return { status: 200, body: { retired: [] } };
+      },
+    });
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+    renderApp('/platforms');
+    const table = await screen.findByRole('table', { name: 'Platform satırları' });
+    const buttons = within(table).getAllByRole('button', { name: 'Kullanımdan kaldır' });
+    expect(buttons).toHaveLength(1);
+    await userEvent.click(buttons[0]!);
+    const form = screen.getByRole('form', { name: 'Claude platformunu kullanımdan kaldır' });
+    expect(within(form).getByRole('button', { name: 'Devam et' })).toBeDisabled();
+    await userEvent.type(within(form).getByRole('textbox', { name: /Gerekçe/ }), '   ');
+    expect(within(form).getByRole('button', { name: 'Devam et' })).toBeDisabled();
+    await userEvent.type(within(form).getByRole('textbox', { name: /Gerekçe/ }), 'Synthetic vendor change ');
+    await userEvent.click(within(form).getByRole('button', { name: 'Devam et' }));
+    expect(within(form).getByText(/Claude kullanımdan kaldırılacak/)).toBeInTheDocument();
+    expect(server.calls.some((c) => c.method === 'POST')).toBe(false);
+    await userEvent.click(within(form).getByRole('button', { name: 'Evet, kullanımdan kaldır' }));
+    expect(await screen.findByText('Claude kullanımdan kaldırıldı.')).toBeInTheDocument();
+    const post = server.calls.find((c) => c.method === 'POST')!;
+    expect(JSON.parse(String(post.init.body))).toEqual({ reason: 'Synthetic vendor change' });
+    expect(confirm).not.toHaveBeenCalled();
+    await waitFor(() => expect(within(screen.getByRole('table')).getByText(/Gerekçe: Synthetic vendor change/)).toBeInTheDocument());
+  });
+
+  it('shows the server reason when a retirement is refused', async () => {
+    fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-admin', ['security_admin']) }),
+      'GET /api/v1/policy/rules': () => ({ status: 200, body: registry() }),
+      'POST /api/v1/policy/rules/platform.claude/retirement': () => ({
+        status: 409,
+        body: {
+          reason: 'RETIRE_WOULD_NOT_COMPILE',
+          message: 'This retirement would leave a registry that does not compile; nothing changed.',
+        },
+      }),
+    });
+    renderApp('/platforms');
+    const table = await screen.findByRole('table', { name: 'Platform satırları' });
+    await userEvent.click(within(table).getByRole('button', { name: 'Kullanımdan kaldır' }));
+    await userEvent.type(screen.getByRole('textbox', { name: /Gerekçe/ }), 'Synthetic');
+    await userEvent.click(screen.getByRole('button', { name: 'Devam et' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Evet, kullanımdan kaldır' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Kaldırmak anlık görüntüyü bozar');
+    expect(alert).toHaveTextContent('nothing changed');
   });
 });

@@ -205,7 +205,7 @@ public final class VerdictQueries {
     private static List<Field<?>> eventFields() {
         return List.of(EVENT_ID, RECEIVED_AT, SERVICE, PLATFORM, SURFACE, STEP, VERDICT, REASON, BODY_BYTES,
             DECISION_MICROS, USER_PSEUDONYM, CLIENT_SUBNET, TRANSPORT, SNAPSHOT_VERSION, CORRELATION_ID,
-            PSEUDONYM_KEY_ID);
+            PSEUDONYM_KEY_ID, APPLIED_RULE_IDS, MONITOR_RULE_IDS);
     }
 
     private Map<UUID, List<FindingCount>> findings(List<UUID> eventIds) {
@@ -225,7 +225,13 @@ public final class VerdictQueries {
         return new StoredVerdictEvent(r.get(EVENT_ID), r.get(RECEIVED_AT), r.get(SERVICE), r.get(PLATFORM),
             r.get(SURFACE), r.get(STEP), Verdict.valueOf(r.get(VERDICT)), r.get(REASON), findings, r.get(BODY_BYTES),
             r.get(DECISION_MICROS), r.get(USER_PSEUDONYM), r.get(CLIENT_SUBNET), r.get(TRANSPORT),
-            r.get(SNAPSHOT_VERSION), r.get(CORRELATION_ID), r.get(PSEUDONYM_KEY_ID));
+            r.get(SNAPSHOT_VERSION), r.get(CORRELATION_ID), r.get(PSEUDONYM_KEY_ID),
+            ids(r.get(APPLIED_RULE_IDS)), ids(r.get(MONITOR_RULE_IDS)));
+    }
+
+    /** PR 21 review D-02: the scoped-rule ids are read back as stored (an absent array reads as empty). */
+    private static List<String> ids(String[] values) {
+        return values == null ? List.of() : List.of(values);
     }
 
     private static List<String> nonVerdictNames() {

@@ -38,6 +38,14 @@ public final class TextMasker {
         this.estateTerms = estateTerms;
     }
 
+    /**
+     * A directory group name: always replaced by its keyed pseudonym, never passed through the free-text layers (a
+     * group name is an estate identifier whatever it contains).
+     */
+    public String group(String name) {
+        return pseudonymiser.group(name);
+    }
+
     public String mask(String text) {
         if (text == null || text.isEmpty()) {
             return text;
