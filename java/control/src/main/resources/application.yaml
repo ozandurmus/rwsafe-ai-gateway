@@ -103,3 +103,19 @@ rwsafe:
     max-store-bytes: ${RWSAFE_CAPTURE_MAX_STORE_BYTES:85899345920}
     retention: P90D
     watermark-paths: ${RWSAFE_CAPTURE_WATERMARK_PATHS:}
+  # SIEM export (LOCAL_RUN.md "SIEM export"): syslog over TLS (CEF or LEEF) and/or Splunk HEC over HTTPS. Destinations
+  # and the CA bundle come from the uncommitted ConfigMap rwsafe-siem-destination, the HEC token from the Secret
+  # rwsafe-siem-credentials as a file (deploy/rwsafe/contracts/runtime-contracts.json). No UDP and no plain TCP exist.
+  siem:
+    enabled: ${RWSAFE_SIEM_ENABLED:false}
+    start-from: ${RWSAFE_SIEM_START_FROM:earliest}
+    syslog:
+      host: ${RWSAFE_SIEM_SYSLOG_HOST:}
+      port: ${RWSAFE_SIEM_SYSLOG_PORT:6514}
+      format: ${RWSAFE_SIEM_SYSLOG_FORMAT:cef}
+      ca-file: ${RWSAFE_SIEM_SYSLOG_CA_FILE:/etc/rwsafe/siem/ca.crt}
+    hec:
+      url: ${RWSAFE_SIEM_HEC_URL:}
+      token-file: ${RWSAFE_SIEM_HEC_TOKEN_FILE:/run/secrets/rwsafe-siem/hec-token}
+      ca-file: ${RWSAFE_SIEM_HEC_CA_FILE:/etc/rwsafe/siem/ca.crt}
+      index: ${RWSAFE_SIEM_HEC_INDEX:}

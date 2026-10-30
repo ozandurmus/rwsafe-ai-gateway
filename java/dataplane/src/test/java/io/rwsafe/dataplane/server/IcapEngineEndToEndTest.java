@@ -53,6 +53,9 @@ class IcapEngineEndToEndTest {
         for (int i = 0; i < 100; i++) {
             VerdictEvent e = EVENTS.poll();
             if (e != null) {
+                // PR 24 review D-01: the control plane takes only these reason codes; a new one goes there too.
+                org.junit.jupiter.api.Assertions.assertTrue(e.reason() == null
+                    || io.rwsafe.platform.verdict.ReasonCodes.known(e.reason()), "a reason code missing from ReasonCodes");
                 return e;
             }
             Thread.sleep(20);

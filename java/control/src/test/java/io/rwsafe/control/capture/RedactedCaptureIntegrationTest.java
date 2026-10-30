@@ -400,6 +400,9 @@ class RedactedCaptureIntegrationTest {
         assertTrue(tight.evicted() >= 1);
         assertTrue(jdbc().queryForObject("SELECT count(*) FROM capture_deletion_receipt WHERE reason = "
             + "'STORE_CAP_EVICTED' AND ? = ANY (event_ids)", Integer.class, oldest) == 1);
+        assertEquals(1, jdbc().queryForObject("SELECT count(*) FROM audit_event WHERE table_name = 'capture_record' "
+            + "AND operation = 'DELETE' AND row_key = ?", Integer.class, oldest.toString()),
+            "ADR-009 §4: the deletion is a ledger row the SIEM export sends, keyed by the event id");
         assertFalse(new StoreCap(10, database, vault).makeRoom(11), "more than the cap never fits");
         assertTrue(stored(newer) <= 1);
     }

@@ -215,6 +215,73 @@ directory: bind a group to `privacy_officer` as to any other role.
 Every secret is a mounted file; none is a property value. Without the key file ingestion answers 503 and stores nothing;
 without the dictionary the masked role gets 503.
 
+### SIEM export
+
+The control plane exports verdict events and audit-ledger rows (ADR-009 C8: C1, C2, C6 and C7 fields only, never a body)
+to syslog over TLS (RFC 5425 octet framing, CEF or LEEF 1.0 payload) and/or Splunk HEC over HTTPS. It is off by default.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RWSAFE_SIEM_ENABLED` | `false` | turns the exporter on |
+| `RWSAFE_SIEM_START_FROM` | `earliest` | for a destination without a watermark: `earliest` (everything stored) or `latest` (skip the stored verdict events; ledger rows always export from the first one) |
+| `RWSAFE_SIEM_SYSLOG_HOST` | empty (off) | syslog receiver; with `RWSAFE_SIEM_SYSLOG_PORT` (default `6514`) |
+| `RWSAFE_SIEM_SYSLOG_FORMAT` | `cef` | `cef` or `leef` |
+| `RWSAFE_SIEM_SYSLOG_CA_FILE` | `/etc/rwsafe/siem/ca.crt` | PEM bundle the receiver's certificate must chain to |
+| `RWSAFE_SIEM_HEC_URL` | empty (off) | `https://host:port` (the path `/services/collector/event` is added) or the full endpoint URL |
+| `RWSAFE_SIEM_HEC_TOKEN_FILE` | `/run/secrets/rwsafe-siem/hec-token` | the HEC token, a mounted Secret file |
+| `RWSAFE_SIEM_HEC_CA_FILE` | `/etc/rwsafe/siem/ca.crt` | PEM bundle for the HEC endpoint |
+| `RWSAFE_SIEM_HEC_INDEX` | empty | target index; empty uses the token's default |
+
+Tuning stays in `rwsafe.siem.*` (`poll-interval` 2 s, `queue-capacity` 10000, `page-size` 500 (the queue holds at least
+two pages), `batch-size` 200, `backoff-initial` 1 s, `backoff-max` 2 min). In the cluster the real destinations, the
+index and the CA bundle live in the uncommitted ConfigMap `rwsafe-siem-destination` and the token in the Secret
+`rwsafe-siem-credentials` (`deploy/rwsafe/contracts/runtime-contracts.json`); the Deployment wiring and the NetworkPolicy
+egress to the SIEM follow in the deploy lane.
+
+- **Fail closed (AGENTS.md 4.10)**: without rwsafe's privacy key or the estate dictionary no exporter starts. A
+  destination with a missing CA bundle or token, a non-HTTPS URL, an unknown format or a host name that is not a plain
+  lower-case label is not started. The Health screen's `siem` row is `DOWN` and names the reason.
+- **Transport (SR-SIEM-3)**: TLS 1.3/1.2 only, trust exactly the configured CA bundle (never the JVM store), host name
+  verified. There is no UDP and no plain-TCP setting.
+- **Fields (SR-SIEM-1, SR-SIEM-2)**: the fixed set in `SiemField`. Each value must match its field's exact shape and
+  hold no estate term; a vocabulary token also holds no Tier-1 detector finding and no run of 7 or more digits.
+  Otherwise the value leaves as `[WITHHELD]`. Users are `USR-` pseudonyms or `system:` actors, the client
+  is a masked /24 label, findings are `CLASS:count`. A ledger row key leaves as written only for the listed audited
+  tables in their exact key shape (a number, a policy version key, a destination) with no detector hit or estate term.
+  An account key becomes the account's `USR-` pseudonym, any other key a keyed `KEY-` pseudonym. Every string is
+  stripped of control characters and ANSI sequences (bounded) and length-capped. LEEF values escape `\` and `=`.
+- **Order and delivery**: at least once, never a skip. Both exported tables carry `tx_id` (the writing transaction, Flyway
+  V7). The exporter reads only rows below the current snapshot's xmin, ordered by (tx_id, id), so a transaction that
+  commits late is never overtaken by the watermark; a long transaction pauses the export (backlog) instead. The
+  database start script sets `idle_in_transaction_session_timeout = 60s` for both application roles (`rwsafe_app`,
+  `rwsafe_migrate`; `deploy/rwsafe/base/db/rwsafe-roles.sql`), so an abandoned transaction is aborted and cannot hold
+  the export back for longer (Q-SIEM-3). Local runs and tests connect as the superuser, which this does not cover. The
+  watermark (`siem_watermark`, one row per destination) moves only after the destination acknowledged (syslog: written
+  and flushed; HEC: HTTP 200) and the save succeeded. A delivered batch whose save fails is kept, and the save alone is
+  retried with back-off; the batch is not sent again. A restart resumes from the watermark, so the last batch can arrive
+  twice (de-duplicate on `externalId`/`eventId`). Creating a destination's watermark is a ledger row (`siem_export.start`, reason
+  `START_FROM_EARLIEST` or `START_FROM_LATEST`), exported like every other; a `latest` start records how many verdict
+  events it skipped.
+- **Overflow and back-off**: the queue is bounded; the reader reads one page per stream only when the queue has room for
+  both, otherwise it counts a deferred read. Nothing is dropped and ingestion never waits. Failures back off from 1 s
+  doubling to 2 min.
+- **Health and metrics**: the `siem` row shows per destination:
+  - the delivered count and the queue;
+  - the backlog (committed rows beyond the watermark), with the rows held behind an open transaction counted separately
+    (`rwsafe_siem_backlog_held_rows`);
+  - the reader's and the sender's failure states, each separately (`DEGRADED`);
+  - a stall: a backlog that has not moved the watermark for 3 minutes (`DEGRADED`, `rwsafe_siem_stalled`);
+  - the syslog batches possibly lost and a `latest` start's skip count.
+
+  The backlog is recounted on every caught-up round, and at most every 30 s while the queue is full or a backlog drains. Metrics `rwsafe_siem_*` (labels destination, stream, reason, thread
+  only) are rendered by `SiemExportService.prometheus()`; the metrics listener (9400) is not served yet.
+- **Audit durability (PO decision Q-SIEM-2)**: RFC 5425 has no acknowledgement. A watcher thread on each syslog
+  connection sees the receiver close it. The next batch then goes on a new connection, and a batch flushed on the closed
+  connection counts as possibly lost (`rwsafe_siem_batches_possibly_lost_total`, Health). A deployment that relies on the
+  SIEM copy of the audit ledger uses HEC, alone or beside syslog.
+- **UNVERIFIED (2026-10-30)**: LEEF header and value escaping in the corporate QRadar. Send one test event per format
+  before production.
+
 ## Redacted capture (Q-4 b)
 
 Off by default on both sides; metadata and verdicts flow in every mode. With capture on, a REDACT verdict event carries

@@ -208,4 +208,24 @@ final class Schema {
     static final Field<String> AUDIT_TABLE = DSL.field(DSL.name("audit_event", "table_name"), SQLDataType.CLOB);
     static final Field<String> AUDIT_OPERATION = DSL.field(DSL.name("audit_event", "operation"), SQLDataType.CLOB);
     static final Field<String> AUDIT_ROW_KEY = DSL.field(DSL.name("audit_event", "row_key"), SQLDataType.CLOB);
+    static final Field<Long> AUDIT_ID = DSL.field(DSL.name("audit_event", "audit_id"), SQLDataType.BIGINT);
+    static final Field<Instant> AUDIT_OCCURRED_AT = DSL.field(DSL.name("audit_event", "occurred_at"), SQLDataType.INSTANT);
+    static final Field<String> AUDIT_CORRELATION = DSL.field(DSL.name("audit_event", "correlation_id"), SQLDataType.CLOB);
+
+    // xid8 columns (V7): jOOQ has no xid8 type, so they are declared OTHER and read and bound as text.
+    static final Field<Object> VERDICT_TX_ID = DSL.field(DSL.name("verdict_event", "tx_id"), SQLDataType.OTHER);
+    static final Field<Object> AUDIT_TX_ID = DSL.field(DSL.name("audit_event", "tx_id"), SQLDataType.OTHER);
+
+    static final Table<Record> SIEM_WATERMARK = DSL.table(DSL.name("siem_watermark"));
+    static final Field<String> SW_DESTINATION = DSL.field(DSL.name("siem_watermark", "destination"), SQLDataType.CLOB);
+    static final Field<Object> SW_VERDICT_TX_ID = DSL.field(DSL.name("siem_watermark", "verdict_tx_id"),
+        SQLDataType.OTHER);
+    static final Field<UUID> SW_VERDICT_EVENT_ID = DSL.field(DSL.name("siem_watermark", "verdict_event_id"),
+        SQLDataType.UUID);
+    static final Field<Object> SW_AUDIT_TX_ID = DSL.field(DSL.name("siem_watermark", "audit_tx_id"), SQLDataType.OTHER);
+    static final Field<Long> SW_AUDIT_ID = DSL.field(DSL.name("siem_watermark", "audit_id"), SQLDataType.BIGINT);
+    static final Field<String> SW_START_FROM = DSL.field(DSL.name("siem_watermark", "start_from"), SQLDataType.CLOB);
+    static final Field<Long> SW_SKIPPED_AT_START = DSL.field(DSL.name("siem_watermark", "skipped_at_start"),
+        SQLDataType.BIGINT);
+    static final Field<Instant> SW_UPDATED_AT = DSL.field(DSL.name("siem_watermark", "updated_at"), SQLDataType.INSTANT);
 }

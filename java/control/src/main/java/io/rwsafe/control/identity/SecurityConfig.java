@@ -62,8 +62,8 @@ public class SecurityConfig {
 
     @Bean
     @Order(2)
-    SecurityFilterChain adminChain(HttpSecurity http, CookieCsrfTokenRepository csrfCookies, ObjectMapper json)
-        throws Exception {
+    SecurityFilterChain adminChain(HttpSecurity http, CookieCsrfTokenRepository csrfCookies, ObjectMapper json,
+                                   io.rwsafe.control.capture.CaptureRefusalLedger captureRefusals) throws Exception {
         http.authorizeHttpRequests(a -> a
                 .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll()
@@ -76,9 +76,17 @@ public class SecurityConfig {
                     .access((auth, context) -> new AuthorizationDecision(
                         (hasRole(auth.get(), Roles.SECURITY_ADMIN) || hasRole(auth.get(), Roles.PRIVACY_OFFICER))
                             && !hasRole(auth.get(), Roles.REPLAY_VIEWER)))
-                // A C3 read (ADR-009 §5): any signed-in session reaches the controller, which refuses every role but
-                // security_admin and privacy_officer, and every masked session, and ledgers the refusal (PR 25 D-02).
-                .requestMatchers(HttpMethod.POST, "/api/v1/captures/*/read").authenticated()
+                // A C3 read (ADR-009 §5): security_admin or privacy_officer, never a masked session; a refusal here is
+                // ledgered all the same (PR 25 D-02). The controller checks the roles again and binds DSAR.
+                .requestMatchers(HttpMethod.POST, "/api/v1/captures/*/read")
+                    .access((auth, context) -> {
+                        boolean reader = (hasRole(auth.get(), Roles.SECURITY_ADMIN)
+                            || hasRole(auth.get(), Roles.PRIVACY_OFFICER)) && !hasRole(auth.get(), Roles.REPLAY_VIEWER);
+                        if (!reader) {
+                            captureRefusals.refused(auth.get(), context.getRequest());
+                        }
+                        return new AuthorizationDecision(reader);
+                    })
                 // Mutations: security_admin, and never a masked session, whatever else it holds (PR 12 review D-02).
                 .requestMatchers("/api/**").access((auth, context) -> new AuthorizationDecision(
                     hasRole(auth.get(), Roles.SECURITY_ADMIN) && !hasRole(auth.get(), Roles.REPLAY_VIEWER)))
