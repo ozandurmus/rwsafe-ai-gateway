@@ -421,23 +421,26 @@ Product Owner inputs, before the first release or the feature named:
   pipeline for every path (`mask`, `maskFreeText`, `maskVendorHost`): each layer claims spans of the original text, no
   layer touches a claimed span, the result is written once, so a token is never masked again and one value reads the
   same on screens, in the capture store and in the SIEM export. Order: tokens and UUIDs kept; Tier-1 detectors on the
-  text and its lower- and upper-case forms; e-mail, user-directory paths, `DOMAIN\user`, URL hosts; IPv6 (with
-  IPv4-mapped) then IPv4; IBAN shapes (any country, letters in the account part, glued); mobile numbers in every form
-  (hyphen, dot, underscore, parentheses, `+90`, `0090`) and every digit run joined as `IdentifierCheck` joins it (TCKN,
-  TEL, CARD, otherwise `NUM-` from six digits, glued, grouped or free-standing; calendar dates excepted); the estate
-  dictionary, folded; names; host-shaped names. Free text adds lone names, the word after a keyword (host, user,
-  kullanıcı, müşteri, hesap, TCKN, IBAN; from and to only before an identifier-shaped word) and serial-like tokens
-  (`SER-`). Every shape `IdentifierCheck` refuses is masked (tested on both paths). A text over the detectors' finding
+  text and its folded lower- and upper-case forms; URL hosts with their userinfo, e-mail, user-directory paths,
+  `DOMAIN\user`; IPv6 (with IPv4-mapped) then IPv4; IBAN shapes (any country, letters in the account part, glued);
+  mobile numbers in every form (hyphen, dot, underscore, parentheses, `+90`, `90`, `0090`) and every digit run joined as
+  `IdentifierCheck` joins it (TCKN, TEL, CARD, otherwise `NUM-` from six digits, glued, grouped or free-standing; only
+  an exact calendar date is excepted); the estate dictionary, folded, every run of separators and spaces as one; names;
+  host-shaped names. Free text adds lone names, the word after a keyword (host, user, kullanıcı, müşteri, hesap; TCKN
+  and IBAN only before a word with a digit; from and to only before an identifier-shaped word; ordinary product and
+  operational words never) and serial-like tokens (`SER-`). Every shape `IdentifierCheck` refuses is masked (tested on both paths). A text over the detectors' finding
   limit in any piece is withheld whole. An empty estate dictionary is unavailable (503), like a missing one.
 - Layer 4: a committed Turkish name dictionary (`java/control/src/main/resources/io/rwsafe/control/privacy/names/`;
   source and licence in its README, PO decision Q-23). Folded matching (NFC, case, every i form, Turkish letters),
   whole words, apostrophes `' ’ ‘ ʼ ` ´`, simple and compound case endings without an apostrophe with the longest,
   non-everyday stem preferred and softened consonants restored (Mehmede, Burağa). A person (a given and a family name,
-  or an initial and a name: `A. Yılmaz`, `Ayşe N. Yılmaz`; either order; a suffixed first word; a capitalised word
-  hyphenated to a family name) is one `NAME-<WORD>` in every field, keyed by the sorted names. An everyday word that is
-  also a name stays a word in lower case alone and is a name when capitalised, next to another name word (written the
-  same way, or joined by `._-`) or by a title (Sayın, Dr., Bey, Hanım). Two- and three-letter stems with an ending
-  count only next to another name word or capitalised. `<WORD>` (`Pseudonymiser.word`) is four consonant-vowel
+  or an initial and a name: `A. Yılmaz`, `Ayşe N. Yılmaz`, `a.yilmaz`; either order; any case mix; three lower-case
+  words; a suffixed first word; a capitalised word hyphenated to a family name) is one `NAME-<WORD>` in every field,
+  keyed by the sorted names. Privacy before readability (orchestrator, PR 26 confirmation review): in free text every
+  capitalised name word is a name, alone, in capitals or with an ending; an everyday word that is also a name stays a
+  word only in lower case and alone, and is a name next to another name word or by a title (Sayın, Dr., Bey, Beye,
+  Hanıma). A given name followed by a lower-case everyday family name is taken as one person ("Mehmet yazıcı").
+  Two- and three-letter stems with an ending count only next to another name word or capitalised. `<WORD>` (`Pseudonymiser.word`) is four consonant-vowel
   syllables keyed by rwsafe's HMAC, never itself a dictionary name, consonants only if every draw is refused.
 - Applied: error messages, health details (masked role); captured text at persistence (`CaptureSink`, SR-PRIV-15);
   registry host columns keep public vendor endpoints (`maskVendorHost`). Retirement and withdrawal reasons stay withheld
@@ -446,10 +449,12 @@ Product Owner inputs, before the first release or the feature named:
   its folded estate comparison, and sends a free-text ledger reason only through the free-text masker.
 - Leak probe: free-text name, glued TCKN and domain-account canaries in the positive-control fixture; names in
   registry reasons are refused at write; the admin's capture read shows the person as a `NAME-<WORD>`.
-- Second review (Argon, `docs/reviews/PR26_2026_10_31_ARGON_MASKING_LAYERS_4_5.md`, DO NOT MERGE) answered by id in
-  `docs/reviews/PR26_2026_10_31_RESPONSE.md`.
+- Second review (Argon, `docs/reviews/PR26_2026_10_31_ARGON_MASKING_LAYERS_4_5.md`, DO NOT MERGE) and its
+  confirmation review (`PR26_2026_10_31_ARGON_MASKING_LAYERS_4_5_RECHECK.md`: D-02, D-03, D-05, D-07, D-08 closed;
+  N-01 to N-04) answered by id in `docs/reviews/PR26_2026_10_31_RESPONSE.md`. Class-token widening is the PO's open
+  question Q-44.
 - Remaining before `rwmask-v1` (MASKING_AND_PRIVACY B2, B3): the B3 `pseudonym_registry` (class tokens stay 4 hex
-  until then; the orchestrator raises Q-3 with the PO), MAC OUI-preserving masking (a MAC reads `[REDACTED_IP]` today),
+  until then; open as Q-44), MAC OUI-preserving masking (a MAC reads `[REDACTED_IP]` today),
   customer numbers `CUST-` by the PO's format rules (Q-23; only the word after müşteri, customer or hesap is `CUST-`
   now), project code names (they need an estate list of code names that does not exist yet).
 

@@ -1,6 +1,7 @@
 package io.rwsafe.control.siem;
 
 import io.rwsafe.control.privacy.IdentifierCheck;
+import io.rwsafe.control.privacy.TextMasker;
 import io.rwsafe.control.siem.SiemField.SiemStream;
 import io.rwsafe.control.siem.SiemRecord.Value;
 import io.rwsafe.detect.DetectorSet;
@@ -208,7 +209,9 @@ public final class SiemRecords {
                 return WITHHELD;
             }
             String text = SiemText.clean(masked, SiemField.REASON.maxLength());
-            return text == null || text.isBlank() || estate(text) || IdentifierCheck.identifierShape(text) ? WITHHELD
+            // The masker's own tokens (subnet labels, pseudonyms) are not identifiers (PR 26 confirmation review N-02).
+            return text == null || text.isBlank() || estate(TextMasker.withoutTokens(text))
+                || IdentifierCheck.identifierShape(TextMasker.withoutTokens(text)) ? WITHHELD
                 : text;
         } catch (RuntimeException maskingUnavailable) {
             return WITHHELD;

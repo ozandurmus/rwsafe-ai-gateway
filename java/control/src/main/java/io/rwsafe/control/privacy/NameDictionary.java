@@ -128,6 +128,23 @@ final class NameDictionary {
         return best == null ? null : new Match(best, flags(best), true, best.length() <= SHORT_STEM);
     }
 
+    /**
+     * True when the folded word is one of {@code bases} or one of them with a case ending (a title after a name:
+     * {@code beye}, {@code hanima}, {@code beyin}; PR 26 confirmation review N-01).
+     */
+    static boolean inflectionOf(String folded, java.util.Set<String> bases) {
+        if (bases.contains(folded)) {
+            return true;
+        }
+        for (String base : bases) {
+            if (folded.length() > base.length() && folded.startsWith(base)
+                && SUFFIXES.contains(folded.substring(base.length()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** The dictionary key for {@code stem}, trying a softened final consonant (b, d, g for p, t, k) as well. */
     private String lookup(String stem) {
         if (flags(stem) != 0) {

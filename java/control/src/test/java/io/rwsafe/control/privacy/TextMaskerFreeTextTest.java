@@ -75,21 +75,144 @@ class TextMaskerFreeTextTest {
 
     // ---- D-05: false positives --------------------------------------------------------------------------------------
 
+    /**
+     * An everyday word next to a name in another case: when the two make a given name and a family name, they are taken
+     * as one person (privacy before readability, PR 26 confirmation review N-01: "Mehmet yazıcı" may be a person); a
+     * word that is only an everyday given name stays a word next to another given name.
+     */
     @Test
-    void anEverydayWordNextToANameInAnotherCaseIsNotSwallowed() {
+    void anEverydayFamilyNameNextToAGivenNameIsTakenWithItOtherWordsStay() {
         for (String[] c : new String[][] {
-            {"Ayşe metin gönderdi", " metin gönderdi"},
-            {"Mehmet yazıcı ekledi", " yazıcı ekledi"},
-            {"Zeynep özel kural yazdı", " özel kural yazdı"},
-            {"Ayşe durmuş", " durmuş"},
-            {"Ali uçar", " uçar"},
-            {"Mehmet gezer", " gezer"},
-            {"Ali can sıkıntısı", " can sıkıntısı"}}) {
+            {"Ayşe metin gönderdi", " gönderdi"},
+            {"Mehmet yazıcı ekledi", " ekledi"},
+            {"Zeynep özel kural yazdı", " kural yazdı"},
+            {"Ayşe durmuş", ""},
+            {"Ali uçar", ""},
+            {"Mehmet gezer", ""},
+            {"Ali can sıkıntısı", " sıkıntısı"}}) {
+            String out = m.maskFreeText(c[0]);
+            assertTrue(out.matches(NAME + java.util.regex.Pattern.quote(c[1])), out);
+        }
+        for (String[] c : new String[][] {
+            {"Mehmet umut ediyor", " umut ediyor"},
+            {"Zeynep barış istedi", " barış istedi"}}) {
             String out = m.maskFreeText(c[0]);
             assertTrue(out.matches(NAME + java.util.regex.Pattern.quote(c[1])), out);
             assertEquals(m.maskFreeText(c[0].substring(0, c[0].indexOf(' '))), out.substring(0, 13),
                 "the person's token is unchanged by the next word");
         }
+    }
+
+    // ---- PR 26 confirmation review N-01: the four escaping forms and initials ----------------------------------------
+
+    @Test
+    void capitalisedNamesWithEndingsAndInCapitalsAreNamesAlone() {
+        for (String word : List.of("Denize", "Onurun", "Yasemine", "Yılmaza", "Alpe", "DENİZ", "ONUR", "YILMAZ",
+            "DENİZ'İN", "YILMAZ'IN", "Deniz", "Kaya")) {
+            assertTrue(m.maskFreeText("dün " + word + " aradı").matches("dün " + NAME + " aradı"), word);
+        }
+        for (String word : List.of("denize", "onurun", "deniz", "kaya", "umut")) {
+            assertEquals("dün " + word + " aradı", m.maskFreeText("dün " + word + " aradı"), "lower case alone: " + word);
+        }
+        assertTrue(m.mask("Ayşe Yılmaza").matches(NAME), "a field: a capitalised suffixed family name joins");
+        assertTrue(m.mask("DENİZ KAYA'NIN").matches(NAME), "a field: capitals with an apostrophised ending");
+    }
+
+    @Test
+    void lowerCaseThreeWordNamesAndNamesBeforeATitleAreOnePerson() {
+        for (String text : List.of("ayşe pınar yılmaz", "mehmet can kaya")) {
+            assertTrue(m.mask(text).matches(NAME), "a field: " + text + " -> " + m.mask(text));
+            assertTrue(m.maskFreeText("not " + text + " yazdı").matches("not " + NAME + " yazdı"), text);
+        }
+        assertTrue(m.mask("deniz kaya Bey").matches(NAME + " Bey"), m.mask("deniz kaya Bey"));
+        assertTrue(m.maskFreeText("not deniz kaya Bey yazdı").matches("not " + NAME + " Bey yazdı"));
+    }
+
+    @Test
+    void mixedCasePairsAreOnePerson() {
+        for (String text : List.of("ayşe Yılmaz", "Ayşe yılmaz", "ayşe KAYA")) {
+            assertTrue(m.mask(text).matches(NAME), "a field: " + text + " -> " + m.mask(text));
+            assertTrue(m.maskFreeText(text).matches(NAME), text);
+        }
+        assertEquals(m.mask("Ayşe Yılmaz"), m.mask("ayşe Yılmaz"), "one person, one token");
+    }
+
+    @Test
+    void inflectedTitlesAfterANameMakeItAName() {
+        for (String text : List.of("deniz Beye", "deniz Hanıma", "deniz Beyin", "kaya Hocaya")) {
+            String title = text.substring(text.indexOf(' '));
+            assertTrue(m.maskFreeText(text + " yazdım").matches(NAME + title + " yazdım"), text);
+        }
+    }
+
+    @Test
+    void initialsJoinOnlyNamesAndGlueToFamilyNamesInAnyCase() {
+        assertTrue(m.maskFreeText("A. metin alanı boş").matches("A\\. metin alanı boş"),
+            "an initial before a lower-case everyday word");
+        assertEquals("T.C. özel kural", m.maskFreeText("T.C. özel kural"));
+        for (String text : List.of("a.yilmaz", "m_kaya", "A.Yılmaz", "e-ozturk")) {
+            assertTrue(m.mask(text).matches(NAME), "a field: " + text + " -> " + m.mask(text));
+        }
+    }
+
+    // ---- PR 26 confirmation review N-02 to N-04 ----------------------------------------------------------------------
+
+    @Test
+    void onlyAnExactDateIsExemptAndEveryParenthesisedMobileFormIsOneToken() {
+        for (String text : List.of("2026-10-31-123", "31.10.2026.123", "1-2026-10-31", "2026-10-31 4567", "2026.10.31_12")) {
+            assertTrue(m.mask("no " + text).matches("no NUM-[0-9a-f]{4}"), text + " -> " + m.mask("no " + text));
+        }
+        assertEquals("on 2026-10-31. and 31.10.2026 tarihinde", m.maskFreeText("on 2026-10-31. and 31.10.2026 tarihinde"));
+        String mobile = "05" + "32" + "1234567";
+        String token = m.mask(mobile);
+        String rest = " " + mobile.substring(4, 7) + " " + mobile.substring(7, 9) + " " + mobile.substring(9);
+        String op = "(" + mobile.substring(1, 4) + ")";
+        assertEquals("ara " + token, m.mask("ara 9" + "0" + op + rest), "90(5XX)");
+        assertEquals("ara " + token, m.mask("ara " + op + rest), "no prefix: the space before stays");
+    }
+
+    @Test
+    void theMaskersOwnTokensAreNotIdentifierShapes() {
+        String masked = m.maskFreeText("moved off 192.0.2.10 by synthetic.user@example.invalid");
+        assertFalse(IdentifierCheck.identifierShape(TextMasker.withoutTokens(masked)), masked);
+        assertEquals("a   b", TextMasker.withoutTokens("a " + m.mask("192.0.2.10") + " b"));
+    }
+
+    @Test
+    void estateTermsMatchWhateverTheSeparator() {
+        TextMasker estate = new TextMasker(p, List.of("şube-merkez"), NameDictionary.standard());
+        String a = estate.mask("x SUBE_MERKEZ y");
+        assertTrue(a.matches("x EST-[0-9a-f]{4} y"), a);
+        for (String form : List.of("x sube.merkez y", "x sube:merkez y", "x Şube Merkez y", "x şube - merkez y")) {
+            assertEquals(a, estate.mask(form), form);
+            assertEquals(a, estate.maskFreeText(form), form);
+        }
+        assertEquals("x subemerkez y", estate.mask("x subemerkez y"));
+    }
+
+    @Test
+    void urlUserinfoIsMaskedAndDetectorsSeeDotlessI() {
+        String withUser = m.maskFreeText("open https://" + "synthetic-person" + "@intranet:8443/x");
+        assertTrue(withUser.matches("open https://USR-[0-9a-f]{10}@HST-[0-9a-f]{4}:8443/x"), withUser);
+        String withPassword = m.maskFreeText("https://" + "synthetic-person" + ":" + "synthetic-value" + "@"
+            + "host.example/x");
+        assertTrue(withPassword.matches("https://USR-[0-9a-f]{10}:\\[REDACTED:SECRET\\]@HST-[0-9a-f]{4}/x"),
+            withPassword);
+        String dotless = Synthetic.githubToken().replace('i', 'ı');
+        assertFalse(m.maskFreeText("key " + dotless).contains(dotless), "a secret written with a dotless i");
+    }
+
+    @Test
+    void ordinaryWordsAfterKeywordsStayAndIdentifiersAfterThemDoNot() {
+        for (String text : List.of("This is captured user content", "user session expired", "server error",
+            "customer data", "login failed", "kullanıcı girişi", "sunucu hatası", "müşteri aradı", "hesap kapandı",
+            "kimlik doğrulama", "iban kontrolu")) {
+            assertEquals(text, m.maskFreeText(text), text);
+        }
+        assertEquals("user " + p.user("jdoe") + " logged in", m.maskFreeText("user jdoe logged in"));
+        assertTrue(m.maskFreeText("host srvdb unreachable").matches("host HST-[0-9a-f]{4} unreachable"));
+        assertTrue(m.maskFreeText("müşteri acmeltd aradı").matches("müşteri CUST-[0-9a-f]{4} aradı"));
+        assertTrue(m.maskFreeText("kimlik ab12cd").matches("kimlik TCKN-[0-9a-f]{4}"));
     }
 
     // ---- D-02: endings without an apostrophe, short stems, compound endings, softened consonants ----------------------

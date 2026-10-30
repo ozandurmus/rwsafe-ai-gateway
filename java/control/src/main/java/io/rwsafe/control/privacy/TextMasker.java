@@ -64,9 +64,12 @@ public final class TextMasker {
     private static final Pattern IBAN_SHAPE =
         Pattern.compile("[A-Za-z]{2}[0-9]{2}(?: ?[A-Za-z0-9]{4}){2,8}(?: ?[A-Za-z0-9]{1,3})?");
     private static final int IBAN_MIN_DIGITS = 12;
-    /** A Turkish mobile number with the operator code in parentheses: {@code 0(5XX) XXX XX XX}, {@code +90 (5XX) ...}. */
+    /**
+     * A Turkish mobile number with the operator code in parentheses: {@code 0(5XX) XXX XX XX}, {@code +90 (5XX) ...},
+     * {@code 90(5XX)...}; the separator after a prefix belongs to the prefix (PR 26 confirmation review N-02).
+     */
     private static final Pattern PAREN_PHONE = Pattern.compile(
-        "(?:\\+90|0090|0)?[ ._-]?\\(5[0-9]{2}\\)[ ._-]?[0-9]{3}[ ._-]?[0-9]{2}[ ._-]?[0-9]{2}");
+        "(?:(?:\\+90|0090|90|0)[ ._-]?)?\\(5[0-9]{2}\\)[ ._-]?[0-9]{3}[ ._-]?[0-9]{2}[ ._-]?[0-9]{2}");
     /** The run length {@link IdentifierCheck} refuses on write; the masker masks it on read. */
     private static final int DIGIT_RUN = IdentifierCheck.MAX_DIGIT_RUN_EXCLUSIVE;
     private static final String DIGIT_JOINS = " -._";
@@ -78,6 +81,7 @@ public final class TextMasker {
         "db", "gz", "xz", "so", "mk", "hs", "ml", "tf", "kt", "cc", "hh");
     private static final Set<String> TITLES_BEFORE = Set.of("sayin", "sn", "dr", "prof", "doc", "av", "uzm", "bay",
         "bayan", "mr", "mrs", "ms", "mx");
+    /** Titles after a name; inflected forms count too ({@code Beye}, {@code Hanıma}, {@code Beyin}). */
     private static final Set<String> TITLES_AFTER = Set.of("bey", "hanim", "hoca", "hocam");
     private static final Set<String> USER_WORDS = Set.of("user", "username", "kullanici", "login", "account", "uid");
     private static final Set<String> HOST_WORDS = Set.of("host", "hostname", "server", "sunucu", "makine", "node");
@@ -86,13 +90,28 @@ public final class TextMasker {
     private static final Set<String> IBAN_WORDS = Set.of("iban");
     /** Keywords whose next word is masked only when it looks like an identifier. */
     private static final Set<String> WEAK_WORDS = Set.of("from", "to", "kimden", "kime");
-    /** Words that follow a keyword in ordinary sentences ("the host name is", "hesap no"): never taken as its value. */
-    private static final Set<String> STOP_WORDS = Set.of("name", "names", "adi", "is", "are", "was", "were", "has",
-        "have", "had", "not", "no", "and", "or", "the", "a", "an", "of", "for", "to", "from", "in", "on", "at", "with",
-        "by", "this", "that", "these", "list", "lists", "group", "groups", "role", "roles", "id", "ids", "key", "keys",
-        "header", "headers", "label", "settings", "count", "ve", "veya", "ile", "icin", "bu", "su", "o", "bir", "de",
-        "da", "mi", "listesi", "grubu", "adresi", "bilgisi", "numarasi", "yok", "var", "olarak", "tarafindan", "sayisi",
-        "rolu", "adina", "claim", "claims", "address", "addresses", "part", "field", "value");
+    /**
+     * Words that follow a keyword in ordinary product and operational sentences ("the host name is", "user content",
+     * "server error", "hesap kapandı", "kimlik doğrulama"): never taken as its value (PR 26 confirmation review N-04).
+     * Folded forms.
+     */
+    private static final Set<String> STOP_WORDS = Set.copyOf(List.of("name", "names", "adi", "is", "are", "was",
+        "were", "has", "have", "had", "not", "no", "and", "or", "the", "a", "an", "of", "for", "to", "from", "in", "on",
+        "at", "with", "by", "this", "that", "these", "list", "lists", "group", "groups", "role", "roles", "id", "ids",
+        "key", "keys", "header", "headers", "label", "settings", "count", "ve", "veya", "ile", "icin", "bu", "su", "o",
+        "bir", "de", "da", "mi", "listesi", "grubu", "adresi", "bilgisi", "numarasi", "yok", "var", "olarak",
+        "tarafindan", "sayisi", "rolu", "adina", "claim", "claims", "address", "addresses", "part", "field", "value",
+        "content", "data", "session", "sessions", "error", "errors", "agent", "agents", "access", "request",
+        "requests", "response", "responses", "timeout", "failed", "failure", "blocked", "retired", "disabled",
+        "enabled", "policy", "policies", "rule", "rules", "platform", "endpoint", "endpoints", "traffic", "token",
+        "tokens", "page", "pages", "service", "services", "system", "mode", "scope", "flow", "record", "records",
+        "attempt", "attempts", "lock", "locked", "suffix", "suffixes", "certificate", "port", "ports", "check",
+        "checks", "status", "experience", "interface", "account", "accounts", "management", "login", "logins",
+        "logout", "input", "prompt", "prompts", "notice", "consent", "identity", "number", "numbers", "details",
+        "dogrulama", "dogrulamasi", "kontrolu", "girisi", "cikisi", "oturumu", "oturum", "hatasi", "hata", "yaniti",
+        "verisi", "verileri", "temsilcisi", "ozeti", "bakimi", "talebi", "kaydi", "kayitlari", "aradi", "girdi",
+        "cikti", "kapandi", "kapatildi", "acildi", "hizmeti", "bilgileri", "numarasi", "sifresi", "adi", "hesabi",
+        "karti", "yonetimi", "erisimi", "ayarlari", "durumu", "tarafi", "icerigi"));
     private static final int SERIAL_MIN = 8;
     private static final int SERIAL_MAX = 32;
     private static final int MAX_RUN = 6;
@@ -108,7 +127,7 @@ public final class TextMasker {
         this.pseudonymiser = pseudonymiser;
         Set<String> folded = new LinkedHashSet<>();
         for (String term : estateTerms) {
-            String f = fold(term);
+            String f = foldTerm(term);
             if (!f.isEmpty()) {
                 folded.add(f);
             }
@@ -162,10 +181,11 @@ public final class TextMasker {
         if (!detectors(c)) {
             return OVER_LIMIT;
         }
+        // URL authorities first, so a URL's user and password are masked as userinfo, never half as an e-mail (N-03).
+        urlHosts(c, publicHost);
         emails(c);
         userPaths(c);
         domainAccounts(c);
-        urlHosts(c, publicHost);
         ipv6(c);
         ipv4(c);
         ibans(c);
@@ -240,6 +260,22 @@ public final class TextMasker {
         return i >= 0 && i < s.length() && s.charAt(i) >= '0' && s.charAt(i) <= '9';
     }
 
+    /**
+     * {@code masked} with every token this masker writes (and every canonical UUID) blanked, so a check for identifier
+     * shapes on masked text does not count the digits inside a subnet label or a pseudonym (N-02).
+     */
+    public static String withoutTokens(String masked) {
+        if (masked == null || masked.isEmpty()) {
+            return masked;
+        }
+        Claims c = new Claims(masked);
+        keep(c);
+        for (int k = 0; k < c.replacements.size(); k++) {
+            c.replacements.set(k, " ");
+        }
+        return c.render();
+    }
+
     /** Tokens this masker wrote, the subnet labels and markers it writes, and canonical UUIDs (kept for navigation). */
     private static void keep(Claims c) {
         Matcher m = KEEP.matcher(c.s);
@@ -282,10 +318,12 @@ public final class TextMasker {
         return true;
     }
 
+    /** The folded form (Turkish letters and every i form as ASCII) in lower or upper case; one character per character. */
     private static String perChar(String s, boolean lower) {
         char[] out = s.toCharArray();
         for (int i = 0; i < out.length; i++) {
-            out[i] = lower ? Character.toLowerCase(out[i]) : Character.toUpperCase(out[i]);
+            char folded = foldChar(out[i]);
+            out[i] = lower ? folded : Character.toUpperCase(folded);
         }
         return new String(out);
     }
@@ -401,6 +439,15 @@ public final class TextMasker {
                 if (s.charAt(k) == '@') {
                     host = k + 1;
                 }
+            }
+            if (host > start + 1) {
+                // Userinfo (PR 26 confirmation review N-03): the user as its USR- pseudonym, a password redacted.
+                int colon = s.indexOf(':', start);
+                int userEnd = colon >= 0 && colon < host - 1 ? colon : host - 1;
+                String user = s.substring(start, userEnd);
+                String userinfo = (user.isBlank() ? "" : pseudonymiser.user(user))
+                    + (userEnd < host - 1 ? ":" + DataClass.SECRET.redactionToken() : "");
+                c.claim(start, host - 1, userinfo);
             }
             int hostEnd = host;
             while (hostEnd < end && s.charAt(hostEnd) != ':') {
@@ -571,7 +618,7 @@ public final class TextMasker {
                 continue;
             }
             int date = dateLength(s, i);
-            if (date > 0 && !digitAt(s, i - 1)) {
+            if (date > 0) {
                 i += date;
                 continue;
             }
@@ -621,9 +668,15 @@ public final class TextMasker {
         return pseudonymiser.token("NUM", digits);
     }
 
-    /** The length of a date written {@code yyyy-mm-dd}, {@code yyyy.mm.dd}, {@code dd.mm.yyyy} or {@code dd-mm-yyyy}. */
+    /**
+     * The length of an exact date written {@code yyyy-mm-dd}, {@code yyyy.mm.dd}, {@code dd.mm.yyyy} or
+     * {@code dd-mm-yyyy}: neither side touches a digit or a digit join with a digit beyond it, so a longer grouped number
+     * that starts like a date is a number (PR 26 confirmation review N-02).
+     */
     static int dateLength(String s, int i) {
-        if (i + 10 > s.length() || digitAt(s, i + 10)) {
+        if (i + 10 > s.length() || digitAt(s, i + 10) || digitAt(s, i - 1)
+            || (i + 10 < s.length() && DIGIT_JOINS.indexOf(s.charAt(i + 10)) >= 0 && digitAt(s, i + 11))
+            || (i >= 2 && DIGIT_JOINS.indexOf(s.charAt(i - 1)) >= 0 && digitAt(s, i - 2))) {
             return 0;
         }
         char a = s.charAt(i + 4);
@@ -672,62 +725,77 @@ public final class TextMasker {
     // ---- layer 3: the estate dictionary --------------------------------------------------------------------------------
 
     /**
-     * Estate terms inside tokens of letters, digits and {@code ._:-}: the token or any of its parts, compared folded (NFC,
-     * case, the Turkish letters and every i form; PR 26 review D-06). A claimed span is never matched again.
+     * Estate terms in the text, compared folded on both sides (NFC, case, the Turkish letters and every i form; PR 26
+     * review D-06) with every run of separators ({@code - _ . :} and spaces) as one {@code -} (PR 26 confirmation review
+     * N-03), so {@code şube-merkez}, {@code SUBE_MERKEZ}, {@code sube.merkez} and {@code Şube Merkez} are one term and
+     * one {@code EST-} token. A term matches whole, between separators or other punctuation, never inside a word; a
+     * claimed span is never matched again.
      */
     private void estate(Claims c) {
         if (estateTerms.isEmpty()) {
             return;
         }
         String s = c.s;
-        int i = 0;
-        while (i < s.length()) {
-            if (!tokenChar(s.charAt(i))) {
-                i++;
-                continue;
-            }
-            int end = i;
-            while (end < s.length() && tokenChar(s.charAt(end))) {
-                end++;
-            }
-            estateToken(c, i, end);
-            i = end;
-        }
-    }
-
-    private void estateToken(Claims c, int from, int to) {
-        StringBuilder folded = new StringBuilder(to - from);
-        int[] origin = new int[to - from];
-        for (int k = from; k < to; k++) {
-            char ch = c.s.charAt(k);
+        StringBuilder folded = new StringBuilder(s.length());
+        int[] origin = new int[s.length()];
+        for (int k = 0; k < s.length(); k++) {
+            char ch = s.charAt(k);
             if (isMark(ch)) {
                 continue;
             }
+            char f;
+            if (isSeparator(ch) || Character.isWhitespace(ch)) {
+                if (folded.length() > 0 && folded.charAt(folded.length() - 1) == '-') {
+                    continue;
+                }
+                f = '-';
+            } else if (Character.isLetterOrDigit(ch)) {
+                f = foldChar(ch);
+            } else {
+                f = '\0';
+            }
             origin[folded.length()] = k;
-            folded.append(foldChar(ch));
+            folded.append(f);
         }
-        String f = folded.toString();
+        String text = folded.toString();
         for (String term : estateTerms) {
-            int at = f.indexOf(term);
+            int at = text.indexOf(term);
             while (at >= 0) {
                 int end = at + term.length();
-                boolean edges = (at == 0 || isSeparator(f.charAt(at - 1))) && (end == f.length()
-                    || isSeparator(f.charAt(end)));
+                boolean edges = (at == 0 || !Character.isLetterOrDigit(text.charAt(at - 1)))
+                    && (end == text.length() || !Character.isLetterOrDigit(text.charAt(end)));
                 if (edges) {
                     int start = origin[at];
                     int stop = origin[end - 1] + 1;
-                    while (stop < to && isMark(c.s.charAt(stop))) {
+                    while (stop < s.length() && isMark(s.charAt(stop))) {
                         stop++;
                     }
                     c.claim(start, stop, pseudonymiser.token("EST", term));
                 }
-                at = f.indexOf(term, at + 1);
+                at = text.indexOf(term, at + 1);
             }
         }
     }
 
-    private static boolean tokenChar(char ch) {
-        return Character.isLetterOrDigit(ch) || isSeparator(ch) || isMark(ch);
+    /** An estate term folded as the text is: {@link #fold}, every run of separators and spaces as one {@code -}. */
+    static String foldTerm(String term) {
+        String f = fold(term.strip());
+        StringBuilder out = new StringBuilder(f.length());
+        for (int k = 0; k < f.length(); k++) {
+            char ch = f.charAt(k);
+            if (isSeparator(ch) || Character.isWhitespace(ch)) {
+                if (out.length() > 0 && out.charAt(out.length() - 1) != '-') {
+                    out.append('-');
+                }
+            } else {
+                out.append(Character.isLetterOrDigit(ch) ? ch : '\0');
+            }
+        }
+        int end = out.length();
+        while (end > 0 && out.charAt(end - 1) == '-') {
+            end--;
+        }
+        return out.substring(0, end);
     }
 
     private static boolean isSeparator(char ch) {
@@ -802,18 +870,30 @@ public final class TextMasker {
     }
 
     /**
-     * Name runs: dictionary words, initials ({@code A.}) and a capitalised word hyphenated to a family name, joined by
-     * one {@code ._-} or by spaces. A word that is also an everyday word joins across spaces only when it is written like
-     * its neighbour (both capitalised, or both lower case with one of them not an everyday word), so "Mehmet yazıcı
-     * ekledi" stays a sentence; joined by {@code ._-} it always joins ({@code deniz.kaya}). A run with a given name and a
-     * family name, or with an initial and a name, is one {@code NAME-<WORD>} in every field; in free text any other run
-     * of two or more is one too, and a lone word is a name when it is not an everyday word (a short stem with a case
-     * ending only when capitalised), or when it is capitalised ({@code Deniz}) or stands by a title ({@code Sayın},
-     * {@code Dr.}, {@code Bey}, {@code Hanım}). The key is the run's names in sorted order, so {@code Ayşe Yılmaz} and
+     * Name runs: dictionary words, initials ({@code A.}, {@code a.}) and a capitalised word hyphenated to a family name,
+     * joined by one {@code ._-} or by spaces. Joined by {@code ._-} words always join ({@code deniz.kaya}). Across spaces
+     * two names that are not everyday words join; an everyday word joins when written like its neighbour (both
+     * capitalised; both lower case when the run holds a name that is not an everyday word or a title stands before or
+     * after it: {@code ayşe pınar yılmaz}, {@code deniz kaya Bey}), or, written differently, when the two make a given
+     * name and a family name with one of them not an everyday word ({@code ayşe Yılmaz}, {@code Mehmet yazıcı}: privacy
+     * before readability, PR 26 confirmation review N-01). A run with a given name and a family name, or with an initial
+     * and a name, is one {@code NAME-<WORD>} in every field; in free text any other run of two or more is one too, and a
+     * lone word is a name when it is capitalised (title case or capitals, with or without an ending), stands by a title
+     * ({@code Sayın}, {@code Dr.}, {@code Bey}, {@code Hanıma}), or is not an everyday word (a lower-case short stem
+     * with an ending excepted). The key is the run's names in sorted order, so {@code Ayşe Yılmaz} and
      * {@code YILMAZ Ayşe} are one token.
      */
     private void names(Claims c, boolean freeText) {
         List<Word> words = words(c);
+        // Whether a title follows the chain of name words that starts at each index (deniz kaya Bey).
+        boolean[] titledAhead = new boolean[words.size()];
+        for (int k = words.size() - 2; k >= 0; k--) {
+            Word after = words.get(k + 1);
+            if (joinable(c, words.get(k), after)) {
+                titledAhead[k] = after.kind() == Kind.TITLE_AFTER
+                    || ((after.kind() == Kind.NAME || after.kind() == Kind.INITIAL) && titledAhead[k + 1]);
+            }
+        }
         List<Word> run = new ArrayList<>(MAX_RUN);
         boolean titled = false;
         for (int k = 0; k < words.size(); k++) {
@@ -822,9 +902,11 @@ public final class TextMasker {
             Word next = k + 1 < words.size() ? words.get(k + 1) : null;
             boolean joinable = previous != null && joinable(c, previous, w);
             Word last = run.isEmpty() ? null : run.get(run.size() - 1);
+            boolean plainName = run.stream().anyMatch(r -> r.kind() == Kind.NAME && !r.common());
             switch (w.kind()) {
                 case NAME, INITIAL -> {
-                    if (last != null && joinable && joins(c, last, w, titled) && run.size() < MAX_RUN) {
+                    if (last != null && joinable && joins(c, last, w, titled || titledAhead[k], plainName)
+                        && run.size() < MAX_RUN) {
                         run.add(w);
                     } else {
                         flush(c, run, titled, freeText);
@@ -841,7 +923,8 @@ public final class TextMasker {
                     if (after && run.size() < MAX_RUN) {
                         run.add(w);
                     } else if (before) {
-                        if (!(last != null && joinable && joins(c, last, w, titled) && run.size() < MAX_RUN)) {
+                        if (!(last != null && joinable && joins(c, last, w, titled, plainName)
+                            && run.size() < MAX_RUN)) {
                             flush(c, run, titled, freeText);
                             titled = previous != null && joinable && previous.kind() == Kind.TITLE_BEFORE;
                         }
@@ -911,10 +994,15 @@ public final class TextMasker {
         if (TITLES_BEFORE.contains(folded)) {
             return new Word(Kind.TITLE_BEFORE, start, dot ? stemEnd + 1 : end, null, 0, false, false, writing);
         }
-        if (TITLES_AFTER.contains(folded)) {
+        if (NameDictionary.inflectionOf(folded, TITLES_AFTER)) {
             return new Word(Kind.TITLE_AFTER, start, end, null, 0, false, false, writing);
         }
         if (surface.length() == 1 && writing != Case.LOWER && dot && c.free(stemEnd, stemEnd + 1)) {
+            return new Word(Kind.INITIAL, start, stemEnd + 1, folded, 0, false, true, writing);
+        }
+        // A single letter glued by . _ - to the next word, any case: a.yilmaz, m_kaya (N-01).
+        if (surface.length() == 1 && !apostrophe && stemEnd + 1 < s.length() && "._-".indexOf(s.charAt(stemEnd)) >= 0
+            && Character.isLetter(s.charAt(stemEnd + 1)) && c.free(stemEnd, stemEnd + 1)) {
             return new Word(Kind.INITIAL, start, stemEnd + 1, folded, 0, false, true, writing);
         }
         NameDictionary.Match match = names.match(folded, apostrophe);
@@ -970,19 +1058,27 @@ public final class TextMasker {
         return b.start() - a.end() == 1 && c.s.charAt(a.end()) == '-';
     }
 
-    /** Whether {@code next} continues a run ending with {@code last} (both already neighbours). */
-    private static boolean joins(Claims c, Word last, Word next, boolean titled) {
-        if (last.kind() == Kind.INITIAL || next.kind() == Kind.INITIAL || punctuationJoin(c, last, next)) {
+    /**
+     * Whether {@code next} continues a run ending with {@code last} (both already neighbours); {@code titled} when a
+     * title stands before or after the run, {@code plainName} when the run holds a name that is not an everyday word.
+     */
+    private static boolean joins(Claims c, Word last, Word next, boolean titled, boolean plainName) {
+        if (last.kind() == Kind.INITIAL) {
+            // After an initial: a name word glued to it, capitalised, or not an everyday word (A. metin stays a word).
+            return next.start() == last.end() || next.kind() == Kind.INITIAL || next.capitalised() || !next.common()
+                || punctuationJoin(c, last, next);
+        }
+        if (next.kind() == Kind.INITIAL || punctuationJoin(c, last, next)) {
             return true;
         }
         if (!last.common() && !next.common()) {
             return true;
         }
-        boolean sameWriting = last.capitalised() == next.capitalised();
-        if (!sameWriting) {
-            return false;
+        if (last.capitalised() == next.capitalised()) {
+            return last.capitalised() || titled || plainName || !last.common() || !next.common();
         }
-        return last.capitalised() || titled || !last.common() || !next.common();
+        boolean pair = (last.given() && next.surname()) || (last.surname() && next.given());
+        return titled || (pair && (!last.common() || !next.common()));
     }
 
     private void flush(Claims c, List<Word> run, boolean titled, boolean freeText) {
@@ -1035,15 +1131,15 @@ public final class TextMasker {
         return c.claim(members.get(0).start(), members.get(members.size() - 1).end(), nameToken(String.join(" ", keys)));
     }
 
-    /** A word on its own: a name unless it is an everyday word in lower case, or a lower-case short stem with an ending. */
+    /**
+     * A word on its own (free text): capitalised (title case or capitals, with or without an ending) or by a title it is
+     * a name; in lower case an everyday word stays a word, and so does a short stem with an ending (N-01).
+     */
     private static boolean lone(Word w, boolean titled) {
-        if (titled) {
+        if (titled || w.capitalised()) {
             return true;
         }
-        if (!w.common()) {
-            return !(w.shortStem() && w.suffixed() && !w.capitalised());
-        }
-        return w.writing() == Case.TITLE && !w.suffixed();
+        return !w.common() && !(w.shortStem() && w.suffixed());
     }
 
     /** {@code NAME-<WORD>}; a word that itself reads as a dictionary name is drawn again. */
@@ -1183,6 +1279,11 @@ public final class TextMasker {
                 continue;
             }
             if (WEAK_WORDS.contains(keyword) && !identifierLooking(word)) {
+                continue;
+            }
+            // A TCKN or an IBAN has digits: "kimlik doğrulama" is a sentence (N-04).
+            if ((TCKN_WORDS.contains(keyword) || IBAN_WORDS.contains(keyword))
+                && word.chars().noneMatch(Character::isDigit)) {
                 continue;
             }
             c.claim(vs, ve, keywordToken(keyword, word, folded));

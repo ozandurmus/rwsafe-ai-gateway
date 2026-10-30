@@ -219,6 +219,8 @@ class SiemSchemaTest {
             {"Ayşe Yılmaz asked, see node7.example.com", "NAME-[A-Z]{8} asked, see HST-[0-9a-f]{4}"},
             {"moved off synthetic-estate", "moved off EST-[0-9a-f]{4}"},
             {"customer " + tckn, "customer TCKN-[0-9a-f]{4}"},
+            // PR 26 confirmation review N-02: a masked address (a subnet label) is the masker's token, not a number.
+            {"moved off 192.0.2.10", "moved off 2[45][0-9]\\.[0-9]{1,3}\\.[0-9]{1,3}\\.0/24"},
             {"APPROVAL_SECURITY_ADMIN", "APPROVAL_SECURITY_ADMIN"}}) {
             io.rwsafe.persistence.SiemExportStore.LedgerRow row = new io.rwsafe.persistence.SiemExportStore.LedgerRow(
                 1, 2, Rows.AT, "USR-0123456789", "policy.platform_retire", c[0], "corr-2", "policy_rule_version",
