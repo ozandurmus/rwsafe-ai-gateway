@@ -9,6 +9,7 @@ import io.rwsafe.control.api.Views.OverviewView;
 import io.rwsafe.control.api.Views.PlatformsView;
 import io.rwsafe.control.api.Views.TrafficView;
 import io.rwsafe.control.config.ControlProperties;
+import io.rwsafe.control.policy.PolicyRegistryService;
 import io.rwsafe.control.policy.SnapshotSigner;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.siem.SiemExportService;
@@ -20,7 +21,6 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -43,13 +43,16 @@ public class ReadApiController {
     private final Database database;
     private final PrivacyKeys keys;
     private final SnapshotSigner signer;
+    private final PolicyRegistryService registry;
     private final SiemExportService siem;
     private final Clock clock;
 
-    public ReadApiController(Database database, PrivacyKeys keys, SnapshotSigner signer, SiemExportService siem) {
+    public ReadApiController(Database database, PrivacyKeys keys, SnapshotSigner signer, PolicyRegistryService registry,
+                             SiemExportService siem) {
         this.database = database;
         this.keys = keys;
         this.signer = signer;
+        this.registry = registry;
         this.siem = siem;
         this.clock = Clock.systemUTC();
     }
@@ -71,8 +74,9 @@ public class ReadApiController {
                                @RequestParam(name = "limit", defaultValue = "50") int limit,
                                @RequestParam(name = "cursor", required = false) String cursor) {
         Instant[] w = window(from, to);
-        if (platform != null && !vocabulary(platform, 64)) {
-            throw new BadRequest("INVALID_PLATFORM_FILTER", "The platform filter takes a platform id.");
+        // SR-PRIV-4: every filter takes a vocabulary value or a pseudonym, never a raw value to test guesses with.
+        if (platform != null && !registry.platformIds().contains(platform)) {
+            throw new BadRequest("INVALID_PLATFORM_FILTER", "The platform filter takes a platform id of the registry.");
         }
         if (service != null && !service.equals("reqmod") && !service.equals("respmod")) {
             throw new BadRequest("INVALID_SERVICE_FILTER", "The service filter takes reqmod or respmod.");
@@ -167,20 +171,6 @@ public class ReadApiController {
         for (int i = 4; i < s.length(); i++) {
             char c = s.charAt(i);
             if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /** Lower-case letters, digits, {@code -} and {@code _}: the platform-matrix vocabulary. */
-    public static boolean vocabulary(String s, int max) {
-        if (s.isEmpty() || s.length() > max || !s.equals(s.toLowerCase(Locale.ROOT))) {
-            return false;
-        }
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) {
                 return false;
             }
         }

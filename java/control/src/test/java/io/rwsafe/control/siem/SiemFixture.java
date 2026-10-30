@@ -32,7 +32,10 @@ final class SiemFixture {
             null, null, null);
         keys = new PrivacyKeys(props);
         pseudonymiser = new Pseudonymiser(keys);
-        ingestion = new IngestionService(db, keys, pseudonymiser);
+        // This database is migrated but not seeded, so the registry holds no platform row: the fixture names the one
+        // platform its events use (ingestion takes registry platform ids only, PR 24 review D-01 context).
+        ingestion = new IngestionService(db, keys, pseudonymiser, () -> java.util.Set.of("openai"),
+            java.time.Clock.systemUTC());
         records = new SiemRecords(pseudonymiser::user, key -> pseudonymiser.token("KEY", key), keys.estateTerms());
     }
 

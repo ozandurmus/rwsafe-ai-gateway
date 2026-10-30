@@ -28,6 +28,9 @@ dependencies {
     compileOnly(libs.jakarta.xml.bind.api)
     runtimeOnly(libs.postgresql)
 
+    // Test scope only: the log-scanner end-to-end test (AGENTS.md 4.14, SR-PRIV-6) runs the real data plane against this
+    // control plane in one JVM. The ArchUnit fences import main classes only, so the module graph is unchanged.
+    testImplementation(project(":dataplane"))
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.spring.security.test)
     // Runtime generation of the CA and server certificates of the local TLS syslog receiver and HEC stub (SIEM tests).
@@ -58,4 +61,20 @@ tasks.register<JavaExec>("runDev") {
     mainClass.set("io.rwsafe.control.dev.DevControlApplication")
     classpath = sourceSets["test"].runtimeClasspath
     systemProperty("rwsafe.dev.dir", layout.buildDirectory.dir("dev").get().asFile.absolutePath)
+}
+
+// The data plane on the test classpath keeps the Netty line its image ships (the Spring Boot BOM would lift it to 4.2),
+// so the log-scanner test exercises the data plane as deployed: a strict version on every Netty module it resolves.
+val dataPlaneNetty = rootProject.extensions.getByType<VersionCatalogsExtension>().named("libs")
+    .findVersion("netty").get().requiredVersion
+dependencies {
+    constraints {
+        for (module in listOf("netty-common", "netty-buffer", "netty-transport", "netty-resolver", "netty-codec",
+            "netty-handler", "netty-transport-native-unix-common")) {
+            testImplementation("io.netty:$module") {
+                version { strictly(dataPlaneNetty) }
+                because("the data plane's own Netty line (log-scanner end-to-end test)")
+            }
+        }
+    }
 }

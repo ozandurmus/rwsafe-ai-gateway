@@ -1,22 +1,26 @@
 package io.rwsafe.control.ingest;
 
-import io.rwsafe.control.api.ReadApiController;
+import io.rwsafe.control.policy.PolicyRegistryService;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
-import io.rwsafe.detect.DetectorSet;
 import io.rwsafe.persistence.Database;
 import io.rwsafe.persistence.FindingCount;
 import io.rwsafe.persistence.StoredVerdictEvent;
+import io.rwsafe.platform.verdict.ReasonCodes;
 import io.rwsafe.platform.verdict.Verdict;
+import io.rwsafe.policy.Flow;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -32,22 +36,32 @@ public class IngestionService {
     static final Duration MAX_AGE = Duration.ofDays(30);
     static final Duration MAX_SKEW = Duration.ofMinutes(5);
     private static final Set<String> TRANSPORTS = Set.of("plain_allowlisted", "mtls_verified");
-    private static final DetectorSet DETECTORS = DetectorSet.standard();
+    /** The flow classifier's fixed enumerations (ICAP spec §4.3): nothing else is a surface or a step. */
+    static final Set<String> SURFACES = Set.copyOf(Arrays.stream(Flow.Surface.values())
+        .map(v -> v.name().toLowerCase(Locale.ROOT)).toList());
+    static final Set<String> STEPS = Set.copyOf(Arrays.stream(Flow.Step.values())
+        .map(v -> v.name().toLowerCase(Locale.ROOT)).toList());
 
     private final Database database;
     private final PrivacyKeys keys;
     private final Pseudonymiser pseudonymiser;
+    /** The registry's platform ids, read once per batch. */
+    private final Supplier<Set<String>> platformIds;
     private final Clock clock;
 
     @Autowired
-    public IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser) {
-        this(database, keys, pseudonymiser, Clock.systemUTC());
+    public IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser,
+                            PolicyRegistryService registry) {
+        this(database, keys, pseudonymiser, registry::platformIds, Clock.systemUTC());
     }
 
-    IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser, Clock clock) {
+    /** @param platformIds the platform ids an event may name (the registry's, in the application) */
+    public IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser,
+                            Supplier<Set<String>> platformIds, Clock clock) {
         this.database = database;
         this.keys = keys;
         this.pseudonymiser = pseudonymiser;
+        this.platformIds = platformIds;
         this.clock = clock;
     }
 
@@ -62,11 +76,12 @@ public class IngestionService {
             throw new InvalidEventException("a batch holds at most " + MAX_BATCH + " events");
         }
         String keyId = keys.keyId();
+        Set<String> platforms = platformIds.get();
         Instant now = clock.instant();
         List<StoredVerdictEvent> rows = new ArrayList<>(batch.size());
         Set<UUID> ids = new HashSet<>();
         for (int i = 0; i < batch.size(); i++) {
-            StoredVerdictEvent row = validate(i, batch.get(i), now, keyId);
+            StoredVerdictEvent row = validate(i, batch.get(i), now, keyId, platforms);
             if (ids.add(row.eventId())) {
                 rows.add(row);
             }
@@ -75,7 +90,7 @@ public class IngestionService {
         return new Result(inserted, batch.size() - inserted);
     }
 
-    private StoredVerdictEvent validate(int i, VerdictEventPayload e, Instant now, String keyId) {
+    private StoredVerdictEvent validate(int i, VerdictEventPayload e, Instant now, String keyId, Set<String> platforms) {
         if (e == null) {
             throw new InvalidEventException(i, "event");
         }
@@ -88,17 +103,19 @@ public class IngestionService {
         if (!service.equals("reqmod") && !service.equals("respmod")) {
             throw new InvalidEventException(i, "service");
         }
-        String platform = vocabulary(i, "platform", e.platform(), 64);
-        String surface = vocabulary(i, "surface", e.surface(), 32);
-        String step = vocabulary(i, "step", e.step(), 32);
+        // Registry vocabulary only (SR-PRIV-4): a value outside it could carry an identifier into every screen.
+        String platform = member(i, "platform", e.platform(), platforms);
+        String surface = member(i, "surface", e.surface(), SURFACES);
+        String step = member(i, "step", e.step(), STEPS);
         Verdict verdict;
         try {
             verdict = Verdict.valueOf(require(i, "verdict", e.verdict()));
         } catch (IllegalArgumentException ex) {
             throw new InvalidEventException(i, "verdict");
         }
+        // A closed vocabulary (PR 24 review D-01): the data plane's reason codes, nothing free.
         String reason = e.reason();
-        if (reason != null && !token(reason, 64)) {
+        if (reason != null && !ReasonCodes.known(reason)) {
             throw new InvalidEventException(i, "reason");
         }
         List<FindingCount> findings = findings(i, e.findings());
@@ -116,7 +133,9 @@ public class IngestionService {
         }
         long snapshotVersion = nonNegative(i, "snapshotVersion", e.snapshotVersion());
         String correlationId = require(i, "correlationId", e.correlationId());
-        if (!canonicalUuid(correlationId) && !token(correlationId, 64)) {
+        // A closed format (PR 24 review D-01): the data plane's correlation id is a random canonical UUID. Any other
+        // token could carry a name, which no identifier check recognises, so nothing else is taken.
+        if (!canonicalUuid(correlationId)) {
             throw new InvalidEventException(i, "correlationId");
         }
         List<String> applied = ruleIds(i, "appliedRuleIds", e.appliedRuleIds());
@@ -173,7 +192,8 @@ public class IngestionService {
         List<FindingCount> out = new ArrayList<>(findings.size());
         Set<String> classes = new HashSet<>();
         for (VerdictEventPayload.FindingPayload f : findings) {
-            if (f == null || f.dataClass() == null || !dataClass(f.dataClass()) || !classes.add(f.dataClass())
+            // A known DLP class only (PR 24 confirmation review N-01): a free class name could carry an identifier.
+            if (f == null || f.dataClass() == null || !knownDataClass(f.dataClass()) || !classes.add(f.dataClass())
                 || f.count() == null || f.count() < 1 || f.count() > 1_000_000) {
                 throw new InvalidEventException(i, "findings");
             }
@@ -189,8 +209,8 @@ public class IngestionService {
         return value;
     }
 
-    private static String vocabulary(int i, String field, String value, int max) {
-        if (value == null || !ReadApiController.vocabulary(value, max)) {
+    private static String member(int i, String field, String value, Set<String> vocabulary) {
+        if (value == null || !vocabulary.contains(value)) {
             throw new InvalidEventException(i, field);
         }
         return value;
@@ -224,26 +244,8 @@ public class IngestionService {
     }
 
     /**
-     * Reason classes and correlation ids: letters, digits, {@code _} and {@code -} (no dot or colon, so no address or
-     * host name fits), and nothing a Tier-1 detector recognises (an identifier or a secret shape), so neither field can
-     * carry a value into storage (PR 12 review D-05).
-     */
-    private static boolean token(String s, int max) {
-        if (s.isEmpty() || s.length() > max) {
-            return false;
-        }
-        for (int k = 0; k < s.length(); k++) {
-            char c = s.charAt(k);
-            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) {
-                return false;
-            }
-        }
-        return DETECTORS.scan(s).isEmpty();
-    }
-
-    /**
-     * The data plane's correlation id is a lower-case canonical UUID: random hex, so its digit groups can look like a
-     * Luhn-valid card number by chance; it is accepted as a UUID without the detector pass (it can carry no value).
+     * The data plane's correlation id is a lower-case canonical UUID, the only form ingestion takes (PR 24 review D-01):
+     * random hex, so its digit groups can look like a Luhn-valid card number by chance, and it can carry no value.
      */
     public static boolean canonicalUuid(String s) {
         if (s.length() != 36) {
@@ -254,18 +256,5 @@ public class IngestionService {
         } catch (IllegalArgumentException e) {
             return false;
         }
-    }
-
-    private static boolean dataClass(String s) {
-        if (s.isEmpty() || s.length() > 32 || s.charAt(0) < 'A' || s.charAt(0) > 'Z') {
-            return false;
-        }
-        for (int k = 0; k < s.length(); k++) {
-            char c = s.charAt(k);
-            if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) {
-                return false;
-            }
-        }
-        return true;
     }
 }
