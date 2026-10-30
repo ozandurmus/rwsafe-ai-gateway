@@ -231,6 +231,15 @@ Both run in `:control:test`, so in `unitTest` and the CI `java-tests` job; no wo
   estate names, a Turkish name and a letter-glued TCKN into those fields and asserts each batch is refused, nothing is
   stored and no role sees them; `theMaskedRolesTrafficFiltersTakeNoRawValue` asserts every raw guess is refused as a
   filter without being echoed.
+- After the merge of PR 17, 18 and 21: the walk covers the withdrawal and retirement routes, and the seeding activates a
+  group-scoped class version naming estate and Turkish-letter directory groups (the masked role sees only `GRP-`
+  pseudonyms; the viewer, the positive control, sees the names), a withdrawal and a platform retirement. The probe found
+  a leak and it is fixed: the free-text withdrawal and retirement reasons reached the masked role with a Turkish name and
+  a number glued to letters, which the text masker cannot recognise (no name layer; the detectors need a word
+  boundary). The masked projection now withholds both reasons (`[FREE_TEXT_WITHHELD]`); a reason with ten or more
+  digits in a row is refused for every role, and a draft's `reasonCode` takes the platform-id identifier check. The log
+  scanner runs the data plane with plain group claims (`X-Authenticated-Groups`, one well-formed and one repeated) and
+  finds no group name in any log, metric, error page, stored row or the spool.
 - Not covered: a browser-level (Playwright) walk of the screens (needs a browser download; the UI reads only the API
   client the probe enumerates); the layer 4 name dictionary and customer numbers (not implemented, so names are seeded
   only where pseudonymisation applies or where ingestion refuses them); third-party loggers below their production

@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.rwsafe.control.config.InternalConnector;
+import io.rwsafe.control.policy.PolicyViews;
 import io.rwsafe.control.support.ApiClient;
 import io.rwsafe.control.support.ApiInventory;
 import io.rwsafe.control.support.Canaries;
@@ -118,6 +119,10 @@ class MaskedRoleLeakProbeTest {
         assertTrue(unmarked.isEmpty(), "masked responses without the masked and rule-set headers: " + unmarked);
 
         Set<String> hits = hits(probe, masked);
+        // The free-text reasons exist on the masked page, withheld (not merely passed through the text masker).
+        long withheld = masked.stream().filter(p -> p.endpoint().equals("GET /api/v1/policy/rules"))
+            .map(p -> p.response().raw().body()).filter(b -> b.contains(PolicyViews.FREE_TEXT_WITHHELD)).count();
+        assertTrue(withheld > 0, "the masked registry page shows no withheld reason");
         assertTrue(hits.isEmpty(), "the masked role saw seeded tokens (location class <- canary class): " + hits);
         assertTrue(masked.size() >= 40, "the walk made " + masked.size() + " requests");
 
@@ -125,17 +130,19 @@ class MaskedRoleLeakProbeTest {
         // operator's key id naming an estate host), so the probe can see a leak; and nothing refused at ingestion or
         // pseudonymised there reaches the viewer either.
         Set<String> seenByViewer = new TreeSet<>();
-        for (String hit : hits(probe, walk(canaries.viewer))) {
+        Set<String> viewerHits = hits(probe, walk(canaries.viewer));
+        for (String hit : viewerHits) {
             seenByViewer.add(hit.substring(hit.lastIndexOf(' ') + 1));
         }
-        for (String cls : List.of(Canaries.HOST_NAME, Canaries.DIRECTORY_LOGIN, Canaries.TURKISH_NAME)) {
+        for (String cls : List.of(Canaries.HOST_NAME, Canaries.DIRECTORY_LOGIN, Canaries.TURKISH_NAME,
+            Canaries.GROUP_NAME)) {
             assertTrue(seenByViewer.contains(cls), "the positive control did not see " + cls + ": " + seenByViewer);
         }
         for (String cls : List.of(Canaries.TCKN, Canaries.TR_IBAN, Canaries.TR_MOBILE, Canaries.PAYMENT_CARD,
-            Canaries.SECRET_SHAPE, Canaries.GROUP_NAME, Canaries.CLAIM_USER, Canaries.EMAIL, Canaries.DOMAIN_ACCOUNT,
+            Canaries.SECRET_SHAPE, Canaries.CLAIM_USER, Canaries.EMAIL, Canaries.DOMAIN_ACCOUNT,
             Canaries.IPV4)) {
             assertTrue(!seenByViewer.contains(cls), cls + " reached the viewer although ingestion refuses or "
-                + "pseudonymises it: " + seenByViewer);
+                + "pseudonymises it (location class <- canary class): " + viewerHits);
         }
     }
 
@@ -255,6 +262,13 @@ class MaskedRoleLeakProbeTest {
             assertTrue(r.status() >= 400 && r.status() < 500, "platform draft " + r.status());
             assertTrue(canaries.probe().scan("draft refusal", r.body()).isEmpty(), "the draft refusal echoed the id");
         }
+        for (String code : List.of("REF" + canaries.tckns.get(0), "TCKN_" + canaries.tckns.get(1))) {
+            String body = JSON.createObjectNode().put("action", "BLOCK").put("mode", "monitor").put("reasonCode", code)
+                .toString();
+            ApiClient.Response r = admin.post("/api/v1/policy/rules/class.TCKN/versions", body, true);
+            assertEquals(400, r.status(), "an identifier-shaped reason code");
+            assertTrue(canaries.probe().scan("draft refusal", r.body()).isEmpty(), "the refusal echoed the code");
+        }
         ApiClient officer = signedIn(canaries.officer);
         String draft = JSON.createObjectNode().put("action", "BLOCK").put("mode", "enforce").put("rolloutStage", "all")
             .put("reasonCode", "SYNTHETIC_CHANGE").toString();
@@ -262,6 +276,39 @@ class MaskedRoleLeakProbeTest {
         String approvals = "/api/v1/policy/rules/class.TCKN/versions/2/approvals";
         assertEquals(200, admin.post(approvals, role("security_admin"), true).status());
         assertEquals(200, officer.post(approvals, role("privacy_officer"), true).status());
+
+        // A group-scoped class version (PO decision Q-39) naming the estate's directory groups, activated, then a
+        // withdrawal request and a platform retirement (Q-40, Q-41) whose free-text reasons name a person and carry a
+        // number glued to letters: the registry's free values that reach the screens.
+        ObjectNode scoped = JSON.createObjectNode().put("action", "BLOCK").put("mode", "enforce")
+            .put("reasonCode", "SYNTHETIC_SCOPE");
+        ObjectNode scope = scoped.putObject("scope").put("kind", "GROUPS");
+        com.fasterxml.jackson.databind.node.ArrayNode scopeGroups = scope.putArray("groups");
+        canaries.groups.forEach(g -> scopeGroups.add(g));
+        ApiClient.Response scopedDraft = admin.post("/api/v1/policy/rules/class.TR_IBAN/versions", scoped.toString(),
+            true);
+        assertEquals(201, scopedDraft.status(), String.valueOf(scopedDraft.body()));
+        int scopedVersion = scopedDraft.body().get("version").asInt();
+        String scopedApprovals = "/api/v1/policy/rules/class.TR_IBAN/versions/" + scopedVersion + "/approvals";
+        assertEquals(200, admin.post(scopedApprovals, role("security_admin"), true).status());
+        assertEquals(200, officer.post(scopedApprovals, role("privacy_officer"), true).status());
+        Person named = canaries.claimants.get(1);
+        String withdrawalReason = "Talep " + named.displayName() + " kapsam bitti";
+        ApiClient.Response withdrawal = admin.post("/api/v1/policy/rules/class.TR_IBAN/versions/" + scopedVersion
+            + "/withdrawal", JSON.createObjectNode().put("reason", withdrawalReason).toString(), true);
+        assertEquals(201, withdrawal.status(), String.valueOf(withdrawal.body()));
+        String retirementReason = named.given() + " " + named.family() + " istedi";
+        // A reason with a number glued to letters is refused before it is stored, for every role.
+        for (String gluedReason : List.of("kayıt ref" + canaries.tckns.get(0), "arayan tel" + canaries.mobiles.get(0))) {
+            ApiClient.Response r = admin.post("/api/v1/policy/rules/platform.devin/retirement",
+                JSON.createObjectNode().put("reason", gluedReason).toString(), true);
+            assertEquals(400, r.status(), "a reason with a glued number");
+            assertTrue(canaries.probe().scan("reason refusal", r.body()).isEmpty(), "the refusal echoed the reason");
+        }
+        ApiClient.Response retirement = admin.post("/api/v1/policy/rules/platform.windsurf/retirement",
+            JSON.createObjectNode().put("reason", retirementReason).toString(), true);
+        assertEquals(200, retirement.status(), String.valueOf(retirement.body()));
+
         // The data plane's pull issues a snapshot, so the operator's key id (naming an estate host) reaches the screens.
         assertEquals(200, new ApiClient(internal.snapshotPort()).get("/internal/v1/policy/snapshot").status());
     }
@@ -347,6 +394,11 @@ class MaskedRoleLeakProbeTest {
             c.post("/api/v1/policy/rules/" + enc(someRule) + "/versions", draft, true)));
         out.add(new Probed("POST /api/v1/policy/rules/{}/versions/{}/approvals", c.post("/api/v1/policy/rules/"
             + enc(someRule) + "/versions/" + someVersion + "/approvals", role("security_admin"), true)));
+        String reason = JSON.createObjectNode().put("reason", "synthetic probe").toString();
+        out.add(new Probed("POST /api/v1/policy/rules/{}/versions/{}/withdrawal", c.post("/api/v1/policy/rules/"
+            + enc(someRule) + "/versions/" + someVersion + "/withdrawal", reason, true)));
+        out.add(new Probed("POST /api/v1/policy/rules/{}/retirement",
+            c.post("/api/v1/policy/rules/platform.devin/retirement", reason, true)));
         out.add(new Probed("POST /api/v1/policy/rules/{}/exceptions",
             c.post("/api/v1/policy/rules/" + enc(someRule) + "/exceptions", "{}", true)));
         out.add(new Probed("POST /api/v1/auth/logout", c.post("/api/v1/auth/logout", "", true)));

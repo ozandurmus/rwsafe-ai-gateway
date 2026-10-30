@@ -90,6 +90,8 @@ public final class Canaries {
             hosts.add("srv-" + letters(r, 6) + "-" + (10 + r.nextInt(90)));
             groups.add("grp-" + letters(r, 6) + "-ops");
         }
+        // A directory group name as people write it: Turkish letters, mixed case.
+        groups.add("Hazine-Müdürlüğü-" + letters(r, 6).toUpperCase(Locale.ROOT));
         addresses.add("198.51.100." + (1 + r.nextInt(254)));
         addresses.add("203.0.113." + (1 + r.nextInt(254)));
         signingKeyId = hosts.get(1) + "-signing";
@@ -125,7 +127,7 @@ public final class Canaries {
         }
         for (String g : groups) {
             probe.canary(GROUP_NAME, g);
-            probe.canary(GROUP_NAME, g.substring(4, 10));
+            probe.canary(GROUP_NAME, g.startsWith("grp-") ? g.substring(4, 10) : g.substring(g.length() - 6));
         }
         for (String a : addresses) {
             probe.canary(IPV4, a);

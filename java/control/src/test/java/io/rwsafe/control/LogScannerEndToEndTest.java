@@ -80,6 +80,8 @@ class LogScannerEndToEndTest {
     /** Marker class to values; the values never appear in a message of this test. */
     private final Map<String, List<String>> bodyMarkers = new LinkedHashMap<>();
     private final Map<String, List<String>> identityMarkers = new LinkedHashMap<>();
+    /** Group names from the proxy's group claim: never logged and never on a verdict event, so not in the spool either. */
+    private final Map<String, List<String>> groupMarkers = new LinkedHashMap<>();
     private final SecureRandom random = new SecureRandom();
 
     private String marker(String cls) {
@@ -113,7 +115,7 @@ class LogScannerEndToEndTest {
             shipperThread.start();
             IcapEngine engine = new IcapEngine(Snapshots.builtinDevelopment(), DetectorSet.standard(), queue,
                 EngineConfig.defaults().withBodyLimits(16 * 1024, 64L * 1024 * 1024).withWindow(1024, 128)
-                    .withTimeouts(400, 3_000));
+                    .withTimeouts(400, 3_000).withGroupClaimEncoding(EngineConfig.GroupClaimEncoding.PLAIN));
             IcapServer server = new IcapServer(engine, 0);
             int icap = server.start("127.0.0.1", 0);
             MetricsEndpoint metrics = new MetricsEndpoint("127.0.0.1", 0, engine, queue, shipper, null, 0);
@@ -154,6 +156,8 @@ class LogScannerEndToEndTest {
             // The spool holds the wire format, whose identity claim is raw by design (C1 is pseudonymised at the control
             // plane); bodies never.
             scan(Map.of("verdict spool", spoolText(spool)), bodyMarkers, found);
+            sources.put("verdict spool", spoolText(spool));
+            scan(sources, groupMarkers, found);
             assertTrue(found.isEmpty(), "body or identity fragments found (source <- marker class): " + found);
         }
     }
@@ -168,7 +172,14 @@ class LogScannerEndToEndTest {
         identityMarkers.put("identity claim", List.of(user.toLowerCase(Locale.ROOT), user.substring(9)));
         String address = "198.51.100." + (1 + random.nextInt(254));
         identityMarkers.put("client address", List.of(address));
-        String identity = "X-Authenticated-User: " + user + "\r\nX-Client-IP: " + address + "\r\n";
+        // The group claim (PO decision Q-39) in the configured plain encoding: estate-style and Turkish-letter names.
+        String groupA = "grp-" + token().toLowerCase(Locale.ROOT);
+        String tokenB = token();
+        String groupB = "Hazine-Müdürlüğü-" + tokenB;
+        // The ASCII token too: a log could hold the UTF-8 octets decoded as ISO-8859-1.
+        groupMarkers.put("group claim", List.of(groupA, groupB, tokenB));
+        String groups = "X-Authenticated-Groups: " + groupA + "," + groupB + "\r\n";
+        String identity = "X-Authenticated-User: " + user + "\r\nX-Client-IP: " + address + "\r\n" + groups;
         String tckn = Synthetic.tckn(random.nextLong());
         String iban = Synthetic.iban(random.nextLong());
         String card = Synthetic.card(random.nextLong());
@@ -207,6 +218,9 @@ class LogScannerEndToEndTest {
         events += 3;
         // 8 a marker in the request URL.
         byte[] small = json("synthetic hello");
+        // A repeated group claim is no claim (the strictest policy); its names must not surface either.
+        send(icap, claude(json("synthetic " + marker("repeated group claim")), groups + groups));
+        events++;
         send(icap, IcapClient.reqmod("POST /v1/messages?trace=" + marker("request URL")
             + " HTTP/1.1\nHost: api.anthropic.com\nContent-Type: application/json\nContent-Length: " + small.length
             + "\n", small, ""));

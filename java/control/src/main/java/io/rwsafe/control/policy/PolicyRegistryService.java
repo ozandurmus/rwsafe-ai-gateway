@@ -197,10 +197,12 @@ public class PolicyRegistryService {
             && namesEstate(ruleId.substring("platform.".length())))) {
             throw estateRefused();
         }
-        // A platform id is the one free value that becomes ingestion vocabulary: no identifier shape and no long digit
-        // run (a number glued to letters escapes the detectors' boundary rule).
-        if (kind.equals(RegistryVocabulary.KIND_PLATFORM) && carriesIdentifier(ruleId.substring("platform.".length()))) {
-            throw invalid("A platform id is vendor vocabulary; it may not carry an identifier-shaped value.");
+        // A platform id becomes ingestion vocabulary and a reason code is shown to every role (the masked one through
+        // the text masker): no identifier shape and no long digit run (a number glued to letters escapes the detectors'
+        // boundary rule).
+        if (carriesIdentifier(body.reasonCode()) || (kind.equals(RegistryVocabulary.KIND_PLATFORM)
+            && carriesIdentifier(ruleId.substring("platform.".length())))) {
+            throw invalid("A platform id or reason code is vocabulary; it may not carry an identifier-shaped value.");
         }
         String author = pseudonym(loginName);
         Draft shape = switch (kind) {
@@ -423,7 +425,10 @@ public class PolicyRegistryService {
             throw new RegistryRefusal(HttpStatus.SERVICE_UNAVAILABLE, "MASKING_UNAVAILABLE",
                 "The reason cannot be checked for identifiers without the masking key and dictionary; nothing changed.");
         }
-        if (!REASON_DETECTORS.scan(reason).isEmpty() || !masking.masker().mask(reason).equals(reason)) {
+        // A number glued to letters (a TCKN, a phone or a customer number as "ref<digits>") escapes the detectors'
+        // boundary rule and the masker: ten or more digits in a row are refused too (leak probe).
+        if (!REASON_DETECTORS.scan(reason).isEmpty() || !masking.masker().mask(reason).equals(reason)
+            || longestDigitRun(reason) >= 10) {
             throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "REASON_HOLDS_IDENTIFIER",
                 "The reason holds an identifier (an address, a number or a name the masking rules recognise); describe "
                     + "the reason without it.");
@@ -469,17 +474,17 @@ public class PolicyRegistryService {
     }
 
     static boolean carriesIdentifier(String value) {
-        if (!DETECTORS.scan(value).isEmpty()) {
-            return true;
-        }
+        return !DETECTORS.scan(value).isEmpty() || longestDigitRun(value) >= 6;
+    }
+
+    static int longestDigitRun(String value) {
         int run = 0;
+        int longest = 0;
         for (int i = 0; i < value.length(); i++) {
             run = Character.isDigit(value.charAt(i)) ? run + 1 : 0;
-            if (run >= 6) {
-                return true;
-            }
+            longest = Math.max(longest, run);
         }
-        return false;
+        return longest;
     }
 
     private static String letters(String s) {
