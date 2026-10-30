@@ -82,4 +82,18 @@ class IcapParsingTest {
         assertThrows(IllegalArgumentException.class,
             () -> h.rewrite(java.util.List.of(), java.util.List.of(new HeaderBlock.Field("X", "a\r\nInjected: 1"))));
     }
+
+    /** PR 11 review D-09: the engine reads no token its peer would not. */
+    @Test
+    void controlCharactersAndOrderingAreRefused() {
+        assertThrows(IcapProtocolException.class,
+            () -> new ChunkedDecoder().feed(ascii("0; ieof\u001f\r\n\r\n"), 0, 13, (b, o, n) -> { }));
+        assertEquals(400, assertThrows(IcapProtocolException.class, () -> parse(
+            "REQMOD icap://h/reqmod-ai ICAP/1.0\r\nEncapsulated: req-hdr=0, null-body=40\r\nPreview: 0\r\n\r\n")).status());
+        assertEquals(400, assertThrows(IcapProtocolException.class, () -> parse(
+            "RESPMOD icap://h/respmod-ai ICAP/1.0\r\nEncapsulated: res-hdr=0, req-hdr=20, res-body=40\r\n\r\n")).status());
+        assertEquals(400, assertThrows(IcapProtocolException.class, () -> parse(
+            "REQMOD icap://h/reqmod-ai ICAP/1.0\r\nX-Synthetic: a\u000bb\r\nEncapsulated: req-hdr=0, req-body=9\r\n\r\n"))
+            .status());
+    }
 }

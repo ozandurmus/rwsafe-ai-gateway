@@ -5,7 +5,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * A bounded, validating JSON tokenizer that returns every string leaf, keys included, regardless of schema (OFF2-6):
+ * A bounded, validating JSON tokenizer that returns every string and number leaf, keys included, regardless of schema
+ * (OFF2-6):
  * nesting at most {@link #MAX_DEPTH}, at most {@link #MAX_LEAVES} strings (ICAP spec §3). Malformed input raises
  * {@link Malformed}; there is no lenient mode.
  */
@@ -171,7 +172,7 @@ public final class JsonLeafScanner {
         if (leaves.size() >= MAX_LEAVES) {
             throw new Malformed("too many fields");
         }
-        leaves.add(new JsonLeaf(start, pos, out.toString()));
+        leaves.add(new JsonLeaf(start, pos, out.toString(), false));
     }
 
     private char hex4() throws Malformed {
@@ -201,20 +202,54 @@ public final class JsonLeafScanner {
         pos += word.length();
     }
 
+    /**
+     * RFC 8259 number grammar, strictly: {@code -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?}. Numbers are leaves too,
+     * so an identifier sent unquoted is still scanned (PR 11 review D-04).
+     */
     private void number() throws Malformed {
         int start = pos;
-        boolean digit = false;
-        while (pos < end) {
-            byte c = b[pos];
-            if (c >= '0' && c <= '9') {
-                digit = true;
-            } else if (c != '-' && c != '+' && c != '.' && c != 'e' && c != 'E') {
-                break;
-            }
+        if (pos < end && b[pos] == '-') {
             pos++;
         }
-        if (!digit || pos - start > 64) {
+        if (pos >= end) {
             throw new Malformed("bad number");
+        }
+        if (b[pos] == '0') {
+            pos++;
+        } else if (b[pos] >= '1' && b[pos] <= '9') {
+            digits();
+        } else {
+            throw new Malformed("bad number");
+        }
+        if (pos < end && b[pos] == '.') {
+            pos++;
+            if (pos >= end || b[pos] < '0' || b[pos] > '9') {
+                throw new Malformed("bad number");
+            }
+            digits();
+        }
+        if (pos < end && (b[pos] == 'e' || b[pos] == 'E')) {
+            pos++;
+            if (pos < end && (b[pos] == '+' || b[pos] == '-')) {
+                pos++;
+            }
+            if (pos >= end || b[pos] < '0' || b[pos] > '9') {
+                throw new Malformed("bad number");
+            }
+            digits();
+        }
+        if (pos - start > 64) {
+            throw new Malformed("number too long");
+        }
+        if (leaves.size() >= MAX_LEAVES) {
+            throw new Malformed("too many fields");
+        }
+        leaves.add(new JsonLeaf(start, pos, new String(b, start, pos - start, StandardCharsets.US_ASCII), true));
+    }
+
+    private void digits() {
+        while (pos < end && b[pos] >= '0' && b[pos] <= '9') {
+            pos++;
         }
     }
 

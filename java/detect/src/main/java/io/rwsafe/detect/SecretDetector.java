@@ -26,6 +26,9 @@ public final class SecretDetector implements Detector {
     public void scan(String text, List<Finding> out) {
         Matcher m = SECRETS.matcher(text);
         while (m.find()) {
+            if (out.size() >= DetectorSet.MAX_FINDINGS) {
+                return;
+            }
             out.add(new Finding(DataClass.SECRET, m.start(), m.end()));
         }
     }

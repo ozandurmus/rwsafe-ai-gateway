@@ -26,6 +26,7 @@ import io.rwsafe.architecture.fixtures.inline.FutureWaitingInspector;
 import io.rwsafe.architecture.fixtures.inline.JavaRegexInspector;
 import io.rwsafe.architecture.fixtures.inline.JdbcInspector;
 import io.rwsafe.architecture.fixtures.inline.MonitorWaitingInspector;
+import io.rwsafe.architecture.fixtures.inline.NettyFutureSyncInspector;
 import io.rwsafe.architecture.fixtures.inline.QueueOfferingInspector;
 import io.rwsafe.architecture.fixtures.inline.QueuePuttingInspector;
 import io.rwsafe.architecture.fixtures.inline.Re2jInspector;
@@ -125,6 +126,7 @@ class FenceSelfTest {
         assertTrue(violates(rule, QueuePuttingInspector.class));
         assertTrue(violates(rule, ReverseDnsInspector.class));
         assertTrue(violates(rule, MonitorWaitingInspector.class));
+        assertTrue(violates(rule, NettyFutureSyncInspector.class));
         assertTrue(violates(rule, ControlPlaneCallingInspector.class));
         assertFalse(violates(rule, QueueOfferingInspector.class));
         assertFalse(violates(rule, SnapshotClient.class));
@@ -139,6 +141,14 @@ class FenceSelfTest {
         assertTrue(violates(rule, PrintingReader.class, Prompt.class));
         assertTrue(violates(rule, SelfLoggingPrompt.class));
         assertFalse(violates(rule, QuietReader.class, Prompt.class));
+    }
+
+    @Test
+    void contentPackagesDoNotLogFence() {
+        ArchRule rule = Fences.contentPackagesDoNotLog(CONTENT);
+        assertTrue(violates(rule, LoggingReader.class));
+        assertTrue(violates(rule, PrintingReader.class));
+        assertFalse(violates(rule, QuietReader.class));
     }
 
     @Test

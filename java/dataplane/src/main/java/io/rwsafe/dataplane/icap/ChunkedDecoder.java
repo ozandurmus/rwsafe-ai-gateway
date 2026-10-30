@@ -105,9 +105,12 @@ public final class ChunkedDecoder {
     private void sizeLineDone() {
         String s = line.toString();
         line.setLength(0);
+        if (Ows.hasControl(s)) {
+            throw new IcapProtocolException(400, "control character in a chunk size line");
+        }
         int semi = s.indexOf(';');
-        String hex = (semi >= 0 ? s.substring(0, semi) : s).strip();
-        String ext = semi >= 0 ? s.substring(semi + 1).strip() : "";
+        String hex = Ows.trim(semi >= 0 ? s.substring(0, semi) : s);
+        String ext = semi >= 0 ? Ows.trim(s.substring(semi + 1)) : "";
         if (hex.isEmpty() || hex.length() > 8) {
             throw new IcapProtocolException(400, "chunk size");
         }

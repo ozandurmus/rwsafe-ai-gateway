@@ -14,15 +14,19 @@ import io.rwsafe.dataplane.icap.HeaderBlock;
 import io.rwsafe.dataplane.icap.IcapProtocolException;
 import io.rwsafe.dataplane.icap.IcapRequest;
 import io.rwsafe.dataplane.icap.IcapResponses;
+import io.rwsafe.dataplane.inspect.BodyInspector;
 import io.rwsafe.dataplane.inspect.CapturedBody;
 import io.rwsafe.dataplane.inspect.InspectionResult;
+import io.rwsafe.detect.Normaliser;
 import io.rwsafe.platform.verdict.Finding;
 import io.rwsafe.platform.verdict.Verdict;
 import io.rwsafe.policy.Action;
 import io.rwsafe.policy.Decision;
 import io.rwsafe.policy.Flow;
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -31,24 +35,28 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
- * One ICAP connection: the state machine of ICAP spec §4 (head, encapsulated heads, preview, body, streamed RESPMOD,
- * drain) on top of an accumulating buffer. Runs on its own executor, never blocks, never logs (it reads content).
+ * One ICAP connection: the state machine of ICAP spec §4 (head, encapsulated heads, preview, body, streamed RESPMOD) on
+ * top of an accumulating buffer. Runs on its own executor, never blocks, never logs (it reads content).
  *
  * <p>Not yet in this slice: per-identity in-flight caps, the pod-wide full-body semaphore, Secure ICAP, the drain window
- * with {@code Connection: close} and the verdict spool; the PR that introduces this class lists them.
+ * with {@code Connection: close} and the verdict spool.
  */
 final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
 
     private static final int MAX_HEAD_LINE = 8 * 1024;
     private static final int MAX_HTTP_FIELDS = 128;
     private static final int RESPMOD_WHOLE_BODY = 64 * 1024;
+    private static final List<String> SINGLE_HEADERS =
+        List.of("Content-Length", "Transfer-Encoding", "Content-Type", "Content-Encoding", "Host");
 
-    private enum State { HEAD, ENCAP, BODY, STREAM, DRAIN, CLOSED }
+    private enum State { HEAD, ENCAP, BODY, STREAM, CLOSED }
 
     private final IcapEngine engine;
     private final byte[] scratch = new byte[64 * 1024];
     private ByteBuf cum;
     private State state = State.HEAD;
+    private ScheduledFuture<?> txnTimer;
+    private long txnSeq;
 
     // per transaction
     private IcapRequest req;
@@ -60,19 +68,19 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     private ChunkedDecoder decoder;
     private CapturedBody body;
     private boolean inPreview;
-    private boolean continued;
     private boolean previewMode;
+    private boolean continued;
     private long startNanos;
     private String correlation;
-    private ScheduledFuture<?> bodyTimer;
-    private int encapNeeded;
 
     // streamed RESPMOD
     private ByteArrayOutputStream pending;
     private byte[] held;
-    private byte[] overlap;
+    private String overlapText;
     private boolean streamInspect;
     private long streamedBytes;
+    private long forwardedBytes;
+    private List<Finding> streamFindings = List.of();
 
     IcapConnectionHandler(IcapEngine engine) {
         this.engine = engine;
@@ -104,6 +112,14 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         } finally {
             in.release();
         }
+        // PLAT-F1: what waits in the receive buffer is bounded by one body plus 64 KiB (D-10).
+        if (cum.readableBytes() > engine.config().maxReqmodBody() + 64 * 1024) {
+            fail(ctx, 400, "Bad Request");
+            return;
+        }
+        if (state == State.HEAD && txnTimer == null && cum.isReadable()) {
+            armTimer(ctx, engine.config().bodyTimeoutMillis());
+        }
         try {
             process(ctx);
         } catch (IcapProtocolException e) {
@@ -117,10 +133,18 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     }
 
     @Override
+    public void channelWritabilityChanged(ChannelHandlerContext ctx) {
+        if (ctx.channel().isWritable()) {
+            ctx.channel().config().setAutoRead(true);
+        }
+        ctx.fireChannelWritabilityChanged();
+    }
+
+    @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
         if (evt instanceof IdleStateEvent idle) {
-            boolean midBody = state == State.BODY || state == State.STREAM || state == State.DRAIN;
-            if (idle.state() == IdleState.ALL_IDLE || (idle.state() == IdleState.READER_IDLE && midBody)) {
+            boolean midTransaction = state != State.HEAD || (cum != null && cum.isReadable());
+            if (idle.state() == IdleState.ALL_IDLE || (idle.state() == IdleState.READER_IDLE && midTransaction)) {
                 state = State.CLOSED;
                 ctx.close();
             }
@@ -162,12 +186,6 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
                         finishStream(ctx);
                     }
                 }
-                case DRAIN -> {
-                    if (!consume((b, o, n) -> { })) {
-                        return;
-                    }
-                    resetTransaction();
-                }
                 case CLOSED -> {
                     return;
                 }
@@ -203,8 +221,10 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         if (req.method() != serviceMethod) {
             throw new IcapProtocolException(405, "method not allowed on this service");
         }
-        encapNeeded = req.bodySection().offset();
-        if (encapNeeded > engine.config().maxEncapsulatedHeads()) {
+        if (req.method() == IcapRequest.Method.RESPMOD) {
+            armTimer(ctx, engine.config().respmodTimeoutMillis());
+        }
+        if (req.bodySection().offset() > engine.config().maxEncapsulatedHeads()) {
             throw new IcapProtocolException(400, "encapsulated heads too large");
         }
         state = State.ENCAP;
@@ -212,39 +232,51 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     }
 
     private boolean readEncapsulated(ChannelHandlerContext ctx) {
-        if (cum.readableBytes() < encapNeeded) {
+        int needed = req.bodySection().offset();
+        if (cum.readableBytes() < needed) {
             return false;
         }
-        byte[] enc = new byte[encapNeeded];
+        byte[] enc = new byte[needed];
         cum.readBytes(enc);
-        int[] rq = req.headerRange("req-hdr");
-        int[] rs = req.headerRange("res-hdr");
-        if (rq != null) {
-            reqHttpRaw = slice(enc, rq);
-            reqHttp = HeaderBlock.parse(reqHttpRaw, 0, reqHttpRaw.length, MAX_HEAD_LINE, MAX_HTTP_FIELDS, 400);
-        }
-        if (rs != null) {
-            resHttpRaw = slice(enc, rs);
-            resHttp = HeaderBlock.parse(resHttpRaw, 0, resHttpRaw.length, MAX_HEAD_LINE, MAX_HTTP_FIELDS, 400);
-        }
         boolean reqmod = req.method() == IcapRequest.Method.REQMOD;
-        if (reqmod && reqHttp == null) {
-            throw new IcapProtocolException(400, "REQMOD without req-hdr");
-        }
-        if (!reqmod && resHttp == null) {
-            throw new IcapProtocolException(400, "RESPMOD without res-hdr");
+        try {
+            int[] rq = req.headerRange("req-hdr");
+            int[] rs = req.headerRange("res-hdr");
+            if (rq != null) {
+                reqHttpRaw = Arrays.copyOfRange(enc, rq[0], rq[1]);
+                reqHttp = HeaderBlock.parse(reqHttpRaw, 0, reqHttpRaw.length, MAX_HEAD_LINE, MAX_HTTP_FIELDS, 400);
+            }
+            if (rs != null) {
+                resHttpRaw = Arrays.copyOfRange(enc, rs[0], rs[1]);
+                resHttp = HeaderBlock.parse(resHttpRaw, 0, resHttpRaw.length, MAX_HEAD_LINE, MAX_HTTP_FIELDS, 400);
+            }
+            if (reqmod && reqHttp == null) {
+                throw new IcapProtocolException(400, "REQMOD without req-hdr");
+            }
+            if (!reqmod && resHttp == null) {
+                throw new IcapProtocolException(400, "RESPMOD without res-hdr");
+            }
+            requireUnambiguousFraming(reqmod ? reqHttp : resHttp);
+        } catch (IcapProtocolException e) {
+            if (!reqmod) {
+                throw e;
+            }
+            // D-03, D-10: an encapsulated HTTP head the engine cannot read unambiguously is a MALFORMED verdict under
+            // the flow rule, answered now; the rest of the transaction is not read, so the connection closes.
+            flow = reqHttp == null ? unknownFlow() : classify();
+            answerNonVerdictAndClose(ctx, Verdict.MALFORMED, "HTTP_HEAD");
+            return false;
         }
         flow = classify();
-        int preview = req.preview();
-        inPreview = preview >= 0;
+        inPreview = req.preview() >= 0;
         previewMode = inPreview;
-        boolean nullBody = req.bodySection().name().equals("null-body");
         body = new CapturedBody(reqmod ? engine.config().maxReqmodBody() : RESPMOD_WHOLE_BODY);
-        if (nullBody) {
+        if (req.bodySection().name().equals("null-body")) {
             if (reqmod) {
                 decideReqmod(ctx);
             } else {
-                answerRespmodUnmodified(ctx, Verdict.ALLOW, null);
+                answerRespmodUnmodified(ctx, Verdict.ALLOW, isWebSocketUpgrade() ? "WEBSOCKET_INVISIBLE_AFTER_UPGRADE"
+                    : null);
             }
             return true;
         }
@@ -254,20 +286,32 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             return true;
         }
         state = State.BODY;
-        if (reqmod) {
-            armBodyTimer(ctx);
-        }
         return true;
     }
 
-    private Flow classify() {
-        HeaderBlock source = reqHttp;
-        if (source == null) {
-            return new Flow("unknown", Flow.Surface.UNKNOWN, Flow.Step.OTHER);
+    /** One value each for the framing and type headers, never both Content-Length and Transfer-Encoding (D-03). */
+    private static void requireUnambiguousFraming(HeaderBlock http) {
+        for (String name : SINGLE_HEADERS) {
+            if (http.count(name) > 1) {
+                throw new IcapProtocolException(400, "duplicate framing or type header");
+            }
         }
-        String method = firstToken(source.startLine());
-        return engine.classifier().classify(host(source), method, source.first("Content-Type"),
-            source.first("User-Agent"));
+        if (http.count("Content-Length") > 0 && http.count("Transfer-Encoding") > 0) {
+            throw new IcapProtocolException(400, "both Content-Length and Transfer-Encoding");
+        }
+    }
+
+    private Flow classify() {
+        if (reqHttp == null) {
+            return unknownFlow();
+        }
+        String method = firstToken(reqHttp.startLine());
+        return engine.classifier().classify(host(reqHttp), method, reqHttp.first("Content-Type"),
+            reqHttp.first("User-Agent"));
+    }
+
+    private static Flow unknownFlow() {
+        return new Flow("unknown", Flow.Surface.UNKNOWN, Flow.Step.OTHER);
     }
 
     // ---- body end handling ----
@@ -284,7 +328,6 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             }
             return;
         }
-        cancelTimer();
         if (reqmod) {
             decideReqmod(ctx);
         } else {
@@ -304,38 +347,54 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             result = null;
             decision = engine.evaluator().onNonVerdict(Verdict.INSPECTION_FAILED, "INTERNAL");
         }
-        respondReqmod(ctx, decision, result);
         emit(decision.verdict(), decision.reason(), result == null ? List.of() : result.findings());
-        resetTransaction();
-    }
-
-    private void respondReqmod(ChannelHandlerContext ctx, Decision decision, InspectionResult result) {
         Action action = decision.action();
         if (action == Action.REDACT && result != null && result.redactedBody() != null) {
             byte[] redacted = result.redactedBody();
-            HeaderBlock head = reqHttp.rewrite(List.of("Content-Length", "Transfer-Encoding"),
-                List.of(new HeaderBlock.Field("Content-Length", Integer.toString(redacted.length))));
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(
-                IcapResponses.modified(isTag(), "req-hdr", head.toBytes(), redacted, false)));
-            return;
-        }
-        if (action == Action.BLOCK || action == Action.REDACT) {
+            ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.modified(isTag(), "req-hdr",
+                withLength(reqHttp, redacted.length), redacted, false)));
+        } else if (action == Action.BLOCK || action == Action.REDACT) {
             ctx.writeAndFlush(Unpooled.wrappedBuffer(blockResponse(decision.reason())));
+        } else if (!answerUnchanged(ctx, true)) {
             return;
         }
+        resetTransaction();
+    }
+
+    /**
+     * Lets the encapsulated message through unchanged: 204 where RFC 3507 allows it (D-08: inside a preview, or with
+     * {@code Allow: 204}, and never after {@code 100 Continue}); otherwise a 200 echo with {@code Content-Length} set to
+     * the echoed body. A body the engine did not keep in full (oversize) is never echoed: that answers 500 and closes.
+     *
+     * @return false when the connection was closed
+     */
+    private boolean answerUnchanged(ChannelHandlerContext ctx, boolean request) {
         if (may204()) {
             ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.noContent(isTag())));
-        } else {
-            byte[] original = req.bodySection().name().equals("null-body") ? null
-                : java.util.Arrays.copyOf(body.bytes(), body.length());
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(
-                IcapResponses.modified(isTag(), "req-hdr", reqHttpRaw, original, false)));
+            return true;
         }
+        boolean nullBody = req.bodySection().name().equals("null-body");
+        if (!nullBody && (body == null || body.oversize())) {
+            fail(ctx, 500, "Server Error");
+            return false;
+        }
+        HeaderBlock http = request ? reqHttp : resHttp;
+        byte[] original = nullBody ? null : Arrays.copyOf(body.bytes(), body.length());
+        byte[] head = nullBody ? (request ? reqHttpRaw : resHttpRaw) : withLength(http, original.length);
+        ctx.writeAndFlush(Unpooled.wrappedBuffer(
+            IcapResponses.modified(isTag(), request ? "req-hdr" : "res-hdr", head, original, false)));
+        return true;
+    }
+
+    private static byte[] withLength(HeaderBlock http, int length) {
+        return http.rewrite(List.of("Content-Length", "Transfer-Encoding"),
+            List.of(new HeaderBlock.Field("Content-Length", Integer.toString(length)))).toBytes();
     }
 
     private byte[] blockResponse(String reason) {
         boolean api = wantsJson();
-        byte[] page = api ? BlockPages.json(reason, correlation) : BlockPages.html(reason, flow.platform(), correlation);
+        String platform = flow == null ? "bilinmeyen" : flow.platform();
+        byte[] page = api ? BlockPages.json(reason, correlation) : BlockPages.html(reason, platform, correlation);
         String head = "HTTP/1.1 403 Forbidden\r\n"
             + "Content-Type: " + (api ? "application/json; charset=utf-8" : "text/html; charset=utf-8") + "\r\n"
             + "Content-Length: " + page.length + "\r\n"
@@ -343,18 +402,20 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             + "X-RWSAFE-Reason: " + (reason == null ? "policy" : safeToken(reason)) + "\r\n"
             + "X-RWSAFE-Ref: " + correlation + "\r\n"
             + "Connection: close\r\n\r\n";
-        return IcapResponses.modified(isTag(), "res-hdr",
-            head.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1), page, false);
+        return IcapResponses.modified(isTag(), "res-hdr", head.getBytes(StandardCharsets.ISO_8859_1), page, false);
     }
 
     private boolean wantsJson() {
-        String accept = reqHttp == null ? null : reqHttp.first("Accept");
-        String ct = reqHttp == null ? "" : reqHttp.mediaType();
-        if (accept != null && accept.toLowerCase(Locale.ROOT).contains("text/html")) {
+        if (reqHttp == null) {
+            return true;
+        }
+        String accept = reqHttp.first("Accept");
+        String lowerAccept = accept == null ? "" : accept.toLowerCase(Locale.ROOT);
+        if (lowerAccept.contains("text/html")) {
             return false;
         }
-        return ct.contains("json") || (accept != null && accept.toLowerCase(Locale.ROOT).contains("json"))
-            || flow.surface() != Flow.Surface.WEB;
+        return reqHttp.mediaType().contains("json") || lowerAccept.contains("json")
+            || (flow != null && flow.surface() != Flow.Surface.WEB);
     }
 
     // ---- RESPMOD: whole body inside the preview ----
@@ -374,47 +435,49 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             answerRespmodUnmodified(ctx, Verdict.ALLOW, null);
             return;
         }
-        String reason = result.findings().get(0).dataClass().category();
-        byte[] replacement = result.redactedBody() != null ? result.redactedBody()
-            : BlockPages.terminatedText(reason, correlation);
-        HeaderBlock head = resHttp.rewrite(List.of("Content-Length", "Transfer-Encoding", "Content-Encoding"),
-            List.of(new HeaderBlock.Field("Content-Length", Integer.toString(replacement.length))));
+        Decision decision = engine.evaluator().onFindings(result.findings(), result.redactable());
+        String reason = decision.reason();
+        // D-07: a class whose action is BLOCK (a secret) never leaves partially; only REDACT classes are rewritten.
+        boolean rewrite = decision.action() == Action.REDACT && result.redactedBody() != null;
+        byte[] replacement = rewrite ? result.redactedBody() : BlockPages.terminatedText(reason, correlation);
+        List<HeaderBlock.Field> add = rewrite
+            ? List.of(new HeaderBlock.Field("Content-Length", Integer.toString(replacement.length)))
+            : List.of(new HeaderBlock.Field("Content-Length", Integer.toString(replacement.length)),
+                new HeaderBlock.Field("Content-Type", "text/plain; charset=utf-8"));
+        List<String> remove = rewrite ? List.of("Content-Length", "Transfer-Encoding")
+            : List.of("Content-Length", "Transfer-Encoding", "Content-Type");
+        HeaderBlock head = resHttp.rewrite(remove, add);
+        emit(rewrite ? Verdict.REDACT : Verdict.STREAM_ABORTED, reason, result.findings());
         ctx.writeAndFlush(Unpooled.wrappedBuffer(
             IcapResponses.modified(isTag(), "res-hdr", head.toBytes(), replacement, false)));
-        emit(result.redactedBody() != null ? Verdict.REDACT : Verdict.STREAM_ABORTED, reason, result.findings());
         resetTransaction();
     }
 
     private void answerRespmodUnmodified(ChannelHandlerContext ctx, Verdict verdict, String reason) {
-        if (may204()) {
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.noContent(isTag())));
-        } else {
-            byte[] original = req.bodySection().name().equals("null-body") ? null
-                : java.util.Arrays.copyOf(body.bytes(), body.length());
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(
-                IcapResponses.modified(isTag(), "res-hdr", resHttpRaw, original, false)));
-        }
         emit(verdict, reason, List.of());
-        resetTransaction();
+        if (answerUnchanged(ctx, false)) {
+            resetTransaction();
+        }
     }
 
     // ---- RESPMOD: streamed with one window of delay (ICAP spec §4.4) ----
 
     private void beginStream(ChannelHandlerContext ctx) {
         String encoding = resHttp.first("Content-Encoding");
-        streamInspect = encoding == null || encoding.isBlank() || encoding.strip().equalsIgnoreCase("identity");
+        streamInspect = !BodyInspector.encoded(encoding);
         HeaderBlock head = resHttp.rewrite(List.of("Content-Length"), List.of());
         ctx.write(Unpooled.wrappedBuffer(IcapResponses.streamedResponseHead(isTag(), head.toBytes())));
         pending = new ByteArrayOutputStream(engine.config().windowBytes() * 2);
         held = null;
-        overlap = new byte[0];
+        overlapText = "";
         streamedBytes = 0;
+        forwardedBytes = 0;
         if (body != null && body.length() > 0) {
             pending.write(body.bytes(), 0, body.length());
+            streamedBytes = body.length();
         }
         state = State.STREAM;
         drainWindows(ctx, false);
-        ctx.flush();
     }
 
     private void onStreamData(ChannelHandlerContext ctx, byte[] buf, int off, int len) {
@@ -431,7 +494,11 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         while (state == State.STREAM && (pending.size() >= window || (last && pending.size() > 0))) {
             byte[] all = pending.toByteArray();
             int take = Math.min(window, all.length);
-            byte[] current = java.util.Arrays.copyOf(all, take);
+            // Cut on a UTF-8 character boundary, so no window decodes half a character into U+FFFD and splits a value.
+            for (int back = 0; back < 3 && take < all.length && take > 1 && (all[take] & 0xC0) == 0x80; back++) {
+                take--;
+            }
+            byte[] current = Arrays.copyOf(all, take);
             pending.reset();
             pending.write(all, take, all.length - take);
             if (streamInspect && !inspectWindow(current)) {
@@ -440,28 +507,33 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             }
             if (held != null) {
                 ctx.write(Unpooled.wrappedBuffer(IcapResponses.chunk(held, 0, held.length)));
+                forwardedBytes += held.length;
             }
             held = current;
-            int keep = Math.min(engine.config().windowOverlap(), current.length);
-            overlap = java.util.Arrays.copyOfRange(current, current.length - keep, current.length);
         }
         ctx.flush();
+        // D-06: a slow reader pauses the upstream instead of growing the outbound buffer.
+        if (!ctx.channel().isWritable()) {
+            ctx.channel().config().setAutoRead(false);
+        }
     }
 
-    /** True when the window (with the previous overlap) holds no high-confidence finding. */
+    /**
+     * True when the window, prefixed with the normalised tail of the previous one, holds no high-confidence finding. The
+     * overlap is kept in normalised characters, so format characters cannot push a split value out of it (D-06).
+     */
     private boolean inspectWindow(byte[] current) {
-        byte[] text = new byte[overlap.length + current.length];
-        System.arraycopy(overlap, 0, text, 0, overlap.length);
-        System.arraycopy(current, 0, text, overlap.length, current.length);
-        List<Finding> found = engine.inspector().scanText(new String(text, java.nio.charset.StandardCharsets.UTF_8));
+        String normalised = Normaliser.normalise(new String(current, StandardCharsets.UTF_8));
+        String text = overlapText + normalised;
+        List<Finding> found = engine.inspector().scanNormalised(text);
         if (!found.isEmpty()) {
             streamFindings = found;
             return false;
         }
+        int keep = Math.min(engine.config().windowOverlap(), text.length());
+        overlapText = text.substring(text.length() - keep);
         return true;
     }
-
-    private List<Finding> streamFindings = List.of();
 
     private void finishStream(ChannelHandlerContext ctx) {
         drainWindows(ctx, true);
@@ -470,6 +542,7 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         }
         if (held != null) {
             ctx.write(Unpooled.wrappedBuffer(IcapResponses.chunk(held, 0, held.length)));
+            forwardedBytes += held.length;
         }
         ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.lastChunk()));
         emit(streamInspect ? Verdict.ALLOW : Verdict.UNINSPECTABLE, streamInspect ? null : "ENCODED", List.of());
@@ -481,42 +554,65 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         byte[] notice = resHttp.mediaType().equals("text/event-stream")
             ? BlockPages.sseTermination(reason, correlation) : BlockPages.terminatedText(reason, correlation);
         ctx.write(Unpooled.wrappedBuffer(IcapResponses.chunk(notice, 0, notice.length)));
-        ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.lastChunk()));
         emit(Verdict.STREAM_ABORTED, reason, streamFindings);
         held = null;
         pending = null;
-        state = State.DRAIN;
         if (decoder.done()) {
+            ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.lastChunk()));
             resetTransaction();
+        } else {
+            // D-10: the proxy may stop sending the aborted body; the connection cannot be resynchronised, so it closes.
+            state = State.CLOSED;
+            cancelTimer();
+            ctx.writeAndFlush(Unpooled.wrappedBuffer(IcapResponses.lastChunk())).addListener(ChannelFutureListener.CLOSE);
         }
     }
 
     // ---- timers, errors, events ----
 
-    private void armBodyTimer(ChannelHandlerContext ctx) {
+    private void armTimer(ChannelHandlerContext ctx, long millis) {
         cancelTimer();
-        String txn = correlation;
-        bodyTimer = ctx.executor().schedule(() -> onBodyTimeout(ctx, txn),
-            engine.config().bodyTimeoutMillis(), TimeUnit.MILLISECONDS);
+        long seq = ++txnSeq;
+        txnTimer = ctx.executor().schedule(() -> onTimeout(ctx, seq), millis, TimeUnit.MILLISECONDS);
     }
 
-    private void onBodyTimeout(ChannelHandlerContext ctx, String txn) {
-        if (state != State.BODY || !txn.equals(correlation)) {
+    /** OFF2-10, D-10: a REQMOD body still arriving gets INSPECTION_TIMEOUT; any other stalled state closes. */
+    private void onTimeout(ChannelHandlerContext ctx, long seq) {
+        if (seq != txnSeq || state == State.CLOSED) {
             return;
         }
-        Decision decision = engine.evaluator().onNonVerdict(Verdict.INSPECTION_TIMEOUT, "BODY_RECEIVE");
-        byte[] answer = decision.action() == Action.BLOCK ? blockResponse(decision.reason())
-            : IcapResponses.noContent(isTag());
-        emit(decision.verdict(), decision.reason(), List.of());
+        txnTimer = null;
+        if (state == State.BODY && req != null && req.method() == IcapRequest.Method.REQMOD) {
+            answerNonVerdictAndClose(ctx, Verdict.INSPECTION_TIMEOUT, "BODY_RECEIVE");
+            return;
+        }
         state = State.CLOSED;
+        ctx.close();
+    }
+
+    /** A REQMOD non-verdict answered before the transaction is fully read; the connection closes afterwards. */
+    private void answerNonVerdictAndClose(ChannelHandlerContext ctx, Verdict verdict, String reason) {
+        Decision decision = engine.evaluator().onNonVerdict(verdict, reason);
+        emit(decision.verdict(), decision.reason(), List.of());
+        byte[] answer;
+        if (decision.action() == Action.BLOCK) {
+            answer = blockResponse(decision.reason());
+        } else if (may204()) {
+            answer = IcapResponses.noContent(isTag());
+        } else {
+            answer = IcapResponses.error(500, "Server Error", isTag(), true);
+        }
+        state = State.CLOSED;
+        cancelTimer();
         ctx.writeAndFlush(Unpooled.wrappedBuffer(answer)).addListener(ChannelFutureListener.CLOSE);
     }
 
     private void cancelTimer() {
-        if (bodyTimer != null) {
-            bodyTimer.cancel(false);
-            bodyTimer = null;
+        if (txnTimer != null) {
+            txnTimer.cancel(false);
+            txnTimer = null;
         }
+        txnSeq++;
     }
 
     private void fail(ChannelHandlerContext ctx, int status, String phrase) {
@@ -531,14 +627,8 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
      * that ProxySG might fail open (ICAP spec §4.5); before that point it is a 500.
      */
     private void onInternalError(ChannelHandlerContext ctx) {
-        if (req != null && req.method() == IcapRequest.Method.REQMOD && flow != null
-            && (state == State.BODY || state == State.ENCAP)) {
-            Decision decision = engine.evaluator().onNonVerdict(Verdict.INSPECTION_FAILED, "INTERNAL");
-            byte[] answer = decision.action() == Action.BLOCK ? blockResponse(decision.reason())
-                : IcapResponses.noContent(isTag());
-            emit(decision.verdict(), decision.reason(), List.of());
-            state = State.CLOSED;
-            ctx.writeAndFlush(Unpooled.wrappedBuffer(answer)).addListener(ChannelFutureListener.CLOSE);
+        if (req != null && req.method() == IcapRequest.Method.REQMOD && flow != null && state == State.BODY) {
+            answerNonVerdictAndClose(ctx, Verdict.INSPECTION_FAILED, "INTERNAL");
             return;
         }
         fail(ctx, 500, "Server Error");
@@ -549,13 +639,15 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         for (Finding f : findings) {
             counts.merge(f.dataClass().name(), 1, Integer::sum);
         }
-        Flow f = flow == null ? new Flow("unknown", Flow.Surface.UNKNOWN, Flow.Step.OTHER) : flow;
-        long bytes = body == null ? 0 : Math.max(body.totalBytes(), streamedBytes);
+        Flow f = flow == null ? unknownFlow() : flow;
+        long bytes = verdict == Verdict.STREAM_ABORTED && streamedBytes > 0 ? forwardedBytes
+            : body == null ? 0 : Math.max(body.totalBytes(), streamedBytes);
         engine.events().emit(new VerdictEvent(UUID.fromString(correlation), Instant.now(),
             req.method() == IcapRequest.Method.REQMOD ? "reqmod" : "respmod",
             f.platform(), f.surface().name().toLowerCase(Locale.ROOT), f.step().name().toLowerCase(Locale.ROOT),
             verdict, reason, counts, bytes, (System.nanoTime() - startNanos) / 1000,
-            req.head().first("X-Authenticated-User"), req.head().first("X-Client-IP"), "plain_allowlisted",
+            VerdictEvent.bounded(req.head().first("X-Authenticated-User"), 256),
+            VerdictEvent.bounded(req.head().first("X-Client-IP"), 64), "plain_allowlisted",
             engine.snapshot().version(), correlation));
     }
 
@@ -570,12 +662,13 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         decoder = null;
         body = null;
         inPreview = false;
-        continued = false;
         previewMode = false;
+        continued = false;
         pending = null;
         held = null;
-        overlap = null;
+        overlapText = null;
         streamedBytes = 0;
+        forwardedBytes = 0;
         streamFindings = List.of();
         if (state != State.CLOSED) {
             state = State.HEAD;
@@ -600,13 +693,14 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         return decoder.done();
     }
 
-    /** RFC 3507 §4.6: 204 inside a preview, or anywhere when the client sent {@code Allow: 204}. */
+    /** RFC 3507 §4.6 and ICAP spec §4.4: 204 only before any {@code 100 Continue}, inside a preview or with Allow 204. */
     private boolean may204() {
-        return (previewMode && !continued) || req.allows204();
+        return req != null && !continued && (previewMode || req.allows204());
     }
 
+    /** The exact status-code token of the response start line (D-07). */
     private boolean isWebSocketUpgrade() {
-        return resHttp != null && resHttp.startLine().contains(" 101 ");
+        return resHttp != null && secondToken(resHttp.startLine()).equals("101");
     }
 
     private String isTag() {
@@ -623,19 +717,19 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         return null;
     }
 
+    /** RFC 9112 §3.2.2: an absolute request target's authority wins over Host (D-12). */
     private static String host(HeaderBlock http) {
-        String h = http.first("Host");
-        if (h != null) {
-            return h;
-        }
         String target = secondToken(http.startLine());
         int scheme = target.indexOf("://");
-        if (scheme < 0) {
-            return "";
+        if (scheme > 0) {
+            int start = scheme + 3;
+            int slash = target.indexOf('/', start);
+            String authority = slash < 0 ? target.substring(start) : target.substring(start, slash);
+            int at = authority.lastIndexOf('@');
+            return at >= 0 ? authority.substring(at + 1) : authority;
         }
-        int start = scheme + 3;
-        int slash = target.indexOf('/', start);
-        return slash < 0 ? target.substring(start) : target.substring(start, slash);
+        String h = http.first("Host");
+        return h == null ? "" : h;
     }
 
     private static String firstToken(String line) {
@@ -650,10 +744,6 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         }
         int b = line.indexOf(' ', a + 1);
         return b < 0 ? line.substring(a + 1) : line.substring(a + 1, b);
-    }
-
-    private static byte[] slice(byte[] src, int[] range) {
-        return java.util.Arrays.copyOfRange(src, range[0], range[1]);
     }
 
     private static String safeToken(String s) {

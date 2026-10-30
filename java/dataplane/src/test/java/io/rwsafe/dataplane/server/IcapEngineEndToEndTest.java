@@ -33,7 +33,7 @@ class IcapEngineEndToEndTest {
     @BeforeAll
     static void start() throws InterruptedException {
         EventSink sink = EVENTS::add;
-        EngineConfig config = new EngineConfig(64 * 1024, 128 * 1024, 1024, 128, 400, 30, 300);
+        EngineConfig config = new EngineConfig(64 * 1024, 128 * 1024, 1024, 128, 400, 3_000, 30, 300);
         server = new IcapServer(new IcapEngine(Snapshots.builtinDevelopment(), DetectorSet.standard(), sink, config));
         port = server.start("127.0.0.1", 0);
     }
@@ -319,5 +319,216 @@ class IcapEngineEndToEndTest {
         }
         assertEquals(sse.toString(), got.get(0));
         assertEquals(Verdict.ALLOW, awaitEvent().verdict());
+    }
+
+    // ---- PR 11 second review (Argon) findings ----
+
+    private static Frames.Http rawHttp(String head, String body) {
+        byte[] b = body.getBytes(StandardCharsets.UTF_8);
+        return Frames.http(head.replace("{{LEN}}", Integer.toString(b.length)), b);
+    }
+
+    private static IcapTestClient.Response once(byte[] frame) throws Exception {
+        try (IcapTestClient c = new IcapTestClient(port)) {
+            c.write(frame);
+            return c.read();
+        }
+    }
+
+    /** D-01: the finding limit is a non-verdict that blocks, never a partial redaction. */
+    @Test
+    void findingLimitBlocksInsteadOfPartiallyRedacting() throws Exception {
+        StringBuilder prompt = new StringBuilder("synthetic ");
+        for (int i = 0; i < 1001; i++) {
+            prompt.append(Synthetic.tckn(i)).append(' ');
+        }
+        String iban = Synthetic.iban(5);
+        prompt.append(iban);
+        IcapTestClient.Response r = once(Frames.reqmod(Frames.fixture("claude/api/messages.http", prompt.toString()),
+            -1, true));
+        assertTrue(r.httpHead().startsWith("HTTP/1.1 403"));
+        assertFalse(r.bodyText().contains(iban));
+        VerdictEvent e = awaitEvent();
+        assertEquals(Verdict.UNINSPECTABLE, e.verdict());
+        assertEquals("FINDING_LIMIT", e.reason());
+    }
+
+    /** D-02: a percent-encoded identifier in a form body is decoded and found; form bodies are not rewritable. */
+    @Test
+    void formEncodedIdentifierIsBlocked() throws Exception {
+        String tckn = Synthetic.tckn(9);
+        StringBuilder enc = new StringBuilder();
+        for (char c : tckn.toCharArray()) {
+            enc.append('%').append(Integer.toHexString(c).toUpperCase(java.util.Locale.ROOT));
+        }
+        IcapTestClient.Response r = once(Frames.reqmod(rawHttp("POST /batchexecute HTTP/1.1\nHost: gemini.google.com\n"
+            + "Content-Type: application/x-www-form-urlencoded\nContent-Length: {{LEN}}\n", "f.req=synthetic+" + enc),
+            -1, true));
+        assertTrue(r.httpHead().startsWith("HTTP/1.1 403"));
+        assertEquals(Verdict.BLOCK, awaitEvent().verdict());
+    }
+
+    /** D-02: bodies the engine cannot read yet are UNINSPECTABLE, which blocks on the fail-closed flow. */
+    @Test
+    void unreadableBodiesAreUninspectable() throws Exception {
+        record Case(String contentType, byte[] body, String reason) {
+        }
+        byte[] gzip = {(byte) 0x1f, (byte) 0x8b, 8, 0, 0, 0, 0, 0, 0, 3, 's', 'y', 'n'};
+        List<Case> cases = List.of(
+            new Case("multipart/form-data; boundary=synthetic", "--synthetic\r\n\r\nx\r\n--synthetic--"
+                .getBytes(StandardCharsets.US_ASCII), "MULTIPART"),
+            new Case("text/plain", gzip, "BINARY"),
+            new Case("application/octet-stream", "synthetic".getBytes(StandardCharsets.US_ASCII), "UNSUPPORTED_MEDIA"),
+            new Case("text/plain", new byte[] {'s', (byte) 0xc3, (byte) 0x28, 'y'}, "BINARY"));
+        for (Case c : cases) {
+            Frames.Http http = Frames.http("POST /upload HTTP/1.1\nHost: chatgpt.com\nContent-Type: " + c.contentType()
+                + "\nContent-Length: " + c.body().length + "\n", c.body());
+            assertTrue(once(Frames.reqmod(http, -1, true)).httpHead().startsWith("HTTP/1.1 403"), c.reason());
+            VerdictEvent e = awaitEvent();
+            assertEquals(Verdict.UNINSPECTABLE, e.verdict(), c.reason());
+            assertEquals(c.reason(), e.reason());
+        }
+    }
+
+    /** D-03: duplicate framing or type headers are MALFORMED under the flow rule; the connection closes. */
+    @Test
+    void duplicateFramingHeadersAreMalformed() throws Exception {
+        Frames.Http http = rawHttp("POST /v1/messages HTTP/1.1\nHost: api.anthropic.com\nContent-Type: text/plain\n"
+            + "Content-Type: application/json\nContent-Length: {{LEN}}\n", "{\"synthetic\":true}");
+        try (IcapTestClient c = new IcapTestClient(port)) {
+            c.write(Frames.reqmod(http, -1, true));
+            assertTrue(c.read().httpHead().startsWith("HTTP/1.1 403"));
+            assertTrue(c.closedByServer());
+        }
+        assertEquals(Verdict.MALFORMED, awaitEvent().verdict());
+    }
+
+    /** D-03: any non-identity token in Content-Encoding makes the body UNINSPECTABLE. */
+    @Test
+    void stackedContentEncodingIsUninspectable() throws Exception {
+        Frames.Http http = rawHttp("POST /v1/messages HTTP/1.1\nHost: api.anthropic.com\nContent-Type: application/json\n"
+            + "Content-Encoding: identity, gzip\nContent-Length: {{LEN}}\n", "{\"synthetic\":true}");
+        assertTrue(once(Frames.reqmod(http, -1, true)).httpHead().startsWith("HTTP/1.1 403"));
+        assertEquals("ENCODED", awaitEvent().reason());
+    }
+
+    /** D-04: an identifier sent as an unquoted JSON number is a leaf too. */
+    @Test
+    void identifierAsJsonNumberIsRedacted() throws Exception {
+        String tckn = Synthetic.tckn(13);
+        Frames.Http http = rawHttp("POST /v1/messages HTTP/1.1\nHost: api.anthropic.com\nContent-Type: application/json\n"
+            + "Content-Length: {{LEN}}\n", "{\"synthetic\":true,\"customer\":" + tckn + "}");
+        IcapTestClient.Response r = once(Frames.reqmod(http, -1, true));
+        assertFalse(r.bodyText().contains(tckn));
+        assertTrue(r.bodyText().contains("\"customer\":\"[REDACTED:TCKN]\""));
+    }
+
+    /** D-06: format characters between the halves of a value cannot push it out of the window overlap. */
+    @Test
+    void valueSplitAcrossWindowsWithFormatPaddingIsCaught() throws Exception {
+        String tckn = Synthetic.tckn(31);
+        String filler = "synthetic ".repeat(95);
+        String text = filler + tckn.substring(0, 6) + "\u200b".repeat(700) + tckn.substring(6) + " synthetic end";
+        byte[] body = ("data: " + text + "\n\n").getBytes(StandardCharsets.UTF_8);
+        Frames.Http request = Frames.fixture("openai/web/chat.http", "synthetic hi");
+        try (IcapTestClient c = new IcapTestClient(port)) {
+            c.write(Frames.respmod(request, "HTTP/1.1 200 OK\nContent-Type: text/event-stream\n", body, -1));
+            IcapTestClient.Response r = c.read();
+            assertTrue(r.bodyText().contains("rwsafe_stream_terminated"));
+            assertFalse(r.bodyText().contains(tckn.substring(6)));
+        }
+        assertEquals(Verdict.STREAM_ABORTED, awaitEvent().verdict());
+    }
+
+    /** D-07: " 101 " inside a reason phrase is not an upgrade; the body is inspected. */
+    @Test
+    void reasonPhraseContaining101IsNotAnUpgrade() throws Exception {
+        byte[] body = ("synthetic " + Synthetic.tckn(2)).getBytes(StandardCharsets.UTF_8);
+        Frames.Http request = Frames.fixture("openai/web/chat.http", "synthetic hi");
+        IcapTestClient.Response r = once(Frames.respmod(request, "HTTP/1.1 200 OK 101 synthetic\n"
+            + "Content-Type: text/plain\nContent-Length: " + body.length + "\n", body, 4096));
+        assertEquals(200, r.status());
+        assertTrue(r.bodyText().contains("Yanıt kesildi"));
+    }
+
+    /** D-07: a secret in a previewed response is never partially forwarded. */
+    @Test
+    void secretInAPreviewedJsonResponseReplacesTheWholeBody() throws Exception {
+        String pem = "-----BEGIN RSA " + "PRIVATE KEY-----\nsyntheticbodyline\n-----END RSA " + "PRIVATE KEY-----";
+        byte[] body = ("{\"text\":\"" + pem.replace("\n", "\\n") + "\"}").getBytes(StandardCharsets.UTF_8);
+        Frames.Http request = Frames.fixture("claude/api/messages.http", "synthetic hi");
+        IcapTestClient.Response r = once(Frames.respmod(request, "HTTP/1.1 200 OK\nContent-Type: application/json\n"
+            + "Content-Length: " + body.length + "\n", body, 4096));
+        assertFalse(r.bodyText().contains("syntheticbodyline"));
+        assertTrue(r.httpHead().contains("text/plain"));
+    }
+
+    /** D-08: without a preview and without Allow 204, an allow is a 200 echo with a correct Content-Length. */
+    @Test
+    void allowWithout204PermissionEchoesWithCorrectLength() throws Exception {
+        Frames.Http http = Frames.fixture("claude/api/messages.http", "synthetic hi");
+        IcapTestClient.Response r = once(Frames.reqmod(http, -1, false));
+        assertEquals(200, r.status());
+        assertTrue(r.httpHead().contains("Content-Length: " + r.body().length));
+        assertTrue(r.bodyText().contains("synthetic hi"));
+    }
+
+    /** D-08: after 100 Continue there is no 204 unless the client sent Allow 204. */
+    @Test
+    void no204AfterContinueWithoutAllow() throws Exception {
+        String prompt = "synthetic filler ".repeat(300);
+        Frames.Http http = Frames.fixture("claude/api/messages.http", prompt);
+        try (IcapTestClient c = new IcapTestClient(port)) {
+            c.write(Frames.reqmod(http, 4096, false));
+            assertEquals(100, c.read().status());
+            c.write(Frames.rest(http.body(), 4096));
+            IcapTestClient.Response r = c.read();
+            assertEquals(200, r.status());
+            assertEquals(http.body().length, r.body().length);
+        }
+    }
+
+    /** D-10: a head that never completes is closed by the transaction deadline. */
+    @Test
+    void stalledHeadIsClosed() throws Exception {
+        try (IcapTestClient c = new IcapTestClient(port)) {
+            c.write("REQMOD icap://icap.example.invalid/reqmod-ai ICAP/1.0\r\nHost: synth".getBytes(StandardCharsets.US_ASCII));
+            assertTrue(c.closedByServer());
+        }
+    }
+
+    /** D-10: an abort before the proxy finished sending closes the connection instead of resynchronising. */
+    @Test
+    void abortMidStreamClosesTheConnection() throws Exception {
+        String key = Synthetic.awsKey();
+        byte[] first = ("data: synthetic " + key + "\n\n").getBytes(StandardCharsets.UTF_8);
+        byte[] padded = new byte[2048];
+        System.arraycopy(first, 0, padded, 0, first.length);
+        java.util.Arrays.fill(padded, first.length, padded.length, (byte) ' ');
+        Frames.Http request = Frames.fixture("openai/web/chat.http", "synthetic hi");
+        byte[] frame = Frames.respmod(request, "HTTP/1.1 200 OK\nContent-Type: text/event-stream\n", padded, -1);
+        try (IcapTestClient c = new IcapTestClient(port)) {
+            c.write(java.util.Arrays.copyOf(frame, frame.length - 5));
+            IcapTestClient.Response r = c.read();
+            assertTrue(r.bodyText().contains("rwsafe_stream_terminated"));
+            assertTrue(c.closedByServer());
+        }
+    }
+
+    /** D-12: the absolute request target decides the platform, not a conflicting Host header. */
+    @Test
+    void absoluteTargetWinsOverHost() throws Exception {
+        Frames.Http http = rawHttp("POST https://api.anthropic.com./v1/messages HTTP/1.1\nHost: other.example.invalid\n"
+            + "Content-Type: application/json\nContent-Length: {{LEN}}\n", "{\"synthetic\":true}");
+        assertEquals(204, once(Frames.reqmod(http, -1, true)).status());
+        assertEquals("claude", awaitEvent().platform());
+    }
+
+    @Test
+    void eventToStringHidesIdentity() throws Exception {
+        once(Frames.reqmodWithIdentity(Frames.fixture("openai/web/chat.http", "synthetic hi"), "U1lOVEhFVElD", "192.0.2.10"));
+        String printed = awaitEvent().toString();
+        assertFalse(printed.contains("U1lOVEhFVElD"));
+        assertFalse(printed.contains("192.0.2.10"));
     }
 }

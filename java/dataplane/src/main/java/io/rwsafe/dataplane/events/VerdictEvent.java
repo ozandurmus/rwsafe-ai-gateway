@@ -20,4 +20,18 @@ public record VerdictEvent(UUID eventId, Instant receivedAt, String service, Str
     public VerdictEvent {
         findings = Map.copyOf(findings);
     }
+
+    /** Proxy claims are attacker-influenced: cut to a bound before they travel (PR 11 review D-12). */
+    public static String bounded(String value, int max) {
+        if (value == null) {
+            return null;
+        }
+        return value.length() <= max ? value : value.substring(0, max);
+    }
+
+    /** Never prints the identity claim or the client address (AGENTS.md 4.14, D-12). */
+    @Override
+    public String toString() {
+        return "VerdictEvent[" + eventId + ", " + service + ", " + platform + ", " + verdict + ", " + reason + "]";
+    }
 }

@@ -19,8 +19,8 @@ class JsonLeafScannerFuzzTest {
             List<JsonLeaf> leaves = JsonLeafScanner.scan(input, input.length);
             int last = -1;
             for (JsonLeaf leaf : leaves) {
-                if (leaf.rawStart() <= last || leaf.rawEnd() > input.length || input[leaf.rawStart()] != '"'
-                    || input[leaf.rawEnd() - 1] != '"') {
+                boolean framed = leaf.number() || (input[leaf.rawStart()] == '"' && input[leaf.rawEnd() - 1] == '"');
+                if (leaf.rawStart() <= last || leaf.rawEnd() > input.length || !framed) {
                     throw new AssertionError("leaf span out of order or out of bounds");
                 }
                 last = leaf.rawStart();

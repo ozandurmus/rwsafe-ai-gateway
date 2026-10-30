@@ -1,5 +1,7 @@
 package io.rwsafe.dataplane.icap;
 
+import io.rwsafe.platform.content.BodyBearing;
+import io.rwsafe.platform.content.BodyContent;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -8,8 +10,10 @@ import java.util.Locale;
 /**
  * A start line plus header fields, parsed strictly (CRLF line ends, no obsolete line folding, bounded line length and
  * field count). Used for the ICAP head and for the encapsulated HTTP heads. Bytes are read as ISO-8859-1 so every octet
- * survives a rewrite unchanged.
+ * survives a rewrite unchanged. Header values can carry cookies, credentials and identity, so the type is body-bearing
+ * (AGENTS.md 4.14).
  */
+@BodyBearing
 public final class HeaderBlock {
 
     /** One header field; the value is trimmed of surrounding whitespace. */
@@ -78,7 +82,11 @@ public final class HeaderBlock {
                 if (fields.size() >= maxFields) {
                     throw new IcapProtocolException(errorStatus, "too many header fields");
                 }
-                fields.add(new Field(name, line.substring(colon + 1).strip()));
+                String value = Ows.trim(line.substring(colon + 1));
+                if (Ows.hasControl(value)) {
+                    throw new IcapProtocolException(errorStatus, "control character in a header value");
+                }
+                fields.add(new Field(name, value));
             }
             lineStart = i + 2;
             i++;
@@ -89,15 +97,18 @@ public final class HeaderBlock {
         return new HeaderBlock(start, List.copyOf(fields));
     }
 
+    @BodyContent
     public String startLine() {
         return startLine;
     }
 
+    @BodyContent
     public List<Field> fields() {
         return fields;
     }
 
     /** The first value of a header, case-insensitive, or null. */
+    @BodyContent
     public String first(String name) {
         for (Field f : fields) {
             if (f.name().equalsIgnoreCase(name)) {
@@ -145,6 +156,7 @@ public final class HeaderBlock {
         return new HeaderBlock(startLine, List.copyOf(out));
     }
 
+    @BodyContent
     public byte[] toBytes() {
         StringBuilder s = new StringBuilder(startLine).append("\r\n");
         for (Field f : fields) {
@@ -170,6 +182,11 @@ public final class HeaderBlock {
             return "";
         }
         int semi = ct.indexOf(';');
-        return (semi >= 0 ? ct.substring(0, semi) : ct).strip().toLowerCase(Locale.ROOT);
+        return Ows.trim(semi >= 0 ? ct.substring(0, semi) : ct).toLowerCase(Locale.ROOT);
+    }
+
+    @Override
+    public String toString() {
+        return "HeaderBlock[redacted]";
     }
 }

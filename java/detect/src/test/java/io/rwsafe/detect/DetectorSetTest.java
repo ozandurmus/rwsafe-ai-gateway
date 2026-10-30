@@ -81,4 +81,26 @@ class DetectorSetTest {
         long ms = (System.nanoTime() - t0) / 1_000_000;
         assertTrue(ms < 5_000, "scan took " + ms + " ms");
     }
+
+    /** PR 11 review D-05. */
+    @Test
+    void cardFollowedByExpiryAndLowercaseIban() {
+        String card = Synthetic.card(8);
+        assertTrue(classes("synthetic " + card + " 12 27 cvv").contains(DataClass.PAYMENT_CARD));
+        assertTrue(classes("synthetic " + card.substring(0, 4) + "-" + card.substring(4, 8) + "-" + card.substring(8, 12)
+            + "-" + card.substring(12) + "-12-27").contains(DataClass.PAYMENT_CARD));
+        assertEquals(List.of(DataClass.TR_IBAN), classes("synthetic " + Synthetic.iban(4).toLowerCase()));
+    }
+
+    /** PR 11 review D-01: every detector stops at the limit, and the limit is visible to the caller. */
+    @Test
+    void findingLimitIsReported() {
+        StringBuilder s = new StringBuilder("synthetic ");
+        for (int i = 0; i < 1200; i++) {
+            s.append(Synthetic.tckn(i)).append(' ');
+        }
+        List<Finding> found = set.scan(s.toString());
+        assertTrue(DetectorSet.overLimit(found));
+        assertEquals(DetectorSet.MAX_FINDINGS, found.size());
+    }
 }

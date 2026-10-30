@@ -22,6 +22,9 @@ public final class TcknDetector implements Detector {
             }
             if (i - start == 11 && DigitRuns.boundaryBefore(text, start) && DigitRuns.boundaryAfter(text, i)
                 && valid(text, start)) {
+                if (out.size() >= DetectorSet.MAX_FINDINGS) {
+                    return;
+                }
                 out.add(new Finding(DataClass.TCKN, start, i));
             }
         }

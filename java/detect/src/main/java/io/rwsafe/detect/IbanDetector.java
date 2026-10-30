@@ -5,8 +5,8 @@ import io.rwsafe.platform.verdict.Finding;
 import java.util.List;
 
 /**
- * Turkish IBANs: {@code TR} plus 24 digits, written compact or in groups separated by single spaces, valid under ISO 13616
- * mod-97. The range covers the IBAN as written, spaces included.
+ * Turkish IBANs: {@code TR} (any case) plus 24 digits, written compact or in groups separated by single spaces, valid
+ * under ISO 13616 mod-97. The range covers the IBAN as written, spaces included.
  */
 public final class IbanDetector implements Detector {
 
@@ -16,7 +16,9 @@ public final class IbanDetector implements Detector {
     public void scan(String text, List<Finding> out) {
         int n = text.length();
         for (int i = 0; i + 1 < n; i++) {
-            if (text.charAt(i) != 'T' || text.charAt(i + 1) != 'R' || !DigitRuns.boundaryBefore(text, i)) {
+            char t = text.charAt(i);
+            char r = text.charAt(i + 1);
+            if ((t != 'T' && t != 't') || (r != 'R' && r != 'r') || !DigitRuns.boundaryBefore(text, i)) {
                 continue;
             }
             char[] digits = new char[DIGITS];
@@ -34,6 +36,9 @@ public final class IbanDetector implements Detector {
                 }
             }
             if (count == DIGITS && DigitRuns.boundaryAfter(text, j) && valid(digits)) {
+                if (out.size() >= DetectorSet.MAX_FINDINGS) {
+                    return;
+                }
                 out.add(new Finding(DataClass.TR_IBAN, i, j));
                 i = j - 1;
             }

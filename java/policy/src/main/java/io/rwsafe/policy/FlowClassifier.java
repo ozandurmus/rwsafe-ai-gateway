@@ -53,8 +53,13 @@ public final class FlowClassifier {
         return Flow.Step.OTHER;
     }
 
+    /** Drops the port and a trailing root dot, so {@code chatgpt.com.:443} classifies like {@code chatgpt.com} (D-12). */
     private static String stripPort(String host) {
         int colon = host.lastIndexOf(':');
-        return colon > 0 && host.indexOf(']') < colon ? host.substring(0, colon) : host;
+        String h = colon > 0 && host.indexOf(']') < colon ? host.substring(0, colon) : host;
+        while (h.endsWith(".")) {
+            h = h.substring(0, h.length() - 1);
+        }
+        return h;
     }
 }

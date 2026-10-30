@@ -62,7 +62,11 @@ public final class IcapRequest {
         if (head.count("Preview") > 1) {
             throw new IcapProtocolException(400, "duplicate Preview header");
         }
-        return new IcapRequest(method, path, head, sections, previewOf(head));
+        int preview = previewOf(head);
+        if (preview >= 0 && sections.get(sections.size() - 1).name().equals("null-body")) {
+            throw new IcapProtocolException(400, "Preview on a message without a body");
+        }
+        return new IcapRequest(method, path, head, sections, preview);
     }
 
     private static String servicePath(String uri) {
@@ -94,16 +98,16 @@ public final class IcapRequest {
         List<Section> out = new ArrayList<>();
         int last = -1;
         for (String entry : Tokens.split(value, ',')) {
-            String e = entry.strip();
+            String e = Ows.trim(entry);
             int eq = e.indexOf('=');
             if (eq <= 0) {
                 throw new IcapProtocolException(400, "malformed Encapsulated entry");
             }
-            String name = e.substring(0, eq).strip().toLowerCase(Locale.ROOT);
+            String name = Ows.trim(e.substring(0, eq)).toLowerCase(Locale.ROOT);
             if (!allowed.contains(name)) {
                 throw new IcapProtocolException(400, "Encapsulated section not allowed for this method");
             }
-            int offset = parseOffset(e.substring(eq + 1).strip());
+            int offset = parseOffset(Ows.trim(e.substring(eq + 1)));
             if (offset < last || (offset == last && !out.isEmpty())) {
                 throw new IcapProtocolException(400, "Encapsulated offsets not increasing");
             }
@@ -122,6 +126,18 @@ public final class IcapRequest {
             if (out.get(i).name().endsWith("-body")) {
                 throw new IcapProtocolException(400, "body section before a header section");
             }
+        }
+        int rank = -1;
+        for (Section sec : out) {
+            int r = switch (sec.name()) {
+                case "req-hdr" -> 0;
+                case "res-hdr" -> 1;
+                default -> 2;
+            };
+            if (r <= rank) {
+                throw new IcapProtocolException(400, "Encapsulated sections out of RFC 3507 order");
+            }
+            rank = r;
         }
         if (out.get(0).offset() != 0) {
             throw new IcapProtocolException(400, "first Encapsulated section not at offset 0");
@@ -186,7 +202,7 @@ public final class IcapRequest {
         if (p == null) {
             return -1;
         }
-        int v = parseOffset(p.strip());
+        int v = parseOffset(Ows.trim(p));
         if (v > 64 * 1024) {
             throw new IcapProtocolException(400, "Preview larger than 64 KiB");
         }
@@ -200,7 +216,7 @@ public final class IcapRequest {
             return false;
         }
         for (String t : Tokens.split(a, ',')) {
-            if (t.strip().equals("204")) {
+            if (Ows.trim(t).equals("204")) {
                 return true;
             }
         }
