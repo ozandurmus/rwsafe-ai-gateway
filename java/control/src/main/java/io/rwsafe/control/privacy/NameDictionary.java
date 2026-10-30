@@ -21,17 +21,31 @@ final class NameDictionary {
 
     static final int GIVEN = 1;
     static final int SURNAME = 2;
-    /** A name that is also an everyday word: never masked alone (the false-positive allow list). */
+    /**
+     * A name that is also an everyday word (the false-positive allow list): in lower case and alone it stays a word; in a
+     * name position (capitalised, next to another name word, after or before a title) it is a name.
+     */
     static final int COMMON = 4;
 
     /**
-     * Case and possessive endings written without an apostrophe, in folded form (vowel harmony folds to these). Plural
-     * and derivational endings are not here on purpose: they turn names into ordinary words (Osmanlı).
+     * Case and possessive endings written without an apostrophe, in folded form (vowel harmony folds to these), simple
+     * and compound (possessive plus case: {@code -ına}, {@code -ından}, {@code -ıyla}, {@code -ninki}). Plural and
+     * derivational endings are not here on purpose: they turn names into ordinary words (Osmanlı).
      */
     private static final List<String> SUFFIXES = List.of(
-        "ndan", "nden", "nin", "nun", "dan", "den", "tan", "ten", "nda", "nde", "yla", "yle", "gil",
-        "in", "un", "ya", "ye", "yi", "yu", "ni", "nu", "da", "de", "ta", "te", "la", "le");
-    private static final String SINGLE_VOWEL_SUFFIXES = "aeiu";
+        "ninki", "nunki", "inki", "unki", "indan", "inden", "undan", "ndan", "nden", "inda", "inde", "unda", "iyla",
+        "iyle", "uyla", "ina", "ine", "una", "ini", "unu", "nin", "nun", "dan", "den", "tan", "ten", "nda", "nde", "yla",
+        "yle", "gil", "in", "un", "ya", "ye", "yi", "yu", "ni", "nu", "da", "de", "ta", "te", "la", "le", "a", "e", "i",
+        "u");
+    /** A stem this short (two or three letters) counts only next to another name word or capitalised. */
+    static final int SHORT_STEM = 3;
+
+    /**
+     * A dictionary word found in a folded word: its key (the folded name), its flags, whether a case ending was cut
+     * without an apostrophe, and whether the name is {@link #SHORT_STEM} letters or fewer.
+     */
+    record Match(String key, int flags, boolean suffixed, boolean shortStem) {
+    }
 
     private static final NameDictionary STANDARD = load(NameDictionary.class.getClassLoader(),
         "io/rwsafe/control/privacy/names/");
@@ -87,26 +101,65 @@ final class NameDictionary {
     }
 
     /**
-     * The name stem of a folded word written with a case ending and no apostrophe ({@code ayşenin}, {@code mehmete}),
-     * or null. A stem keeps at least three letters, four before a one-vowel ending, so short words stay words.
+     * The name in a folded word. The word itself first (also with a softened final consonant restored: {@code mehmed},
+     * {@code burag}); with {@code apostrophe} the ending was already cut, so nothing more is stripped. Otherwise every
+     * case ending that leaves a stem of two letters or more is tried and the best stem wins: a name that is not an
+     * everyday word before one that is, then the longest ({@code gülaya} is Gülay, not Gül; {@code aysele} is Aysel).
      */
-    String stem(String folded) {
+    Match match(String folded, boolean apostrophe) {
+        String exact = lookup(folded);
+        if (exact != null) {
+            return new Match(exact, flags(exact), false, exact.length() <= SHORT_STEM);
+        }
+        if (apostrophe) {
+            return null;
+        }
+        String best = null;
         for (String suffix : SUFFIXES) {
-            if (folded.length() - suffix.length() >= 3 && folded.endsWith(suffix)) {
-                String stem = folded.substring(0, folded.length() - suffix.length());
-                if (flags(stem) != 0) {
-                    return stem;
-                }
+            int stemLength = folded.length() - suffix.length();
+            if (stemLength < 2 || !folded.endsWith(suffix)) {
+                continue;
+            }
+            String stem = lookup(folded.substring(0, stemLength));
+            if (stem != null && better(stem, best)) {
+                best = stem;
             }
         }
-        int last = folded.length() - 1;
-        if (last >= 4 && SINGLE_VOWEL_SUFFIXES.indexOf(folded.charAt(last)) >= 0) {
-            String stem = folded.substring(0, last);
-            if (flags(stem) != 0) {
-                return stem;
-            }
+        return best == null ? null : new Match(best, flags(best), true, best.length() <= SHORT_STEM);
+    }
+
+    /** The dictionary key for {@code stem}, trying a softened final consonant (b, d, g for p, t, k) as well. */
+    private String lookup(String stem) {
+        if (flags(stem) != 0) {
+            return stem;
         }
-        return null;
+        if (stem.length() < 2) {
+            return null;
+        }
+        char last = stem.charAt(stem.length() - 1);
+        char hard = switch (last) {
+            case 'b' -> 'p';
+            case 'd' -> 't';
+            case 'g' -> 'k';
+            default -> 0;
+        };
+        if (hard == 0) {
+            return null;
+        }
+        String restored = stem.substring(0, stem.length() - 1) + hard;
+        return flags(restored) != 0 ? restored : null;
+    }
+
+    private boolean better(String candidate, String best) {
+        if (best == null) {
+            return true;
+        }
+        boolean candidateCommon = (flags(candidate) & COMMON) != 0;
+        boolean bestCommon = (flags(best) & COMMON) != 0;
+        if (candidateCommon != bestCommon) {
+            return !candidateCommon;
+        }
+        return candidate.length() > best.length();
     }
 
     /** The folded form: NFC, lower case, every i form as {@code i}, Turkish diacritics and combining marks dropped. */

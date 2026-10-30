@@ -11,7 +11,6 @@ import io.rwsafe.persistence.StoredVerdictEvent;
 import io.rwsafe.platform.verdict.Verdict;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -32,7 +31,6 @@ import java.util.function.Function;
 public final class SiemRecords {
 
     public static final String WITHHELD = "[WITHHELD]";
-    static final int MAX_DIGIT_RUN = 7;
     private static final DetectorSet DETECTORS = DetectorSet.standard();
 
     private final Function<String, String> accountPseudonym;
@@ -183,15 +181,14 @@ public final class SiemRecords {
         }
     }
 
-    /** A vocabulary token as ingestion accepts it (letters, digits, {@code _}, {@code -}) without an estate term. */
     /**
-     * A vocabulary token as ingestion accepts it (letters, digits, {@code _}, {@code -}) that holds no estate term, no
-     * Tier-1 detector finding (identifier or secret shape) and no run of {@value #MAX_DIGIT_RUN} or more digits (a phone
-     * number, an account or customer number no detector knows): PR 23 confirmation review D-13.
+     * A vocabulary token as ingestion accepts it (letters, digits, {@code _}, {@code -}) that holds no estate term and no
+     * identifier shape: the shared {@link IdentifierCheck#identifierShape} (a Tier-1 detector finding, or six or more
+     * digits glued or grouped across a space, hyphen, dot or underscore; PR 23 confirmation review D-13, PR 26 review
+     * D-06).
      */
     private String vocabulary(String s, int max) {
-        return s != null && plain(s, max) && !estate(s) && longestDigitRun(s) < MAX_DIGIT_RUN
-            && DETECTORS.scan(s).isEmpty() ? s : WITHHELD;
+        return s != null && plain(s, max) && !estate(s) && !IdentifierCheck.identifierShape(s) ? s : WITHHELD;
     }
 
     /**
@@ -218,16 +215,6 @@ public final class SiemRecords {
         }
     }
 
-    static int longestDigitRun(String s) {
-        int best = 0;
-        int run = 0;
-        for (int i = 0; i < s.length(); i++) {
-            run = Character.isDigit(s.charAt(i)) ? run + 1 : 0;
-            best = Math.max(best, run);
-        }
-        return best;
-    }
-
     /** An exported actor: the ledger's actor shape and no estate term in a {@code system:} name. */
     private boolean exportableActor(String s) {
         return actor(s) && !estate(s);
@@ -237,15 +224,12 @@ public final class SiemRecords {
         return allowed.contains(s) ? s : WITHHELD;
     }
 
-    /** True when the value contains a term of the estate dictionary (case-insensitive). */
+    /**
+     * True when the value contains a term of the estate dictionary, compared as {@link IdentifierCheck#containsTerm}
+     * does: folded Turkish letters and digits only, separators ignored (PR 26 review D-06).
+     */
     boolean estate(String s) {
-        String lower = s.toLowerCase(Locale.ROOT);
-        for (String term : estateTerms) {
-            if (!term.isEmpty() && lower.contains(term)) {
-                return true;
-            }
-        }
-        return false;
+        return IdentifierCheck.containsTerm(s, estateTerms);
     }
 
     /** Letters, digits, {@code _} and {@code -}: no dot, colon or {@code @}, so no host, address or e-mail fits. */

@@ -50,8 +50,8 @@ public class PrivacyKeys {
             this.keyId = keyId(keyBytes);
         }
         this.estateTerms = estateTerms == null ? null : List.copyOf(estateTerms);
-        if (estateTerms == null) {
-            LOG.warn("estate dictionary missing: masked views are refused");
+        if (estateTerms == null || estateTerms.isEmpty()) {
+            LOG.warn("estate dictionary missing or empty: masked views are refused");
         }
     }
 
@@ -60,9 +60,12 @@ public class PrivacyKeys {
         return key != null;
     }
 
-    /** True when the masked role can be served: the key and the estate dictionary are both present. */
+    /**
+     * True when the masked role can be served: the key and a non-empty estate dictionary are both present. An empty or
+     * comment-only dictionary is as unavailable as a missing one (PR 26 review D-07, AGENTS.md 4.10).
+     */
     public boolean maskingAvailable() {
-        return key != null && estateTerms != null;
+        return key != null && estateTerms != null && !estateTerms.isEmpty();
     }
 
     /** A short public identifier of the key (rotation detection), never the key. */

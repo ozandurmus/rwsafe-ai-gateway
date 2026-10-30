@@ -1,12 +1,14 @@
-# The false-positive allow list of layer 4: names in given-names.txt or surnames.txt that are also common Turkish or
-# English words (sea, hope, text, wish, iron, rock, private, printer, can, mine ...). Such a word is never masked alone;
-# inside a name run it counts only when it is capitalised or stands next to a name that is not on this list.
+# The false-positive allow list of layer 4: names in given-names.txt or surnames.txt that are also frequent Turkish or
+# English words in operational text (sea, hope, text, iron, rock, private, printer, between, safe, can, mine). In
+# lower case and alone such a word stays a word; capitalised, next to another name word or by a title it is a name.
 Ada
 Akar
 Akın
 Alp
 Altın
 Anıl
+Aras
+Arda
 Arzu
 Aslan
 Aslı
@@ -14,6 +16,8 @@ Asya
 Ateş
 Avcı
 Ay
+Aydın
+Ayla
 Bal
 Barış
 Başak
@@ -22,7 +26,6 @@ Bayrak
 Bayram
 Bilge
 Bilgin
-Bora
 Bulut
 Can
 Cennet
@@ -55,18 +58,22 @@ Dursun
 Duru
 Duygu
 Ebru
+Eda
 Ege
 Egemen
+Ela
 Elmas
 Emel
 Emir
 Engin
 Er
 Erdem
+Eren
+Ersin
 Esin
 Eylül
 Ezgi
-Fatih
+Ferdi
 Filiz
 Gamze
 Gezer
@@ -85,16 +92,14 @@ Hakkı
 Hayati
 Hikmet
 Hilal
-Hülya
 Irmak
 Işık
+Işıl
 İpek
 Kaçar
 Kader
-Kadir
 Kahraman
 Kalkan
-Kamil
 Kaplan
 Kara
 Karaağaç
@@ -104,8 +109,6 @@ Karaman
 Kartal
 Kaya
 Kaygusuz
-Kemal
-Kerem
 Keskin
 Kılıç
 Koç
@@ -115,15 +118,13 @@ Kurt
 Kurtuluş
 Kuzey
 Lale
-Levent
 Medine
 Melek
 Meltem
+Mert
 Mesut
-Mete
 Metin
 Mine
-Muharrem
 Nazlı
 Nehir
 Nilüfer
@@ -131,7 +132,6 @@ Nur
 Onur
 Oral
 Oya
-Ozan
 Önder
 Öykü
 Öz
@@ -144,8 +144,6 @@ Ozan
 Pınar
 Polat
 Poyraz
-Ramazan
-Recep
 Reyhan
 Rıza
 Saadet
@@ -155,10 +153,12 @@ Saniye
 Sarı
 Sarp
 Savaş
-Seda
 Sefa
+Selim
+Selin
 Sevda
 Sevgi
+Sevim
 Sezer
 Simge
 Soylu
@@ -169,29 +169,32 @@ Sultan
 Şen
 Şimşek
 Şükran
-Tamer
 Tan
 Taş
 Tatlı
 Tayfun
+Tekin
 Temiz
 Topal
 Toprak
 Tosun
-Tuba
 Tunç
 Uçar
 Ufuk
 Uğur
 Umut
 Uslu
+Utku
 Uysal
 Uzun
 Ümit
 Veli
 Volkan
+Yağız
 Yağmur
+Yalçın
 Yaman
+Yasemin
 Yaşar
 Yavuz
 Yazar

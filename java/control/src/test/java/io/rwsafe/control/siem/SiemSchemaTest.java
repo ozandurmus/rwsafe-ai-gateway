@@ -209,7 +209,7 @@ class SiemSchemaTest {
         java.nio.file.Files.writeString(dir.resolve("dictionary.txt"), "synthetic-estate\n");
         io.rwsafe.control.privacy.PrivacyKeys keys = new io.rwsafe.control.privacy.PrivacyKeys(
             new io.rwsafe.control.config.ControlProperties(null, null, new io.rwsafe.control.config.ControlProperties
-                .Privacy(dir.resolve("key"), dir.resolve("dictionary.txt")), null, null, null, null));
+                .Privacy(dir.resolve("key"), dir.resolve("dictionary.txt")), null, null, null, null, null));
         io.rwsafe.control.privacy.Pseudonymiser p = new io.rwsafe.control.privacy.Pseudonymiser(keys);
         io.rwsafe.control.privacy.TextMasker masker = new io.rwsafe.control.privacy.Masking(keys, p).masker();
         SiemRecords records = new SiemRecords(p::user, k -> p.token("KEY", k), keys.estateTerms(),

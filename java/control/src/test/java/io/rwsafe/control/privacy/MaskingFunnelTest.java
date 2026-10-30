@@ -69,7 +69,7 @@ class MaskingFunnelTest {
         MockHttpServletResponse page = new MockHttpServletResponse();
         Object out = write(funnel, ApiError.of("X", "Zeynep asked about node7.example.com"), page);
         assertEquals(200, page.getStatus());
-        assertEquals("rwmask-v1", page.getHeader(MaskingFunnel.RULES_HEADER));
+        assertEquals("rwmask-v1-slice2", page.getHeader(MaskingFunnel.RULES_HEADER));
         String message = assertInstanceOf(ApiError.class, out).message();
         assertTrue(message.matches("NAME-[A-Z]{8} asked about HST-[0-9a-f]{4}"), message);
 

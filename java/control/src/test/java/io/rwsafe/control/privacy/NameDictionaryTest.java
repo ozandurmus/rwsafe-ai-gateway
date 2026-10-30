@@ -56,13 +56,32 @@ class NameDictionaryTest {
         assertEquals("cagla", NameDictionary.fold("Çağla"));
     }
 
+    /** PR 26 review D-02: the best stem wins, compound endings, softened consonants, short stems flagged. */
     @Test
-    void stemsStripCaseEndingsButKeepShortWordsWords() {
+    void stemsStripCaseEndingsAndPreferTheLongestNameStem() {
         NameDictionary d = NameDictionary.standard();
-        assertEquals("ayse", d.stem("aysenin"));
-        assertEquals("mehmet", d.stem("mehmete"));
-        assertNull(d.stem("ayda"), "a two-letter stem is a word");
-        assertNull(d.stem("osmanli"), "no derivational ending");
+        assertEquals("ayse", key(d, "aysenin"));
+        assertEquals("mehmet", key(d, "mehmete"));
+        assertEquals("gulay", key(d, "gulaya"), "Gülay, not the everyday Gül");
+        assertEquals("gulay", key(d, "gulayla"));
+        assertEquals("nuray", key(d, "nurayi"));
+        assertEquals("gokay", key(d, "gokayla"));
+        assertEquals("aysun", key(d, "aysunun"), "the longest stem");
+        assertEquals("aysun", key(d, "aysundan"));
+        assertEquals("berkay", key(d, "berkaya"));
+        assertEquals("aysel", key(d, "aysele"));
+        for (String compound : List.of("aysenin", "ayseninki", "ahmetine", "ahmetinden", "ahmetinde",
+            "ahmetiyle", "zeynebe")) {
+            assertNotNull(d.match(compound, false), compound);
+        }
+        assertEquals("mehmet", key(d, "mehmede"), "softened t");
+        assertEquals("murat", key(d, "murada"));
+        assertEquals("recep", key(d, "recebe"), "softened p");
+        assertEquals("burak", key(d, "buraga"), "softened k");
+        NameDictionary.Match cem = d.match("ceme", false);
+        assertTrue(cem.shortStem() && cem.suffixed(), "a three-letter name with an ending is a short stem");
+        assertEquals("oz", key(d, "ozun"));
+        assertNull(d.match("osmanli", false), "no derivational ending");
         assertTrue((d.flags("metin") & NameDictionary.GIVEN) != 0, "metin is a given name");
         assertTrue((d.flags("metin") & NameDictionary.COMMON) != 0, "and an everyday word");
         assertEquals(0, d.flags("bugun"));
@@ -76,6 +95,11 @@ class NameDictionaryTest {
         assertFalse(off.available());
         assertThrows(MaskingUnavailableException.class, off::masker);
         assertTrue(new Masking(keys, new Pseudonymiser(keys)).available());
+    }
+
+    private static String key(NameDictionary d, String folded) {
+        NameDictionary.Match m = d.match(folded, false);
+        return m == null ? null : m.key();
     }
 
     private static List<String> lines(String file) {

@@ -174,7 +174,8 @@ class MaskedRoleLeakProbeTest {
         assertTrue(masked.size() >= 40, "the walk made " + masked.size() + " requests");
 
         // Captured content (PR 25): refused to the masked role on the read route, and nowhere else on its walk; the
-        // positive control is a security_admin read with a reason, which does show the seeded name.
+        // positive control is a security_admin read with a reason, which shows the stored text: the seeded person as
+        // the NAME-<WORD> token the free-text layers wrote at persistence (SR-PRIV-15, PR 26), never the name.
         for (Probed p : masked) {
             if (p.endpoint().equals("POST /api/v1/captures/{}/read")) {
                 assertEquals(403, p.response().status());
@@ -185,8 +186,9 @@ class MaskedRoleLeakProbeTest {
             JSON.createObjectNode().put("reasonCode", "INCIDENT_INVESTIGATION").put("caseId", "CASE-PROBE").toString(),
             true);
         assertEquals(200, read.status(), String.valueOf(read.body()));
-        assertTrue(probe.scan("capture read", read.body()).stream()
-            .anyMatch(h -> h.canaryClass().equals(Canaries.TURKISH_NAME)), "the stored capture holds the seeded name");
+        assertTrue(probe.scan("capture read", read.body()).isEmpty(), "the stored capture holds a seeded value");
+        assertTrue(read.body().toString().matches("(?s).*NAME-[A-Z]{8} asks about.*"),
+            "the stored capture holds the masked person");
 
         // Positive control (PR 24 review D-03): the same walk unmasked must see every canary class, so the masked
         // walk's zero hits mean the masking held, not that the probe was blind. Classes no real viewer surface holds
@@ -401,8 +403,8 @@ class MaskedRoleLeakProbeTest {
             "not on the snapshot feed");
 
         // Redacted capture (PR 25): REDACT events of acknowledged claimants carry text with a claimant's Turkish name
-        // (no Tier-1 detector and no slice-1 masking layer touches a name, so it is stored as it is); the walk then
-        // proves the masked role and the viewer never reach it, and the admin's read proves it is there.
+        // (the free-text layers mask it at persistence, PR 26); the walk then proves the masked role and the viewer
+        // never reach the text, and the admin's read proves it is stored with the person masked.
         List<ObjectNode> captured = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
             ObjectNode e = event("claude", "REDACT", claims.get(i), canaries.addresses.get(0));

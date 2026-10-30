@@ -21,7 +21,10 @@ people: no entry identifies a person, and no entry comes from estate data, a dir
 
 - Add only generic names that are common in Türkiye. Never add a full name, a rare name, a nickname, an estate account
   name or anything read from production data (AGENTS.md section 4.2).
-- A name that is also an everyday word goes into `common-words.txt` as well, so it is never masked alone.
+- A name that is also a frequent lower-case word in operational text goes into `common-words.txt` as well: in lower
+  case and alone it stays a word; capitalised, next to another name word or by a title (Sayın, Dr., Bey, Hanım) it is
+  a name. A name people rarely write as a word in lower case (Kemal, Ramazan, Ozan) does not belong there (PR 26
+  review D-01).
 - One entry per line in Turkish spelling; `#` starts a comment. Matching folds case, the Turkish dotted and dotless i and
   the Turkish diacritics (ç ğ ı ö ş ü), so ASCII spellings need no entry of their own.
 - A change of any list changes the masked output: bump `TextMasker.RULE_SET`.

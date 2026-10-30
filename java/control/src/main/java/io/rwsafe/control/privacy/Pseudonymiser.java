@@ -20,7 +20,9 @@ public class Pseudonymiser {
     private static final String WORD_CONSONANTS = "BDFGLMNPRSTVZ";
     private static final String WORD_VOWELS = "AEO";
     private static final int WORD_SYLLABLES = 4;
-    private static final int WORD_ATTEMPTS = 8;
+    private static final int WORD_ATTEMPTS = 32;
+    /** The fallback alphabet: consonants only, so the word can neither read as a name nor carry a blocked fragment. */
+    private static final String FALLBACK_LETTERS = "BCDFGHJKLMNPRSTVZ";
     /** Fragments a generated word never carries (an unfortunate reading in Turkish or English). */
     private static final List<String> WORD_BLOCKED = List.of("GOT", "MEME", "POPO", "PEZE", "DOLO");
 
@@ -100,11 +102,11 @@ public class Pseudonymiser {
      * word of four consonant-vowel syllables chosen by rwsafe's HMAC over the value, so it is stable per estate and
      * changes with the key. A word with a blocked fragment, or one {@code refused} rejects (a word that reads as a real
      * name), is drawn again from the next keyed attempt; the draws are deterministic, so the same value always reads the
-     * same. Two values can share a word (about one in 2.3 million per pair): the B3 pseudonym registry that would claim
-     * each word once per kind does not exist yet.
+     * same. If every one of the {@value #WORD_ATTEMPTS} draws is rejected, the word is eight keyed consonants, which can
+     * neither read as a name nor carry a blocked fragment (PR 26 review D-08). Two values can share a word (about one in
+     * 2.3 million per pair): the B3 pseudonym registry that would claim each word once per kind does not exist yet.
      */
     public String word(String label, String value, Predicate<String> refused) {
-        String word = null;
         for (int attempt = 0; attempt < WORD_ATTEMPTS; attempt++) {
             byte[] h = keys.hmac("word:" + label, attempt == 0 ? value : value + "\0" + attempt);
             StringBuilder w = new StringBuilder(2 * WORD_SYLLABLES);
@@ -114,12 +116,17 @@ public class Pseudonymiser {
                 w.append(WORD_CONSONANTS.charAt(syllable / WORD_VOWELS.length()))
                     .append(WORD_VOWELS.charAt(syllable % WORD_VOWELS.length()));
             }
-            word = w.toString();
+            String word = w.toString();
             if (WORD_BLOCKED.stream().noneMatch(word::contains) && !refused.test(word)) {
-                break;
+                return label + "-" + word;
             }
         }
-        return label + "-" + word;
+        byte[] h = keys.hmac("word-fallback:" + label, value);
+        StringBuilder w = new StringBuilder(2 * WORD_SYLLABLES);
+        for (int k = 0; k < 2 * WORD_SYLLABLES; k++) {
+            w.append(FALLBACK_LETTERS.charAt((h[k] & 0xFF) % FALLBACK_LETTERS.length()));
+        }
+        return label + "-" + w;
     }
 
     /** Strict dotted-quad parse without name resolution; null for anything else. */
