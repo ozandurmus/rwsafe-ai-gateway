@@ -25,6 +25,7 @@ import { roleLabel } from './labels';
 import { EventPage } from './pages/EventPage';
 import { HealthPage } from './pages/HealthPage';
 import { LoginPage } from './pages/LoginPage';
+import { NoticePage } from './pages/NoticePage';
 import { OverviewPage } from './pages/OverviewPage';
 import { PlatformsPage } from './pages/PlatformsPage';
 import { PoliciesPage } from './pages/PoliciesPage';
@@ -35,6 +36,7 @@ const NAV: { path: string; label: MessageKey }[] = [
   { path: '/traffic', label: 'nav.traffic' },
   { path: '/policies', label: 'nav.policies' },
   { path: '/platforms', label: 'nav.platforms' },
+  { path: '/notice', label: 'nav.notice' },
   { path: '/health', label: 'nav.health' },
 ];
 
@@ -102,6 +104,7 @@ export function App() {
           <Route path="/traffic/:eventId" element={<EventPage />} />
           <Route path="/policies" element={<PoliciesPage />} />
           <Route path="/platforms" element={<PlatformsPage />} />
+          <Route path="/notice" element={<NoticePage />} />
           <Route path="/health" element={<HealthPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

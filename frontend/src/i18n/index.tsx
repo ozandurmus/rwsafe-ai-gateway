@@ -69,6 +69,8 @@ export function catalogueLabel(lang: Lang, key: string, fallback: string): strin
 export interface Formatters {
   count: (n: number) => string;
   percent: (part: number, total: number) => string;
+  /** A percentage given as a number from 0 to 100, with one decimal. */
+  percentValue: (value: number) => string;
   time: (iso: string | null, withSeconds?: boolean) => string;
   hour: (iso: string) => string;
   bytes: (n: number) => string;
@@ -91,6 +93,7 @@ export function formatters(lang: Lang): Formatters {
   return {
     count: (n) => integer.format(n),
     percent: (part, total) => percent.format(total === 0 ? 0 : part / total),
+    percentValue: (value) => percent.format(value / 100),
     time: (iso, withSeconds = true) => {
       if (!iso) {
         return '—';
@@ -114,7 +117,10 @@ export function formatters(lang: Lang): Formatters {
       if (n < 1024 * 1024) {
         return `${oneDecimal.format(n / 1024)} KiB`;
       }
-      return `${oneDecimal.format(n / 1024 / 1024)} MiB`;
+      if (n < 1024 * 1024 * 1024) {
+        return `${oneDecimal.format(n / 1024 / 1024)} MiB`;
+      }
+      return `${oneDecimal.format(n / 1024 / 1024 / 1024)} GiB`;
     },
     micros: (us) => (us < 1000 ? `${integer.format(us)} µs` : `${oneDecimal.format(us / 1000)} ms`),
   };

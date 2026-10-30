@@ -1,6 +1,8 @@
 import { Box, Button, Card, CardContent, Grid, Typography } from '@mui/material';
 import { Link as RouterLink, useLocation, useParams } from 'react-router-dom';
 import { api } from '../api';
+import { useAuth } from '../auth';
+import { CaptureReader, canReadCapture } from '../components/CaptureReader';
 import { ErrorPanel, Loading } from '../components/StatePanel';
 import { VerdictPill } from '../components/VerdictPill';
 import { useI18n } from '../i18n';
@@ -18,10 +20,14 @@ function Field({ label, value, mono = false }: { label: string; value: React.Rea
   );
 }
 
-/** One event: metadata, verdict and finding classes. There is no body to show (ADR-009 C1/C2/C6). */
+/**
+ * One event: metadata, verdict and finding classes (ADR-009 C1/C2/C6). Only a REDACT verdict can have captured content
+ * (C3, redacted mode); its reader is offered to the reader roles only and opens nothing without a reason and a case id.
+ */
 export function EventPage() {
   const i18n = useI18n();
   const { t, fmt } = i18n;
+  const { me } = useAuth();
   const { eventId = '' } = useParams();
   const location = useLocation();
   const { data, error, loading } = useApi(() => api.event(eventId), eventId);
@@ -83,6 +89,9 @@ export function EventPage() {
               </Typography>
             </CardContent>
           </Card>
+          {me && canReadCapture(me) && data.verdict === 'REDACT' && (
+            <CaptureReader key={data.eventId} me={me} eventId={data.eventId} />
+          )}
         </>
       )}
     </Box>

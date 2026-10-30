@@ -229,7 +229,7 @@ class RedactedCaptureIntegrationTest {
         ApiClient.Response dsarByAdmin = read(admin, id, "DSAR", "DSAR-0001");
         assertEquals(403, dsarByAdmin.status(), "PR 25 Q-2: DSAR is the privacy officer's");
         assertEquals("REASON_NOT_PERMITTED_FOR_ROLE", dsarByAdmin.body().get("reason").asText());
-        ApiClient.Response ok = read(admin, id, "INCIDENT_INVESTIGATION", "CASE-2026-0001");
+        ApiClient.Response ok = read(admin, id, "INCIDENT_INVESTIGATION", "CASE-A-0001");
         assertEquals(200, ok.status(), String.valueOf(ok.body()));
         String text = ok.body().get("text").asText();
         assertTrue(text.contains(MARK) && text.contains("[REDACTED:TCKN]"));
@@ -248,6 +248,38 @@ class RedactedCaptureIntegrationTest {
         assertTrue(jdbc().queryForObject("SELECT count(*) FROM audit_event WHERE table_name = 'capture_read'",
             Integer.class) >= 7);
         assertFalse(output.getAll().contains(MARK), "no log line carries captured content (AGENTS.md 4.14)");
+    }
+
+    /**
+     * PR 28 review: each role gives its own reason codes (Q-1), and a case id is a reference with a letter that carries
+     * no identifier (Q-2, D-01); a refusal names its reason, never repeats the value, and is ledgered without it.
+     */
+    @Test
+    void reasonsFollowTheRoleAndACaseIdCarriesNoIdentifier() throws Exception {
+        ObjectNode e = captured("REDACT", ACKED, prompt());
+        ingest(e);
+        UUID id = UUID.fromString(e.get("eventId").asText());
+        ApiClient admin = signedIn("synthetic-admin");
+        ApiClient officer = signedIn("synthetic-officer");
+        ApiClient.Response incidentByOfficer = read(officer, id, "INCIDENT_INVESTIGATION", "CASE-B-1");
+        assertEquals(403, incidentByOfficer.status(), "Q-1: the privacy officer reads for a DSAR only");
+        assertEquals("REASON_NOT_PERMITTED_FOR_ROLE", incidentByOfficer.body().get("reason").asText());
+        assertEquals(403, read(officer, id, "LEGAL_HOLD_REVIEW", "CASE-B-2").status());
+        for (String refused : new String[] {"CASE-2026-0001", "123", "REF123456", "INC-12-34-56", "synthetic-estate-7",
+            "a"}) {
+            ApiClient.Response r = read(admin, id, "INCIDENT_INVESTIGATION", refused);
+            assertEquals(400, r.status(), refused);
+            assertEquals("CASE_ID_REFUSED", r.body().get("reason").asText(), refused);
+            if (refused.length() >= 6) { // a short value such as "a" occurs in any sentence
+                assertFalse(String.valueOf(r.body()).contains(refused), "the refused value is not repeated");
+            }
+        }
+        assertEquals(200, read(admin, id, "REGULATOR_REQUEST", "REG-2026-A1").status());
+        List<String> outcomes = outcomes(id);
+        assertEquals(List.of("REFUSED_ROLE", "REFUSED_ROLE", "REFUSED_NO_REASON", "REFUSED_NO_REASON",
+            "REFUSED_NO_REASON", "REFUSED_NO_REASON", "REFUSED_NO_REASON", "REFUSED_NO_REASON", "SERVED"), outcomes);
+        assertEquals(0, jdbc().queryForObject("SELECT count(*) FROM capture_read WHERE event_id = ? AND outcome = "
+            + "'REFUSED_NO_REASON' AND case_id IS NOT NULL", Integer.class, id), "a refused case id is not stored");
     }
 
     @Test
@@ -338,6 +370,9 @@ class RedactedCaptureIntegrationTest {
         }
         assertEquals("DOWN", component.get("state").asText());
         assertTrue(component.get("detail").asText().contains("captures skipped"));
+        assertEquals(skipped + 1, component.get("counts").get("skipped").asLong(), "PR 28 D-03");
+        assertEquals(900, component.get("counts").get("usedPerMille").asLong());
+        assertEquals(0, component.get("counts").get("stale").asLong());
 
         USED.set(0.82);
         watermark.check();
@@ -466,6 +501,12 @@ class RedactedCaptureIntegrationTest {
         assertTrue(detail.contains("held under shredded keys: 1"), detail);
         assertTrue(detail.contains("to re-wrap from older mounted keys: 0 records and 0 chunks"), detail);
         assertTrue(detail.contains("under missing keys: 0"), detail);
+        JsonNode counts = capture.get("counts");
+        assertEquals(1, counts.get("shreddedKeyRecords").asLong(), "PR 28 D-03: " + counts);
+        assertEquals(0, counts.get("rewrapRecords").asLong());
+        assertEquals(0, counts.get("missingKeyRecords").asLong());
+        assertEquals(1, counts.get("keyAvailable").asLong());
+        assertTrue(counts.get("maxBytes").asLong() > 0);
         assertTrue(maintenance.runOnce().sweptFiles() >= 0);
     }
 

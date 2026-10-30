@@ -297,6 +297,8 @@ class SiemTransportTest {
         assertEquals("DOWN", h.state());
         assertTrue(h.detail().contains("syslog: not started, the SIEM CA bundle file is missing"), h.detail());
         assertTrue(h.detail().contains("hec: not started, the HEC URL must be https"), h.detail());
+        assertEquals(1L, h.counts().get("syslog.notStarted"), "PR 28 D-03: the counts carry the refusal");
+        assertEquals(1L, h.counts().get("hec.notStarted"));
         assertFalse(h.detail().contains(dir.toString()), "no path in the health detail");
 
         SiemExportService off = service(null, fx.keys);
@@ -357,6 +359,13 @@ class SiemTransportTest {
             SiemFixture.await("health shows the drained backlog", 10_000,
                 () -> service.health().detail().contains("4 events delivered, backlog 0"));
             assertEquals("UP", service.health().state());
+            java.util.Map<String, Long> counts = service.health().counts();
+            assertEquals(4L, counts.get("syslog.delivered"), "PR 28 D-03: the same facts as numbers");
+            assertEquals(0L, counts.get("syslog.backlog"));
+            assertEquals(0L, counts.get("syslog.stalled"));
+            assertEquals(0L, counts.get("syslog.possiblyLostBatches"));
+            assertTrue(counts.get("syslog.queueCapacity") > 0);
+            assertTrue(counts.keySet().stream().noneMatch(k -> k.contains("Failure")), String.valueOf(counts));
             String metrics = service.prometheus();
             assertTrue(metrics.contains("rwsafe_siem_backlog_rows{destination=\"syslog\"} 0"), metrics);
             assertTrue(metrics.contains("rwsafe_siem_failing{destination=\"syslog\",thread=\"reader\"} 0"));

@@ -165,6 +165,18 @@ class MaskedRoleLeakProbeTest {
                 assertTrue(p.response().body().get("sections").isNull(), "the masked notice carries no sections");
                 assertTrue(p.response().body().get("complete").asBoolean(), "the probe's notice is complete");
             }
+            // PR 28 D-03: the health counts reach the masked role as numbers under fixed keys (the UI reads them, not
+            // the free-text-masked detail).
+            if (p.endpoint().equals("GET /api/v1/health")) {
+                for (com.fasterxml.jackson.databind.JsonNode c : p.response().body().get("components")) {
+                    com.fasterxml.jackson.databind.JsonNode counts = c.get("counts");
+                    assertTrue(counts != null && counts.isObject(), "every health component carries counts");
+                    counts.properties().forEach(e -> {
+                        assertTrue(e.getValue().isIntegralNumber(), "a count is a number");
+                        assertTrue(e.getKey().matches("[a-z][A-Za-z.-]{0,63}"), "a count key is fixed vocabulary");
+                    });
+                }
+            }
         }
         long acknowledged = masked.stream().filter(p -> p.endpoint().equals("GET /api/v1/notice/acknowledgements")
             && p.response().status() == 200 && p.response().body().get("records").size() > 0).peek(p ->

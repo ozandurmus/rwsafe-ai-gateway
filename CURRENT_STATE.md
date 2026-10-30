@@ -458,6 +458,38 @@ Product Owner inputs, before the first release or the feature named:
   customer numbers `CUST-` by the PO's format rules (Q-23; only the word after müşteri, customer or hesap is `CUST-`
   now), project code names (they need an estate list of code names that does not exist yet).
 
+## Done (admin UI slice 3, pull request 28)
+
+Screens for the control-plane features merged on 2026-10-31; every new string in both catalogues (Turkish in plain words).
+
+- Captured content reader (event screen, REDACT events only, since nothing else is captured): offered to
+  `security_admin` and `privacy_officer` only, never to a masked session, a viewer or a session that also holds
+  `replay_viewer`. Reason codes per role (PR 28 review Q-1, ADR-009 §5), enforced by `CaptureReadController` and
+  mirrored in the UI: incident reasons (`INCIDENT_INVESTIGATION`, `FALSE_POSITIVE_REVIEW`, `LEGAL_HOLD_REVIEW`,
+  `REGULATOR_REQUEST`) for `security_admin`, `DSAR` for `privacy_officer`, both sets for a person holding both roles;
+  `CaptureReasonCodesUiTest` fails when `CAPTURE_REASON_CODES` or `CAPTURE_REASONS_BY_ROLE` in `frontend/src/api.ts`
+  and the server's differ. A case id (Q-2, D-01) has at least one letter and passes the shared `IdentifierCheck` (no
+  detector hit, no run of six or more digits even across a separator, no estate term); otherwise 400 `CASE_ID_REFUSED`,
+  ledgered without the value and never repeated; the browser mirrors the shape rules and forgets a refused value. The
+  form keeps nothing for the browser (autocomplete and spell check off, cleared on close; D-02). An in-page
+  confirmation that the read is recorded; the text rendered as a text node only (never HTML) with the recorded-read
+  notice and its ledger id, the truncation and expiry; refusals show the server's reason.
+- Health: the SIEM export, capture and capture-watermark cards say in plain words what each state means and what to do,
+  and show their counts by name per destination. The counts come from a structured `counts` object on every health
+  component (D-03: fixed keys, numbers and 0/1 conditions only, no identifier; the masked projection carries it as it
+  is), asserted in `SiemTransportTest` and `RedactedCaptureIntegrationTest` and read by `frontend/src/healthFacts.ts`,
+  which drops any value that is not a non-negative safe integer; the server's detail is still shown beside them.
+- Notice (new tab "Aydınlatma metni"): version, catalogue version, completeness, missing and refused settings, the
+  acknowledged count, the sections as text for unmasked roles and the masked projection as served (no sections); an
+  incomplete notice says so for every role (D-04); an acknowledgement lookup that sends only a well-formed `USR-`
+  pseudonym.
+- `frontend/src/api.ts` gained `readCapture`, `notice` and `noticeAcknowledgements`; the leak probe already walked those
+  routes, so its inventory check passes unchanged. Vitest 61, `tsc` clean, `:control:test` 203 green on the tree merged with pull request 26.
+- Second review `docs/reviews/PR28_2026_10_31_ARGON_ADMIN_UI_SLICE3.md` (MERGE WITH CORRECTIONS), answered in
+  `PR28_2026_10_31_RESPONSE.md`.
+- Open: ADR-009 §5 still names `security_analyst` for the incident read (the role does not exist yet; the PO's records
+  give it to `security_admin`); the event list does not say which events hold captured content.
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape

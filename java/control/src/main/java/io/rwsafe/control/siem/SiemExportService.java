@@ -180,8 +180,16 @@ public class SiemExportService implements SmartLifecycle {
      * One health line: {@code UP}, {@code DEGRADED} (a destination's reader or sender is retrying after a failure),
      * {@code DOWN} (export refused at start) or {@code UNKNOWN} (export off), and a fixed-vocabulary detail with the
      * backlog, the queue, possibly lost syslog batches and a {@code latest} start's skip count.
+     * {@code counts} (PR 28 review D-03) carries the same facts as numbers under {@code <destination>.<name>} keys:
+     * {@code notStarted}, {@code delivered}, {@code backlog} (absent until counted), {@code queueDepth},
+     * {@code queueCapacity}, {@code stalled} (0/1), {@code heldBehindOpenTransaction}, {@code possiblyLostBatches},
+     * {@code skippedAtStart}, and {@code readerFailure.<class>} / {@code senderFailure.<class>} set to 1 while retrying.
      */
-    public record Health(String state, String detail) {
+    public record Health(String state, String detail, Map<String, Long> counts) {
+
+        public Health(String state, String detail) {
+            this(state, detail, Map.of());
+        }
     }
 
     public synchronized Health health() {
@@ -189,14 +197,35 @@ public class SiemExportService implements SmartLifecycle {
             return new Health("UNKNOWN", "SIEM export is off");
         }
         List<String> details = new ArrayList<>();
+        Map<String, Long> counts = new LinkedHashMap<>();
         boolean down = !refused.isEmpty();
         boolean degraded = false;
-        refused.forEach((destination, reason) -> details.add(destination + ": not started, " + reason));
+        refused.forEach((destination, reason) -> {
+            details.add(destination + ": not started, " + reason);
+            counts.put(destination + ".notStarted", 1L);
+        });
         for (SiemExporter e : exporters) {
             SiemMetrics m = e.metrics();
+            String key = e.destination() + ".";
             StringBuilder d = new StringBuilder(e.destination()).append(": ");
             Reason read = m.readFailure();
             Reason send = m.sendFailure();
+            counts.put(key + "delivered", m.exported(SiemStream.VERDICT) + m.exported(SiemStream.AUDIT));
+            if (m.backlog() >= 0) {
+                counts.put(key + "backlog", m.backlog());
+            }
+            counts.put(key + "queueDepth", (long) m.queueDepth());
+            counts.put(key + "queueCapacity", (long) m.queueCapacity());
+            counts.put(key + "stalled", m.stalled() ? 1L : 0L);
+            counts.put(key + "heldBehindOpenTransaction", m.heldBehindOpenTransaction());
+            counts.put(key + "possiblyLostBatches", m.possiblyLostBatches());
+            counts.put(key + "skippedAtStart", m.skippedAtStart());
+            if (read != null) {
+                counts.put(key + "readerFailure." + read.name().toLowerCase(Locale.ROOT), 1L);
+            }
+            if (send != null) {
+                counts.put(key + "senderFailure." + send.name().toLowerCase(Locale.ROOT), 1L);
+            }
             if (m.stalled()) {
                 degraded = true;
                 d.append("stalled: no progress for over ").append(STALL_AFTER.toSeconds()).append(" s with ")
@@ -225,7 +254,7 @@ public class SiemExportService implements SmartLifecycle {
             }
             details.add(d.toString());
         }
-        return new Health(down ? "DOWN" : degraded ? "DEGRADED" : "UP", String.join("; ", details));
+        return new Health(down ? "DOWN" : degraded ? "DEGRADED" : "UP", String.join("; ", details), counts);
     }
 
     /** The exporters' metrics in Prometheus text (fixed labels). */
