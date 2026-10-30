@@ -100,17 +100,13 @@ class LogScannerEndToEndTest {
         bodyMarkers.computeIfAbsent(cls, k -> new ArrayList<>()).add(value);
     }
 
-    @Test
-    void noBodyFragmentReachesALogAMetricAnErrorOrAStoredRow(CapturedOutput console) throws Exception {
-        Path spool = Files.createTempDirectory(ControlTestEnvironment.dir(), "spool");
-        List<String> answers = new ArrayList<>();
-        List<String> errorPages = new ArrayList<>();
-        String metricsText;
-        int shipped;
-        try (LogCapture logs = new LogCapture()) {
+    /** One running data plane: engine, ICAP listener, event queue and shipper, metrics endpoint. */
+    private record DataPlane(BoundedEventQueue queue, EventShipper shipper, Thread shipperThread, IcapServer server,
+                             int icap, MetricsEndpoint metrics) {
+
+        static DataPlane start(URI events, Path spool) throws Exception {
             BoundedEventQueue queue = new BoundedEventQueue(1000);
-            EventShipper shipper = new EventShipper(queue, URI.create("http://127.0.0.1:" + internal.port()
-                + "/internal/v1/verdict-events"), spool, 1024 * 1024, Duration.ofMillis(200));
+            EventShipper shipper = new EventShipper(queue, events, spool, 1024 * 1024, Duration.ofMillis(200));
             Thread shipperThread = new Thread(shipper, "rwsafe-event-shipper-test");
             shipperThread.start();
             IcapEngine engine = new IcapEngine(Snapshots.builtinDevelopment(), DetectorSet.standard(), queue,
@@ -119,25 +115,77 @@ class LogScannerEndToEndTest {
             IcapServer server = new IcapServer(engine, 0);
             int icap = server.start("127.0.0.1", 0);
             MetricsEndpoint metrics = new MetricsEndpoint("127.0.0.1", 0, engine, queue, shipper, null, 0);
+            return new DataPlane(queue, shipper, shipperThread, server, icap, metrics);
+        }
+
+        String metricsText() throws Exception {
+            return HttpClient.newHttpClient().send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:"
+                + metrics.port() + "/metrics")).GET().build(), HttpResponse.BodyHandlers.ofString()).body();
+        }
+
+        void stop() throws InterruptedException {
+            metrics.close();
+            server.close();
+            shipper.stop();
+            shipperThread.join(10_000);
+        }
+    }
+
+    @Test
+    void noBodyFragmentReachesALogAMetricAnErrorOrAStoredRow(CapturedOutput console) throws Exception {
+        Path spool = Files.createTempDirectory(ControlTestEnvironment.dir(), "spool");
+        URI sink = URI.create("http://127.0.0.1:" + internal.port() + "/internal/v1/verdict-events");
+        List<String> answers = new ArrayList<>();
+        List<String> errorPages = new ArrayList<>();
+        List<String> metricsTexts = new ArrayList<>();
+        prepareIdentity();
+        String spooled;
+        int shipped;
+        try (LogCapture logs = new LogCapture()) {
+            // Phase A (PR 24 review D-05): the capture sink is unreachable, so the batches go to the on-disk spool.
+            int closedPort;
+            try (java.net.ServerSocket s = new java.net.ServerSocket(0)) {
+                closedPort = s.getLocalPort();
+            }
+            DataPlane outage = DataPlane.start(URI.create("http://127.0.0.1:" + closedPort
+                + "/internal/v1/verdict-events"), spool);
             try {
-                int expectedEvents = drive(icap, errorPages);
-                shipped = awaitShipped(shipper, queue, expectedEvents);
-                metricsText = HttpClient.newHttpClient().send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:"
-                    + metrics.port() + "/metrics")).GET().build(), HttpResponse.BodyHandlers.ofString()).body();
+                core(outage.icap(), errorPages, "outage");
+                for (int i = 0; i < 100 && (outage.shipper().spoolBytes() == 0 || outage.queue().size() > 0); i++) {
+                    Thread.sleep(100);
+                }
+                metricsTexts.add(outage.metricsText());
+            } finally {
+                outage.stop();
+            }
+            spooled = spoolText(spool);
+            assertTrue(!spooled.isEmpty(), "the outage wrote the verdict spool");
+
+            // Phase B: the capture sink is up; the new shipper replays the spool, then every verdict path runs.
+            DataPlane live = DataPlane.start(sink, spool);
+            try {
+                int expectedEvents = 3 + drive(live.icap(), errorPages);
+                shipped = awaitShipped(live.shipper(), live.queue(), expectedEvents);
+                metricsTexts.add(live.metricsText());
                 refusedBatches(answers);
+                refusedNoticeAndRegistryRequests(answers);
                 ApiClient viewer = new ApiClient(port);
                 assertEquals(200, viewer.login("synthetic-viewer", ControlTestEnvironment.PASSWORDS.get("synthetic-viewer"))
                     .status());
                 answers.add(viewer.get("/api/v1/traffic").raw().body());
             } finally {
-                metrics.close();
-                server.close();
-                shipper.stop();
-                shipperThread.join(10_000);
+                live.stop();
             }
 
+            // Positive control: a marker planted in a log statement (one as a placeholder argument, one as an argument
+            // without a placeholder) must be found, or the capture proves nothing.
+            String planted = token();
+            String plantedArgument = token();
+            org.slf4j.LoggerFactory.getLogger("io.rwsafe.logscanner.positivecontrol").info("planted {}", planted);
+            org.slf4j.LoggerFactory.getLogger("io.rwsafe.logscanner.positivecontrol").info("planted", plantedArgument);
+
             assertTrue(shipped >= 10, "the data plane shipped " + shipped + " events");
-            assertTrue(metricsText.contains("icap_transactions_total"), "the metrics text was read");
+            assertTrue(metricsTexts.get(1).contains("icap_transactions_total"), "the metrics text was read");
             assertTrue(logs.events() > 0 && logs.logback().contains("verdict batch refused"),
                 "the Logback capture saw the control plane's own statements");
 
@@ -146,28 +194,35 @@ class LogScannerEndToEndTest {
             sources.put("java.util.logging", logs.jul());
             sources.put("uncaught exceptions", logs.uncaught());
             sources.put("console", console.getAll());
-            sources.put("prometheus text", metricsText);
+            sources.put("prometheus text", String.join("\n", metricsTexts));
             sources.put("data-plane block and error pages", String.join("\n", errorPages));
             sources.put("control-plane answers", String.join("\n", answers));
             sources.put("database rows", databaseRows());
+            List<String> control = new ArrayList<>();
+            scan(sources, Map.of("positive control", List.of(planted, plantedArgument)), control);
+            assertTrue(control.contains("logback <- positive control") && control.contains("console <- positive control"),
+                "the scan found the planted markers: " + control);
+            assertTrue(logs.logback().toLowerCase(Locale.ROOT).contains(plantedArgument.toLowerCase(Locale.ROOT)),
+                "an argument without a placeholder is captured");
+
             List<String> found = new ArrayList<>();
             scan(sources, bodyMarkers, found);
             scan(sources, identityMarkers, found);
             // The spool holds the wire format, whose identity claim is raw by design (C1 is pseudonymised at the control
-            // plane); bodies never.
-            scan(Map.of("verdict spool", spoolText(spool)), bodyMarkers, found);
-            sources.put("verdict spool", spoolText(spool));
+            // plane); bodies and group names never.
+            scan(Map.of("verdict spool", spooled), bodyMarkers, found);
+            sources.put("verdict spool", spooled);
             scan(sources, groupMarkers, found);
             assertTrue(found.isEmpty(), "body or identity fragments found (source <- marker class): " + found);
         }
     }
 
-    /**
-     * Every verdict path of the data plane with marked bodies; the block and error pages it answers are collected (an
-     * allowed, redacted or relayed message carries its own markers onward by design). Returns how many verdict events
-     * the data plane should emit.
-     */
-    private int drive(int icap, List<String> errorPages) throws Exception {
+    private String userHeaders;
+    private String groups;
+    private String identity;
+
+    /** The identity headers every request carries (D-05): a domain claim, a client address, a group claim. */
+    private void prepareIdentity() {
         String user = "SYNREALM\\" + token().toLowerCase(Locale.ROOT);
         identityMarkers.put("identity claim", List.of(user.toLowerCase(Locale.ROOT), user.substring(9)));
         String address = "198.51.100." + (1 + random.nextInt(254));
@@ -178,68 +233,121 @@ class LogScannerEndToEndTest {
         String groupB = "Hazine-Müdürlüğü-" + tokenB;
         // The ASCII token too: a log could hold the UTF-8 octets decoded as ISO-8859-1.
         groupMarkers.put("group claim", List.of(groupA, groupB, tokenB));
-        String groups = "X-Authenticated-Groups: " + groupA + "," + groupB + "\r\n";
-        String identity = "X-Authenticated-User: " + user + "\r\nX-Client-IP: " + address + "\r\n" + groups;
+        groups = "X-Authenticated-Groups: " + groupA + "," + groupB + "\r\n";
+        userHeaders = "X-Authenticated-User: " + user + "\r\nX-Client-IP: " + address + "\r\n";
+        identity = userHeaders + groups;
+    }
+
+    /** Allow, redact and block with marked bodies: three verdict events. */
+    private void core(int icap, List<String> errorPages, String phase) throws Exception {
         String tckn = Synthetic.tckn(random.nextLong());
         String iban = Synthetic.iban(random.nextLong());
-        String card = Synthetic.card(random.nextLong());
         String key = Synthetic.awsKey();
         bodyValue("TCKN in a body", tckn);
         bodyValue("IBAN in a body", iban);
-        bodyValue("card in a body", card);
         bodyValue("secret in a body", key);
-        int events = 0;
-
-        // 1 allow, 2 redact, 3 block (JSON), all with identity headers.
-        send(icap, claude(json("synthetic summary " + marker("allowed prompt")), identity));
-        String redactedMarker = marker("redacted prompt");
+        send(icap, claude(json("synthetic summary " + marker(phase + " allowed prompt")), identity));
+        String redactedMarker = marker(phase + " redacted prompt");
         String redacted = send(icap, claude(json("customer " + tckn + " iban " + iban + " " + redactedMarker), identity));
         // The markers are real body content: the redacted request travels on with its marker and without the TCKN.
         assertTrue(redacted.contains(redactedMarker) && !redacted.contains(tckn) && redacted.contains("[REDACTED:TCKN]"),
             "the redact path rewrote the body");
-        String blocked = send(icap, claude(json("deploy with " + key + " " + marker("blocked prompt")), identity));
+        String blocked = send(icap, claude(json("deploy with " + key + " " + marker(phase + " blocked prompt")),
+            identity));
         assertTrue(blocked.contains("HTTP/1.1 403"), "the block path answered");
         errorPages.add(blocked);
-        events += 3;
-        // 4 a browser form blocked with the page.
+    }
+
+    /**
+     * Every other verdict path of the data plane with marked bodies and the identity headers; the block and error pages
+     * it answers are collected (an allowed, redacted or relayed message carries its own markers onward by design).
+     * Returns how many verdict events the data plane should emit.
+     */
+    private int drive(int icap, List<String> errorPages) throws Exception {
+        core(icap, errorPages, "live");
+        int events = 3;
+        String tckn = Synthetic.tckn(random.nextLong());
+        String card = Synthetic.card(random.nextLong());
+        String key = Synthetic.awsKey();
+        bodyValue("TCKN in a body", tckn);
+        bodyValue("card in a body", card);
+        // A browser form blocked with the page.
         byte[] form = ("prompt=synthetic+" + key + "+" + marker("blocked form")).getBytes(StandardCharsets.UTF_8);
         errorPages.add(send(icap, IcapClient.reqmod("POST /share HTTP/1.1\nHost: chatgpt.com\nAccept: text/html\n"
-            + "Content-Type: application/x-www-form-urlencoded\nContent-Length: " + form.length + "\n", form, "")));
+            + "Content-Type: application/x-www-form-urlencoded\nContent-Length: " + form.length + "\n", form, identity)));
         events++;
-        // 5 malformed JSON, 6 oversize, 7 an encoded body.
+        // Malformed JSON, oversize, an encoded body.
         byte[] broken = ("{\"model\":\"claude-synthetic\",\"messages\":[{\"role\":\"user\",\"content\":\"card " + card + " "
             + marker("malformed JSON")).getBytes(StandardCharsets.UTF_8);
-        errorPages.add(send(icap, claude(broken, "")));
-        errorPages.add(send(icap, claude(json((marker("oversize body") + " ").repeat(1500)), "")));
+        errorPages.add(send(icap, claude(broken, identity)));
+        errorPages.add(send(icap, claude(json((marker("oversize body") + " ").repeat(1500)), identity)));
         byte[] encoded = json("synthetic " + marker("encoded body"));
         errorPages.add(send(icap, IcapClient.reqmod("POST /v1/messages HTTP/1.1\nHost: api.anthropic.com\n"
             + "Content-Type: application/json\nContent-Encoding: gzip\nContent-Length: " + encoded.length + "\n",
-            encoded, "")));
+            encoded, identity)));
         events += 3;
-        // 8 a marker in the request URL.
-        byte[] small = json("synthetic hello");
         // A repeated group claim is no claim (the strictest policy); its names must not surface either.
-        send(icap, claude(json("synthetic " + marker("repeated group claim")), groups + groups));
+        send(icap, claude(json("synthetic " + marker("repeated group claim")), userHeaders + groups + groups));
         events++;
+        // A marker in the request URL.
+        byte[] small = json("synthetic hello");
         send(icap, IcapClient.reqmod("POST /v1/messages?trace=" + marker("request URL")
             + " HTTP/1.1\nHost: api.anthropic.com\nContent-Type: application/json\nContent-Length: " + small.length
-            + "\n", small, ""));
+            + "\n", small, identity));
         events++;
-        // 9 a streamed response relayed, 10 one aborted at the identifier.
+        // Streamed responses: one relayed, one aborted at the identifier.
         send(icap, IcapClient.respmod(chatRequest(), "HTTP/1.1 200 OK\nContent-Type: text/event-stream\n",
-            sse(marker("streamed response"), null)));
+            sse(marker("streamed response"), null), identity));
         send(icap, IcapClient.respmod(chatRequest(), "HTTP/1.1 200 OK\nContent-Type: text/event-stream\n",
-            sse(marker("aborted stream"), tckn)));
+            sse(marker("aborted stream"), tckn), identity));
         events += 2;
-        // 11 an ICAP header line without a colon, 12 a chunk size that is not hex: framing errors on fresh connections.
-        byte[] good = claude(json("synthetic"), "");
-        String text = new String(good, StandardCharsets.UTF_8);
+        // Whole (non-streaming) JSON responses: clean, carrying an identifier, malformed (D-05).
+        for (byte[] response : List.of(json("synthetic answer " + marker("JSON response")),
+            json("customer " + tckn + " " + marker("JSON response with an identifier")),
+            ("{\"content\":\"" + marker("malformed JSON response")).getBytes(StandardCharsets.UTF_8))) {
+            send(icap, IcapClient.respmod(chatRequest(), "HTTP/1.1 200 OK\nContent-Type: application/json\n"
+                + "Content-Length: " + response.length + "\n", response, identity));
+            events++;
+        }
+        // An ICAP header line without a colon, a chunk size that is not hex: framing errors on fresh connections.
+        String text = new String(claude(json("synthetic"), identity), StandardCharsets.UTF_8);
         errorPages.add(send(icap, text.replaceFirst("Allow: 204\r\n", "Allow: 204\r\n" + marker("ICAP header line")
             + "\r\n").getBytes(StandardCharsets.UTF_8)));
         int bodyAt = text.lastIndexOf("\r\n\r\n", text.length() - 8) + 4;
         errorPages.add(send(icap, (text.substring(0, bodyAt) + marker("chunk size") + "\r\nsynthetic\r\n0\r\n\r\n")
             .getBytes(StandardCharsets.UTF_8)));
         return events;
+    }
+
+    /** Refused notice acknowledgements and registry changes that carry markers (D-05): their logs are scanned too. */
+    private void refusedNoticeAndRegistryRequests(List<String> answers) throws Exception {
+        ApiClient sink = new ApiClient(internal.port());
+        String intake = io.rwsafe.control.notice.NoticeIntakeController.PATH;
+        String user = "SYNREALM\\" + marker("acknowledgement claim").toLowerCase(Locale.ROOT);
+        List<ObjectNode> refused = new ArrayList<>();
+        refused.add(JSON.createObjectNode().put("userClaim", user).put("noticeVersion", "v-" + marker("notice version"))
+            .put("acknowledgedAt", java.time.Instant.now().toString()).put("source", "banner"));
+        refused.add(JSON.createObjectNode().put("userClaim", user).put("noticeVersion", "x")
+            .put("acknowledgedAt", java.time.Instant.now().toString()).put("source", marker("notice source")));
+        refused.add(JSON.createObjectNode().put("userClaim", user).put("noticeVersion", "x")
+            .put("acknowledgedAt", marker("acknowledged at")).put("source", "banner"));
+        refused.add(JSON.createObjectNode().put("userClaim", user).put("noticeVersion", "x")
+            .put("acknowledgedAt", java.time.Instant.now().toString()).put("source", "banner")
+            .put("comment", marker("unknown notice field")));
+        for (ObjectNode r : refused) {
+            ApiClient.Response response = sink.post(intake, JSON.createArrayNode().add(r).toString(), false);
+            assertTrue(response.status() == 400 || response.status() == 422, "a refused acknowledgement");
+            answers.add(response.raw().body());
+        }
+        ApiClient admin = new ApiClient(port);
+        assertEquals(200, admin.login("synthetic-admin", ControlTestEnvironment.PASSWORDS.get("synthetic-admin")).status());
+        String tckn = Synthetic.tckn(random.nextLong());
+        bodyValue("TCKN in a registry reason", tckn);
+        answers.add(admin.post("/api/v1/policy/rules/class.TCKN/versions", JSON.createObjectNode().put("action", "BLOCK")
+            .put("mode", "monitor").put("reasonCode", "SYN_" + marker("reason code").toUpperCase(Locale.ROOT) + "_123456")
+            .toString(), true).raw().body());
+        answers.add(admin.post("/api/v1/policy/rules/platform.devin/retirement", JSON.createObjectNode()
+            .put("reason", "kayit " + marker("retirement reason") + " ref" + tckn).toString(), true).raw().body());
     }
 
     /** The control plane's ingestion refusing batches that carry markers in every way the contract refuses. */

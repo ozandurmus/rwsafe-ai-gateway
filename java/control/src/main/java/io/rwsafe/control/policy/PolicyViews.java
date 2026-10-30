@@ -41,7 +41,7 @@ public final class PolicyViews {
      * and may name one; the masking layers have no name dictionary yet (layer 4) and a number glued to letters escapes
      * the detectors, so the masked projection withholds the text instead of masking it (leak probe, AGENTS.md 4.11).
      */
-    public static final String FREE_TEXT_WITHHELD = "[FREE_TEXT_WITHHELD]";
+    public static final String FREE_TEXT_WITHHELD = TextMasker.WITHHELD;
 
     /** How a platform row left service (Q-40): when, the administrator's pseudonym, and the reason given. */
     public record RetirementView(Instant retiredAt, String retiredBy, String reason) {

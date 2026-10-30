@@ -39,6 +39,10 @@ public final class LogCapture implements AutoCloseable {
                 events++;
                 logback.append(e.getLevel()).append(' ').append(e.getLoggerName()).append(' ')
                     .append(e.getFormattedMessage()).append(' ').append(e.getMDCPropertyMap());
+                // Arguments without a placeholder never reach the formatted message; they are scanned too (D-05).
+                if (e.getArgumentArray() != null) {
+                    logback.append(' ').append(java.util.Arrays.deepToString(e.getArgumentArray()));
+                }
                 if (e.getKeyValuePairs() != null) {
                     logback.append(' ').append(e.getKeyValuePairs());
                 }

@@ -105,7 +105,13 @@ public final class ControlTestEnvironment {
         return dir.resolve("rwsafe_control_" + database + "-break-glass");
     }
 
-    public static Path dir() {
+    /** The per-JVM directory of generated keys and files; starts the environment first (PR 24 review D-06). */
+    public static synchronized Path dir() {
+        try {
+            start();
+        } catch (Exception e) {
+            throw new IllegalStateException("the control test environment did not start", e);
+        }
         return dir;
     }
 

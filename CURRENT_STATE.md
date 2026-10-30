@@ -247,6 +247,16 @@ Both run in `:control:test`, so in `unitTest` and the CI `java-tests` job; no wo
   the traffic screen shows. The masked notice carries no sections and no configured value; acknowledgements show
   `USR-` pseudonyms only; the viewer's positive control sees the configured values; the acknowledgements' user filter
   refuses every raw guess. No leak found.
+- Second review (Argon, `docs/reviews/PR24_2026_10_31_ARGON_LEAK_PROBE.md`, DO NOT MERGE with one P0), answered by ID
+  in `PR24_2026_10_31_RESPONSE.md`. One shared identifier check (`privacy/IdentifierCheck`: detectors, six or more
+  digits in a row even glued to letters, estate terms on Turkish-folded letters, 503 without the dictionary) guards
+  every free value the registry stores. Ingestion takes no free token: `reason` is the closed `ReasonCodes` set
+  (platform-core; the data plane's end-to-end tests fail on a reason missing from it) and `correlationId` a canonical
+  UUID. Retirement and withdrawal reasons stay withheld from the masked role permanently and refuse six or more digits
+  (PO, Q-1 and Q-2). The probe compares in NFC and Turkish-folded form with the extra digit joins, and its positive control
+  covers every canary class: a test-only fixture route shows the classes no real screen holds. The log scanner also runs
+  with the capture sink down (the spool is written, scanned and replayed), sends the identity headers on every request,
+  and finds two planted markers before it asserts no finding.
 - Not covered: a browser-level (Playwright) walk of the screens (needs a browser download; the UI reads only the API
   client the probe enumerates); the layer 4 name dictionary and customer numbers (not implemented, so names are seeded
   only where pseudonymisation applies or where ingestion refuses them); third-party loggers below their production

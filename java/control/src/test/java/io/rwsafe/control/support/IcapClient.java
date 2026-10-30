@@ -37,13 +37,18 @@ public final class IcapClient implements AutoCloseable {
 
     /** A RESPMOD frame without preview over {@code requestHead} and {@code responseHead}. */
     public static byte[] respmod(String requestHead, String responseHead, byte[] body) {
+        return respmod(requestHead, responseHead, body, "");
+    }
+
+    /** A RESPMOD frame without preview; {@code icapHeaders} are extra ICAP header lines ending in CRLF. */
+    public static byte[] respmod(String requestHead, String responseHead, byte[] body, String icapHeaders) {
         byte[] req = crlf(requestHead);
         byte[] res = crlf(responseHead);
         byte[] heads = new byte[req.length + res.length];
         System.arraycopy(req, 0, heads, 0, req.length);
         System.arraycopy(res, 0, heads, req.length, res.length);
         return frame("RESPMOD", "/respmod-ai", "req-hdr=0, res-hdr=" + req.length + ", res-body=" + heads.length, heads,
-            body, "");
+            body, icapHeaders);
     }
 
     public static byte[] chunk(byte[] data) {

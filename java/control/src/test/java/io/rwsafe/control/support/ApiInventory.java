@@ -51,6 +51,10 @@ public final class ApiInventory {
                 if (!pattern.startsWith("/api/")) {
                     continue;
                 }
+                // A mapping without a method answers every method: the probe could not know what to walk (D-06).
+                if (info.getMethodsCondition().getMethods().isEmpty()) {
+                    throw new IllegalStateException("an /api mapping without an HTTP method: " + pattern);
+                }
                 for (var method : info.getMethodsCondition().getMethods()) {
                     out.add(template(method.name(), pattern));
                 }

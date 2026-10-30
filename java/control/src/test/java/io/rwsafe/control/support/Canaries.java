@@ -111,6 +111,8 @@ public final class Canaries {
         tckns.forEach(v -> probe.canary(TCKN, v));
         for (String iban : ibans) {
             probe.canary(TR_IBAN, iban);
+            // The 24-digit body: what a spaced or letter-glued IBAN yields as one digit run (PR 24 review D-02).
+            probe.canary(TR_IBAN, iban.substring(2));
         }
         for (String m : mobiles) {
             probe.canary(TR_MOBILE, m);
@@ -150,6 +152,60 @@ public final class Canaries {
             probe.canary(NOTICE_VALUE, v);
         }
         noticeTokens.forEach(t -> probe.canary(NOTICE_VALUE, t));
+    }
+
+    /**
+     * The positive-control fixture (PR 24 review D-03): every class in every written form a screen could show; a form is
+     * maskable when the text masker's layers claim it (detectors, e-mail, IPv4, TR mobile, the estate dictionary).
+     */
+    public List<io.rwsafe.probefixture.CanaryFixtureController.Field> fixtureFields() {
+        List<io.rwsafe.probefixture.CanaryFixtureController.Field> f = new ArrayList<>();
+        java.util.function.BiConsumer<String, String> maskable = (cls, v) ->
+            f.add(new io.rwsafe.probefixture.CanaryFixtureController.Field(cls, v, true));
+        java.util.function.BiConsumer<String, String> withheld = (cls, v) ->
+            f.add(new io.rwsafe.probefixture.CanaryFixtureController.Field(cls, v, false));
+        for (String t : tckns) {
+            maskable.accept(TCKN, "kimlik " + t);
+            withheld.accept(TCKN, "ref" + t);
+        }
+        for (String i : ibans) {
+            maskable.accept(TR_IBAN, i);
+            StringBuilder spaced = new StringBuilder();
+            for (int k = 0; k < i.length(); k += 4) {
+                spaced.append(k == 0 ? "" : " ").append(i, k, Math.min(i.length(), k + 4));
+            }
+            maskable.accept(TR_IBAN, spaced.toString());
+            withheld.accept(TR_IBAN, "odeme" + i);
+        }
+        for (String m : mobiles) {
+            maskable.accept(TR_MOBILE, m);
+            maskable.accept(TR_MOBILE, "+90 " + m.substring(1, 4) + " " + m.substring(4, 7) + " " + m.substring(7, 9)
+                + " " + m.substring(9));
+            withheld.accept(TR_MOBILE, m.substring(0, 4) + "-" + m.substring(4));
+        }
+        maskable.accept(PAYMENT_CARD, card);
+        withheld.accept(PAYMENT_CARD, String.join("-", card.substring(0, 4), card.substring(4, 8), card.substring(8, 12),
+            card.substring(12)));
+        maskable.accept(SECRET_SHAPE, "token " + secret);
+        for (Person p : claimants) {
+            withheld.accept(TURKISH_NAME, p.displayName());
+            withheld.accept(CLAIM_USER, p.login());
+            maskable.accept(EMAIL, email(p));
+            withheld.accept(DOMAIN_ACCOUNT, domainAccount(p));
+        }
+        for (Person p : List.of(admin, adminTwo, officer, viewer, masked)) {
+            withheld.accept(DIRECTORY_LOGIN, p.login());
+        }
+        for (String h : hosts) {
+            maskable.accept(HOST_NAME, h);
+            maskable.accept(HOST_NAME, h + "." + mailDomain);
+        }
+        groups.forEach(g -> maskable.accept(GROUP_NAME, g));
+        addresses.forEach(a -> maskable.accept(IPV4, "from " + a));
+        for (String v : List.of(noticeController, noticeContact, noticePolicyLink)) {
+            withheld.accept(NOTICE_VALUE, v);
+        }
+        return f;
     }
 
     public LeakProbe probe() {

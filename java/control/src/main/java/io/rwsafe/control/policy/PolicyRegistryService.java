@@ -4,8 +4,8 @@ import io.rwsafe.control.config.ControlProperties;
 import io.rwsafe.control.identity.Roles;
 import io.rwsafe.control.privacy.Masking;
 import io.rwsafe.control.privacy.PrivacyKeys;
+import io.rwsafe.control.privacy.IdentifierCheck;
 import io.rwsafe.control.privacy.Pseudonymiser;
-import io.rwsafe.detect.DetectorSet;
 import io.rwsafe.persistence.AuditContext;
 import io.rwsafe.persistence.Database;
 import io.rwsafe.persistence.PolicyRuleVersion;
@@ -47,7 +47,6 @@ public class PolicyRegistryService {
     private static final Logger LOG = LoggerFactory.getLogger(PolicyRegistryService.class);
     /** The platform the data plane names when no platform row matches (the flow classifier's fallback). */
     public static final String UNKNOWN_PLATFORM = "unknown";
-    private static final DetectorSet DETECTORS = DetectorSet.standard();
     private static final Set<String> APPROVER_ROLES = Set.of(Roles.SECURITY_ADMIN, Roles.PRIVACY_OFFICER);
 
     private final Database database;
@@ -56,8 +55,8 @@ public class PolicyRegistryService {
     private final PrivacyKeys keys;
     private final SnapshotSigner signer;
     private final SnapshotCompiler compiler = new SnapshotCompiler();
-    private static final io.rwsafe.detect.DetectorSet REASON_DETECTORS = io.rwsafe.detect.DetectorSet.standard();
     private final Masking masking;
+    private final IdentifierCheck identifiers;
     private final Clock clock;
 
     public PolicyRegistryService(Database database, ControlProperties properties, Pseudonymiser pseudonymiser,
@@ -68,6 +67,7 @@ public class PolicyRegistryService {
         this.keys = keys;
         this.signer = signer;
         this.masking = new Masking(keys, pseudonymiser);
+        this.identifiers = new IdentifierCheck(keys);
         this.clock = Clock.systemUTC();
     }
 
@@ -299,9 +299,15 @@ public class PolicyRegistryService {
             throw new RegistryRefusal(HttpStatus.CONFLICT, "INVALID_PLATFORM_ROW", "The platform row is refused: "
                 + defect + ".");
         }
-        // Vendor-published endpoints only (PLATFORM_MATRIX §2): a host that names an estate term is refused.
+        // Vendor-published endpoints only (PLATFORM_MATRIX §2): a host that names an estate term is refused, and so is
+        // a host label carrying an identifier shape (PR 24 review D-04).
         if (rowNamesEstate(row)) {
             throw estateRefused();
+        }
+        for (List<String> hosts : List.of(row.hostSuffixes(), row.apiHosts(), row.loginHosts())) {
+            if (hosts.stream().anyMatch(IdentifierCheck::identifierShape)) {
+                throw invalid("A host name is vendor vocabulary; it may not carry an identifier-shaped value.");
+            }
         }
         return new Draft(ruleId, RegistryVocabulary.KIND_PLATFORM, null, null, id, row.hostSuffixes(), row.apiHosts(),
             row.loginHosts(), null, b.mode(), b.rolloutStage(), author, b.reasonCode());
@@ -427,8 +433,7 @@ public class PolicyRegistryService {
         }
         // A number glued to letters (a TCKN, a phone or a customer number as "ref<digits>") escapes the detectors'
         // boundary rule and the masker: ten or more digits in a row are refused too (leak probe).
-        if (!REASON_DETECTORS.scan(reason).isEmpty() || !masking.masker().mask(reason).equals(reason)
-            || longestDigitRun(reason) >= 10) {
+        if (IdentifierCheck.identifierShape(reason) || !masking.masker().mask(reason).equals(reason)) {
             throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "REASON_HOLDS_IDENTIFIER",
                 "The reason holds an identifier (an address, a number or a name the masking rules recognise); describe "
                     + "the reason without it.");
@@ -456,45 +461,16 @@ public class PolicyRegistryService {
     }
 
     /**
-     * True when {@code value} contains an estate-dictionary term, compared on letters and digits only and ignoring case
-     * (so {@code SYNTHETIC_ESTATE_X} matches the term {@code synthetic-estate}).
+     * True when {@code value} contains an estate-dictionary term, compared on Turkish-folded letters and digits only
+     * (so {@code SYNTHETIC_ESTATE_X} matches the term {@code synthetic-estate}); the shared check (PR 24 review D-04).
+     * Without the dictionary it refuses with 503 instead of passing the value.
      */
     boolean namesEstate(String value) {
-        if (value == null) {
-            return false;
-        }
-        String v = letters(value);
-        for (String term : keys.estateTerms()) {
-            String t = letters(term);
-            if (!t.isEmpty() && v.contains(t)) {
-                return true;
-            }
-        }
-        return false;
+        return identifiers.namesEstate(value);
     }
 
     static boolean carriesIdentifier(String value) {
-        return !DETECTORS.scan(value).isEmpty() || longestDigitRun(value) >= 6;
-    }
-
-    static int longestDigitRun(String value) {
-        int run = 0;
-        int longest = 0;
-        for (int i = 0; i < value.length(); i++) {
-            run = Character.isDigit(value.charAt(i)) ? run + 1 : 0;
-            longest = Math.max(longest, run);
-        }
-        return longest;
-    }
-
-    private static String letters(String s) {
-        StringBuilder out = new StringBuilder(s.length());
-        for (char c : s.toLowerCase(Locale.ROOT).toCharArray()) {
-            if (Character.isLetterOrDigit(c)) {
-                out.append(c);
-            }
-        }
-        return out.toString();
+        return IdentifierCheck.identifierShape(value);
     }
 
     private static RegistryRefusal estateRefused() {

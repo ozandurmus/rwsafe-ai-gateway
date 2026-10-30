@@ -3,10 +3,10 @@ package io.rwsafe.control.ingest;
 import io.rwsafe.control.policy.PolicyRegistryService;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
-import io.rwsafe.detect.DetectorSet;
 import io.rwsafe.persistence.Database;
 import io.rwsafe.persistence.FindingCount;
 import io.rwsafe.persistence.StoredVerdictEvent;
+import io.rwsafe.platform.verdict.ReasonCodes;
 import io.rwsafe.platform.verdict.Verdict;
 import io.rwsafe.policy.Flow;
 import java.time.Clock;
@@ -35,7 +35,6 @@ public class IngestionService {
     static final Duration MAX_AGE = Duration.ofDays(30);
     static final Duration MAX_SKEW = Duration.ofMinutes(5);
     private static final Set<String> TRANSPORTS = Set.of("plain_allowlisted", "mtls_verified");
-    private static final DetectorSet DETECTORS = DetectorSet.standard();
     /** The flow classifier's fixed enumerations (ICAP spec §4.3): nothing else is a surface or a step. */
     static final Set<String> SURFACES = Set.copyOf(Arrays.stream(Flow.Surface.values())
         .map(v -> v.name().toLowerCase(Locale.ROOT)).toList());
@@ -111,8 +110,9 @@ public class IngestionService {
         } catch (IllegalArgumentException ex) {
             throw new InvalidEventException(i, "verdict");
         }
+        // A closed vocabulary (PR 24 review D-01): the data plane's reason codes, nothing free.
         String reason = e.reason();
-        if (reason != null && !token(reason, 64)) {
+        if (reason != null && !ReasonCodes.known(reason)) {
             throw new InvalidEventException(i, "reason");
         }
         List<FindingCount> findings = findings(i, e.findings());
@@ -130,7 +130,9 @@ public class IngestionService {
         }
         long snapshotVersion = nonNegative(i, "snapshotVersion", e.snapshotVersion());
         String correlationId = require(i, "correlationId", e.correlationId());
-        if (!canonicalUuid(correlationId) && !token(correlationId, 64)) {
+        // A closed format (PR 24 review D-01): the data plane's correlation id is a random canonical UUID. Any other
+        // token could carry a name, which no identifier check recognises, so nothing else is taken.
+        if (!canonicalUuid(correlationId)) {
             throw new InvalidEventException(i, "correlationId");
         }
         List<String> applied = ruleIds(i, "appliedRuleIds", e.appliedRuleIds());
@@ -238,26 +240,8 @@ public class IngestionService {
     }
 
     /**
-     * Reason classes and correlation ids: letters, digits, {@code _} and {@code -} (no dot or colon, so no address or
-     * host name fits), and nothing a Tier-1 detector recognises (an identifier or a secret shape), so neither field can
-     * carry a value into storage (PR 12 review D-05).
-     */
-    private static boolean token(String s, int max) {
-        if (s.isEmpty() || s.length() > max) {
-            return false;
-        }
-        for (int k = 0; k < s.length(); k++) {
-            char c = s.charAt(k);
-            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) {
-                return false;
-            }
-        }
-        return DETECTORS.scan(s).isEmpty();
-    }
-
-    /**
-     * The data plane's correlation id is a lower-case canonical UUID: random hex, so its digit groups can look like a
-     * Luhn-valid card number by chance; it is accepted as a UUID without the detector pass (it can carry no value).
+     * The data plane's correlation id is a lower-case canonical UUID, the only form ingestion takes (PR 24 review D-01):
+     * random hex, so its digit groups can look like a Luhn-valid card number by chance, and it can carry no value.
      */
     public static boolean canonicalUuid(String s) {
         if (s.length() != 36) {

@@ -49,6 +49,7 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  * Exports: the UI and the server have none today; the inventory check fails as soon as one appears unprobed.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@org.springframework.context.annotation.Import(io.rwsafe.probefixture.CanaryFixtureController.class)
 class MaskedRoleLeakProbeTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -57,8 +58,8 @@ class MaskedRoleLeakProbeTest {
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry r) throws Exception {
         canaries = new Canaries();
-        Path dictionary = Files.createTempFile(ControlTestEnvironment.dir() == null
-            ? Path.of(System.getProperty("java.io.tmpdir")) : ControlTestEnvironment.dir(), "probe-estate", ".txt");
+        io.rwsafe.probefixture.CanaryFixtureController.fields = canaries.fixtureFields();
+        Path dictionary = Files.createTempFile(ControlTestEnvironment.dir(), "probe-estate", ".txt");
         Files.writeString(dictionary, canaries.estateDictionary());
         ControlTestEnvironment.register(r, true, dictionary, canaries.signingKeyId);
         // The end-user notice's runtime values (PR 22): complete, so the notice renders with them.
@@ -111,15 +112,15 @@ class MaskedRoleLeakProbeTest {
         List<String> unmarked = new ArrayList<>();
         for (Probed p : masked) {
             int status = p.response().status();
-            // Before sign-in nothing is masked; a 204 (logout) has no page to mark; 401 and 403 come from the security
-            // filter chain before any controller, with fixed bodies and no data.
-            if (!p.session() || status == 204) {
+            // Before sign-in nothing is masked; a 204 (logout) has no page to mark; the security filter chain's own 401
+            // and 403 (fixed bodies, no data) come before any controller. A controller's 403 must be marked (D-06).
+            if (!p.session() || status == 204 || securityChainRefusal(p)) {
                 continue;
             }
-            if (status != 401 && status != 403 && !"true".equals(header(p, MaskingFunnel.MASKED_HEADER))) {
+            if (!"true".equals(header(p, MaskingFunnel.MASKED_HEADER))) {
                 unmarked.add(p.endpoint() + " " + status);
             }
-            if (status != 401 && status != 403 && !TextMasker.RULE_SET.equals(header(p, MaskingFunnel.RULES_HEADER))) {
+            if (!TextMasker.RULE_SET.equals(header(p, MaskingFunnel.RULES_HEADER))) {
                 unmarked.add(p.endpoint() + " " + status + " (rule set)");
             }
         }
@@ -145,24 +146,50 @@ class MaskedRoleLeakProbeTest {
         assertTrue(hits.isEmpty(), "the masked role saw seeded tokens (location class <- canary class): " + hits);
         assertTrue(masked.size() >= 40, "the walk made " + masked.size() + " requests");
 
-        // Positive control: the same walk unmasked sees what a viewer is meant to see (its own login and name, the
-        // operator's key id naming an estate host), so the probe can see a leak; and nothing refused at ingestion or
-        // pseudonymised there reaches the viewer either.
+        // Positive control (PR 24 review D-03): the same walk unmasked must see every canary class, so the masked
+        // walk's zero hits mean the masking held, not that the probe was blind. Classes no real viewer surface holds
+        // (refused or pseudonymised at ingestion) are seen on the test-only fixture route, and only there.
         Set<String> seenByViewer = new TreeSet<>();
         Set<String> viewerHits = hits(probe, walk(canaries.viewer));
         for (String hit : viewerHits) {
             seenByViewer.add(hit.substring(hit.lastIndexOf(' ') + 1));
         }
+        Set<String> unseen = new TreeSet<>(probe.classes());
+        unseen.removeAll(seenByViewer);
+        assertTrue(unseen.isEmpty(), "the positive control did not see " + unseen);
         for (String cls : List.of(Canaries.HOST_NAME, Canaries.DIRECTORY_LOGIN, Canaries.TURKISH_NAME,
             Canaries.GROUP_NAME, Canaries.NOTICE_VALUE)) {
-            assertTrue(seenByViewer.contains(cls), "the positive control did not see " + cls + ": " + seenByViewer);
+            assertTrue(viewerHits.stream().anyMatch(h -> h.endsWith(" " + cls) && !h.startsWith(FIXTURE)),
+                "no real viewer surface showed " + cls);
         }
-        for (String cls : List.of(Canaries.TCKN, Canaries.TR_IBAN, Canaries.TR_MOBILE, Canaries.PAYMENT_CARD,
-            Canaries.SECRET_SHAPE, Canaries.CLAIM_USER, Canaries.EMAIL, Canaries.DOMAIN_ACCOUNT,
-            Canaries.IPV4)) {
-            assertTrue(!seenByViewer.contains(cls), cls + " reached the viewer although ingestion refuses or "
-                + "pseudonymises it (location class <- canary class): " + viewerHits);
+        List<String> refusedClasses = List.of(Canaries.TCKN, Canaries.TR_IBAN, Canaries.TR_MOBILE,
+            Canaries.PAYMENT_CARD, Canaries.SECRET_SHAPE, Canaries.CLAIM_USER, Canaries.EMAIL, Canaries.DOMAIN_ACCOUNT,
+            Canaries.IPV4);
+        List<String> outsideFixture = viewerHits.stream().filter(h -> !h.startsWith(FIXTURE))
+            .filter(h -> refusedClasses.contains(h.substring(h.lastIndexOf(' ') + 1))).toList();
+        assertTrue(outsideFixture.isEmpty(), "a class ingestion refuses or pseudonymises reached a viewer screen "
+            + "(location class <- canary class): " + outsideFixture);
+        // The masked fixture: every maskable form came back masked, every other one withheld.
+        Probed fixture = masked.stream().filter(p -> p.endpoint().startsWith(FIXTURE)).findFirst().orElseThrow();
+        int maskedFields = 0;
+        for (JsonNode field : fixture.response().body().get("fields")) {
+            if (!field.get("maskable").asBoolean()) {
+                assertEquals(TextMasker.WITHHELD, field.get("value").asText());
+            } else {
+                maskedFields++;
+            }
         }
+        assertTrue(maskedFields >= 15, "the fixture masked " + maskedFields + " fields");
+    }
+
+    private static final String FIXTURE = "GET " + io.rwsafe.probefixture.CanaryFixtureController.PATH;
+
+    /** The security chain's own refusals (SecurityConfig): before any controller, a fixed body, no data. */
+    private static boolean securityChainRefusal(Probed p) {
+        int status = p.response().status();
+        String reason = p.response().body() == null ? "" : p.response().body().path("reason").asText();
+        return (status == 401 && reason.equals("AUTHENTICATION_REQUIRED"))
+            || (status == 403 && (reason.equals("FORBIDDEN") || reason.equals("CSRF_TOKEN_INVALID")));
     }
 
     /**
@@ -185,17 +212,23 @@ class MaskedRoleLeakProbeTest {
         guesses.add(canaries.email(canaries.claimants.get(0)));
         guesses.add(canaries.domainAccount(canaries.claimants.get(0)));
         guesses.add(Canaries.fold(canaries.claimants.get(0).given()));
+        guesses.add(canaries.claimants.get(0).given());
+        guesses.add(canaries.claimants.get(0).family());
+        guesses.add(canaries.claimants.get(0).displayName());
+        guesses.add(canaries.secret);
         guesses.addAll(canaries.addresses);
         LeakProbe probe = canaries.probe();
         List<String> accepted = new ArrayList<>();
         Set<String> echoed = new TreeSet<>();
-        for (String filter : List.of("platform", "user", "verdict", "service")) {
+        for (String filter : List.of("platform", "user", "verdict", "service", "cursor")) {
             for (String guess : guesses) {
                 ApiClient.Response r = masked.get("/api/v1/traffic?" + filter + "=" + enc(guess));
                 if (r.status() != 400) {
                     accepted.add(filter + " answered " + r.status());
                 }
                 probe.scan("GET /api/v1/traffic?" + filter, r.body()).forEach(h -> echoed.add(h.toString()));
+                r.raw().headers().map().forEach((name, values) -> values.forEach(v ->
+                    probe.scanText("GET /api/v1/traffic?" + filter + " header", v).forEach(h -> echoed.add(h.toString()))));
             }
         }
         for (String guess : guesses) {
@@ -235,6 +268,10 @@ class MaskedRoleLeakProbeTest {
                 claims.get(i % claims.size()), canaries.addresses.get(i % canaries.addresses.size()));
             e.put("surface", surfaces.get(i % surfaces.size()));
             e.put("step", steps.get(i % steps.size()));
+            if (i % 3 == 1) {
+                e.putArray("appliedRuleIds").add("class.TCKN@1");
+                e.putArray("monitorRuleIds").add("class.TR_IBAN@1");
+            }
             events.add(e);
         }
         ApiClient sink = new ApiClient(internal.port());
@@ -258,10 +295,14 @@ class MaskedRoleLeakProbeTest {
         refusedValues.add(canaries.secret);
         refusedValues.addAll(canaries.hosts);
         refusedValues.addAll(canaries.groups);
+        refusedValues.add("tel" + canaries.mobiles.get(0));
+        refusedValues.add("card" + canaries.card);
+        refusedValues.add("odeme" + canaries.ibans.get(1));
         org.springframework.jdbc.core.JdbcTemplate jdbc = new org.springframework.jdbc.core.JdbcTemplate(dataSource);
         Integer stored = jdbc.queryForObject("SELECT count(*) FROM verdict_event", Integer.class);
         int refused = 0;
-        for (String field : List.of("platform", "surface", "step")) {
+        List<String> refusedFields = List.of("platform", "surface", "step", "reason", "correlationId");
+        for (String field : refusedFields) {
             for (String value : refusedValues) {
                 ObjectNode e = event("claude", "ALLOW", claims.get(0), canaries.addresses.get(0));
                 e.put(field, value);
@@ -272,7 +313,7 @@ class MaskedRoleLeakProbeTest {
                 refused++;
             }
         }
-        assertEquals(3 * refusedValues.size(), refused);
+        assertEquals(refusedFields.size() * refusedValues.size(), refused);
         assertEquals(stored, jdbc.queryForObject("SELECT count(*) FROM verdict_event", Integer.class),
             "a refused batch stored nothing");
 
@@ -308,6 +349,18 @@ class MaskedRoleLeakProbeTest {
                 true);
             assertTrue(r.status() >= 400 && r.status() < 500, "platform draft " + r.status());
             assertTrue(canaries.probe().scan("draft refusal", r.body()).isEmpty(), "the draft refusal echoed the id");
+        }
+        // A vendor host label carrying an identifier shape is refused too (PR 24 review D-04).
+        for (String host : List.of("api" + canaries.tckns.get(0) + ".vendor.example",
+            "tel" + canaries.mobiles.get(0) + ".vendor.example")) {
+            ObjectNode hostDraft = JSON.createObjectNode().put("mode", "monitor").put("reasonCode", "SYNTHETIC_HOST");
+            hostDraft.putArray("hostSuffixes").add(host);
+            hostDraft.putArray("apiHosts").add(host);
+            hostDraft.putArray("loginHosts");
+            ApiClient.Response r = admin.post("/api/v1/policy/rules/platform.synvendor/versions", hostDraft.toString(),
+                true);
+            assertEquals(400, r.status(), "an identifier-shaped host label: " + r.body().path("reason").asText());
+            assertTrue(canaries.probe().scan("host refusal", r.body()).isEmpty(), "the refusal echoed the host");
         }
         for (String code : List.of("REF" + canaries.tckns.get(0), "TCKN_" + canaries.tckns.get(1))) {
             String body = JSON.createObjectNode().put("action", "BLOCK").put("mode", "monitor").put("reasonCode", code)
@@ -418,6 +471,7 @@ class MaskedRoleLeakProbeTest {
 
         out.add(get(c, "GET /api/v1/health", "/api/v1/health"));
         out.add(get(c, "GET /api/v1/notice", "/api/v1/notice"));
+        out.add(get(c, FIXTURE, io.rwsafe.probefixture.CanaryFixtureController.PATH));
         for (String user : users) {
             out.add(get(c, "GET /api/v1/notice/acknowledgements", "/api/v1/notice/acknowledgements?user=" + enc(user)));
         }
@@ -461,6 +515,9 @@ class MaskedRoleLeakProbeTest {
         Set<String> hits = new TreeSet<>();
         for (Probed p : responses) {
             for (LeakProbe.Hit h : probe.scan(p.endpoint(), p.response().body())) {
+                hits.add(h.toString());
+            }
+            for (LeakProbe.Hit h : probe.scanText(p.endpoint() + " raw body", p.response().raw().body())) {
                 hits.add(h.toString());
             }
             p.response().raw().headers().map().forEach((name, values) -> values.forEach(v ->

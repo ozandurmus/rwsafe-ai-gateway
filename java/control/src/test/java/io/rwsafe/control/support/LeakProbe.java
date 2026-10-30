@@ -1,8 +1,10 @@
 package io.rwsafe.control.support;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -20,9 +22,13 @@ import javax.crypto.spec.SecretKeySpec;
  * cut into tokens, each token is digested the same way, and a match reports the location class (endpoint template and
  * JSON path with array indices erased) and the canary class, never the value.
  *
- * <p>Tokens of a text, all lower-cased: every maximal run of letters, digits and {@code . - _ @ \ : + /}; every
- * contiguous span of the letter-and-digit parts inside such a run (so {@code x-<host>-y} still yields {@code <host>});
- * and every run of digits joined across single spaces (so a spaced phone number or IBAN still yields its digits).
+ * <p>Canaries and texts are compared in one form ({@link #fold}): NFC, Turkish letters folded to ASCII, lower case,
+ * combining marks dropped, so {@code İ}, a decomposed {@code ü} and {@code u} agree (PR 24 review D-02). Tokens of a
+ * text: every maximal run of letters, digits, combining marks and {@code . - _ @ \ : + /}; every contiguous span of the
+ * letter-and-digit parts inside such a run (so {@code x-<host>-y} still yields {@code <host>}); every maximal digit run
+ * inside a run (so {@code ref<digits>} still yields the digits); every run of digits joined across single spaces,
+ * hyphens or dots (a phone, card or IBAN written in groups); and the same again for the URL-decoded text when it holds a
+ * percent escape. A multi-word canary is also registered word by word (words of four or more letters and digits).
  */
 public final class LeakProbe {
 
@@ -36,6 +42,7 @@ public final class LeakProbe {
     }
 
     private static final String SEPARATORS = ".-_@\\:+/";
+    private static final String DIGIT_JOINERS = " -.";
 
     private final SecretKeySpec key;
     private final Map<String, String> classByDigest = new HashMap<>();
@@ -49,7 +56,17 @@ public final class LeakProbe {
 
     /** Registers a canary value of {@code canaryClass}; the value is digested at once and not kept. */
     public void canary(String canaryClass, String value) {
-        classByDigest.put(digest(value.toLowerCase(Locale.ROOT)), canaryClass);
+        String f = fold(value);
+        classByDigest.put(digest(f), canaryClass);
+        String[] words = f.split("\\s+");
+        if (words.length > 1) {
+            for (String word : words) {
+                String core = trimSeparators(word);
+                if (alphanumeric(core) >= 4) {
+                    classByDigest.putIfAbsent(digest(core), canaryClass);
+                }
+            }
+        }
         classes.add(canaryClass);
     }
 
@@ -73,6 +90,9 @@ public final class LeakProbe {
     /** Scans one text (a header value, a log, a raw body); {@code location} names its class. */
     public List<Hit> scanText(String location, String text) {
         List<Hit> hits = new ArrayList<>();
+        if (text == null) {
+            return hits;
+        }
         Set<String> seen = new TreeSet<>();
         for (String token : tokens(text)) {
             String cls = classByDigest.get(digest(token));
@@ -99,10 +119,44 @@ public final class LeakProbe {
         }
     }
 
+    /** NFC, Turkish letters folded to ASCII, lower case ({@code Locale.ROOT}), combining marks dropped. */
+    public static String fold(String s) {
+        String nfc = Normalizer.normalize(s, Normalizer.Form.NFC);
+        StringBuilder b = new StringBuilder(nfc.length());
+        for (int i = 0; i < nfc.length(); i++) {
+            char c = nfc.charAt(i);
+            switch (c) {
+                case 'ş', 'Ş' -> b.append('s');
+                case 'ğ', 'Ğ' -> b.append('g');
+                case 'ü', 'Ü' -> b.append('u');
+                case 'ö', 'Ö' -> b.append('o');
+                case 'ç', 'Ç' -> b.append('c');
+                case 'ı', 'İ', 'I' -> b.append('i');
+                default -> {
+                    if (Character.getType(c) != Character.NON_SPACING_MARK) {
+                        b.append(Character.toLowerCase(c));
+                    }
+                }
+            }
+        }
+        return b.toString().toLowerCase(Locale.ROOT);
+    }
+
     /** The token set of one text (see the class comment). */
     static Set<String> tokens(String text) {
         Set<String> out = new LinkedHashSet<>();
-        String s = text.toLowerCase(Locale.ROOT);
+        collect(fold(text), out);
+        if (text.indexOf('%') >= 0) {
+            try {
+                collect(fold(URLDecoder.decode(text, StandardCharsets.UTF_8)), out);
+            } catch (IllegalArgumentException notEncoded) {
+                // not a percent-encoded text; its plain tokens are already collected
+            }
+        }
+        return out;
+    }
+
+    private static void collect(String s, Set<String> out) {
         int i = 0;
         while (i < s.length()) {
             if (!compoundChar(s.charAt(i))) {
@@ -116,13 +170,14 @@ public final class LeakProbe {
             compound(s.substring(i, end), out);
             i = end;
         }
-        // Digit groups joined across single spaces: a phone number written in groups also yields its digit string.
+        // Digit groups joined across one space, hyphen or dot: a number written in groups also yields its digit string.
         StringBuilder digits = new StringBuilder();
         for (int k = 0; k <= s.length(); k++) {
             char c = k < s.length() ? s.charAt(k) : '\0';
             if (Character.isDigit(c)) {
                 digits.append(c);
-            } else if (c == ' ' && digits.length() > 0 && k + 1 < s.length() && Character.isDigit(s.charAt(k + 1))) {
+            } else if (DIGIT_JOINERS.indexOf(c) >= 0 && c != '\0' && digits.length() > 0 && k + 1 < s.length()
+                && Character.isDigit(s.charAt(k + 1))) {
                 continue;
             } else {
                 if (digits.length() > 0) {
@@ -131,7 +186,6 @@ public final class LeakProbe {
                 digits.setLength(0);
             }
         }
-        return out;
     }
 
     private static void compound(String run, Set<String> out) {
@@ -155,7 +209,6 @@ public final class LeakProbe {
                 out.add(run.substring(parts.get(a)[0], parts.get(b)[1]));
             }
         }
-        // Maximal digit runs inside a part ("ref12345678901" still yields the eleven digits).
         int d = 0;
         while (d < run.length()) {
             if (!Character.isDigit(run.charAt(d))) {
@@ -172,7 +225,30 @@ public final class LeakProbe {
     }
 
     private static boolean compoundChar(char c) {
-        return Character.isLetterOrDigit(c) || SEPARATORS.indexOf(c) >= 0;
+        return Character.isLetterOrDigit(c) || SEPARATORS.indexOf(c) >= 0
+            || Character.getType(c) == Character.NON_SPACING_MARK;
+    }
+
+    private static String trimSeparators(String word) {
+        int a = 0;
+        int b = word.length();
+        while (a < b && !Character.isLetterOrDigit(word.charAt(a))) {
+            a++;
+        }
+        while (b > a && !Character.isLetterOrDigit(word.charAt(b - 1))) {
+            b--;
+        }
+        return word.substring(a, b);
+    }
+
+    private static int alphanumeric(String s) {
+        int n = 0;
+        for (int i = 0; i < s.length(); i++) {
+            if (Character.isLetterOrDigit(s.charAt(i))) {
+                n++;
+            }
+        }
+        return n;
     }
 
     private String digest(String token) {
