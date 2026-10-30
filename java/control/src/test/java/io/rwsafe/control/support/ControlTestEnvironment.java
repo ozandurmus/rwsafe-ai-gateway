@@ -46,6 +46,16 @@ public final class ControlTestEnvironment {
     public static synchronized void register(DynamicPropertyRegistry r, boolean withKey, boolean withDictionary)
         throws Exception {
         start();
+        register(r, withKey, withDictionary ? dir.resolve("dictionary.txt") : dir.resolve("absent"), SNAPSHOT_KEY_ID);
+    }
+
+    /**
+     * Registers one context with its own estate dictionary file and signing key id (the leak probe seeds both with
+     * synthetic estate terms); a {@code dictionary} that does not exist leaves masking unavailable.
+     */
+    public static synchronized void register(DynamicPropertyRegistry r, boolean withKey, Path dictionary,
+                                             String signingKeyId) throws Exception {
+        start();
         String db = "rwsafe_control_" + DATABASES.incrementAndGet();
         try (Connection c = postgres.getPostgresDatabase().getConnection(); Statement s = c.createStatement()) {
             s.execute("CREATE DATABASE " + db);
@@ -56,10 +66,9 @@ public final class ControlTestEnvironment {
         r.add("rwsafe.snapshot-feed.port", () -> "0");
         r.add("rwsafe.policy.seed-file", () -> seedFixture().toString());
         r.add("rwsafe.policy.signing-key-file", () -> dir.resolve("snapshot-signing.key").toString());
-        r.add("rwsafe.policy.signing-key-id", () -> SNAPSHOT_KEY_ID);
+        r.add("rwsafe.policy.signing-key-id", () -> signingKeyId);
         r.add("rwsafe.privacy.hmac-key-file", () -> withKey ? dir.resolve("key").toString() : dir.resolve("absent").toString());
-        r.add("rwsafe.privacy.estate-dictionary-file",
-            () -> withDictionary ? dir.resolve("dictionary.txt").toString() : dir.resolve("absent").toString());
+        r.add("rwsafe.privacy.estate-dictionary-file", dictionary::toString);
         r.add("rwsafe.identity.cookie-secure", () -> "false");
         r.add("server.servlet.session.cookie.secure", () -> "false");
         r.add("server.servlet.session.cookie.name", () -> "rwsafe-session");
@@ -96,8 +105,24 @@ public final class ControlTestEnvironment {
         return dir.resolve("rwsafe_control_" + database + "-break-glass");
     }
 
-    public static Path dir() {
+    /** The per-JVM directory of generated keys and files; starts the environment first (PR 24 review D-06). */
+    public static synchronized Path dir() {
+        try {
+            start();
+        } catch (Exception e) {
+            throw new IllegalStateException("the control test environment did not start", e);
+        }
         return dir;
+    }
+
+    /** A fresh, empty database on the shared embedded PostgreSQL, for tests without a Spring context. */
+    public static synchronized javax.sql.DataSource freshDataSource() throws Exception {
+        start();
+        String db = "rwsafe_control_" + DATABASES.incrementAndGet();
+        try (Connection c = postgres.getPostgresDatabase().getConnection(); Statement s = c.createStatement()) {
+            s.execute("CREATE DATABASE " + db);
+        }
+        return postgres.getDatabase("postgres", db);
     }
 
     private static void start() throws Exception {
@@ -134,6 +159,14 @@ public final class ControlTestEnvironment {
         ldap.modify("uid=synthetic-dual," + PEOPLE, new com.unboundid.ldap.sdk.Modification(
             com.unboundid.ldap.sdk.ModificationType.ADD, "memberOf", "cn=rwsafe-security_admin," + GROUPS));
         ldap.startListening();
+    }
+
+    /** Adds a directory user with one role (or none) once per JVM; its generated password lands in {@link #PASSWORDS}. */
+    public static synchronized void addUser(String login, String role) throws Exception {
+        start();
+        if (!PASSWORDS.containsKey(login)) {
+            user(login, role);
+        }
     }
 
     private static void user(String login, String role) throws Exception {

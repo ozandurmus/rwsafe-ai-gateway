@@ -36,6 +36,13 @@ public final class PolicyViews {
         }
     }
 
+    /**
+     * What the masked role reads in place of a free-text reason (retirement, withdrawal). The text is written by a person
+     * and may name one; the masking layers have no name dictionary yet (layer 4) and a number glued to letters escapes
+     * the detectors, so the masked projection withholds the text instead of masking it (leak probe, AGENTS.md 4.11).
+     */
+    public static final String FREE_TEXT_WITHHELD = TextMasker.WITHHELD;
+
     /** How a platform row left service (Q-40): when, the administrator's pseudonym, and the reason given. */
     public record RetirementView(Instant retiredAt, String retiredBy, String reason) {
     }
@@ -73,9 +80,9 @@ public final class PolicyViews {
             return new VersionView(m.mask(ruleId), version, action, enforceFailClosed, mask(m, hostSuffixes),
                 mask(m, apiHosts), mask(m, loginHosts), mode, rolloutStage, scope.masked(m), status, source, author,
                 m.mask(reasonCode), createdAt, activatedAt, supersededAt, retirement == null ? null
-                    : new RetirementView(retirement.retiredAt(), retirement.retiredBy(), m.maskFreeText(retirement.reason())),
+                    : new RetirementView(retirement.retiredAt(), retirement.retiredBy(), withheld(retirement.reason())),
                 withdrawal == null ? null : new WithdrawalView(withdrawal.withdrawsVersion(),
-                    withdrawal.reason() == null ? null : m.maskFreeText(withdrawal.reason()), withdrawal.withdrawnAt()),
+                    withheld(withdrawal.reason()), withdrawal.withdrawnAt()),
                 approvals, inSnapshot);
         }
     }
@@ -174,6 +181,10 @@ public final class PolicyViews {
         public SimulationView masked(TextMasker m) {
             return this;
         }
+    }
+
+    private static String withheld(String freeText) {
+        return freeText == null ? null : FREE_TEXT_WITHHELD;
     }
 
     private static List<String> mask(TextMasker m, List<String> values) {

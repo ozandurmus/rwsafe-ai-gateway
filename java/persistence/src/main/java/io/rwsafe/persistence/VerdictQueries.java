@@ -202,13 +202,13 @@ public final class VerdictQueries {
         return new IngestStats(r.get(recent), r.get(latest), r.get(all));
     }
 
-    private static List<Field<?>> eventFields() {
+    static List<Field<?>> eventFields() {
         return List.of(EVENT_ID, RECEIVED_AT, SERVICE, PLATFORM, SURFACE, STEP, VERDICT, REASON, BODY_BYTES,
             DECISION_MICROS, USER_PSEUDONYM, CLIENT_SUBNET, TRANSPORT, SNAPSHOT_VERSION, CORRELATION_ID,
             PSEUDONYM_KEY_ID, APPLIED_RULE_IDS, MONITOR_RULE_IDS);
     }
 
-    private Map<UUID, List<FindingCount>> findings(List<UUID> eventIds) {
+    Map<UUID, List<FindingCount>> findings(List<UUID> eventIds) {
         Map<UUID, List<FindingCount>> out = new LinkedHashMap<>();
         if (eventIds.isEmpty()) {
             return out;
@@ -221,7 +221,7 @@ public final class VerdictQueries {
         return out;
     }
 
-    private static StoredVerdictEvent toEvent(Record r, List<FindingCount> findings) {
+    static StoredVerdictEvent toEvent(Record r, List<FindingCount> findings) {
         return new StoredVerdictEvent(r.get(EVENT_ID), r.get(RECEIVED_AT), r.get(SERVICE), r.get(PLATFORM),
             r.get(SURFACE), r.get(STEP), Verdict.valueOf(r.get(VERDICT)), r.get(REASON), findings, r.get(BODY_BYTES),
             r.get(DECISION_MICROS), r.get(USER_PSEUDONYM), r.get(CLIENT_SUBNET), r.get(TRANSPORT),

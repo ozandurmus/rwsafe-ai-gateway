@@ -35,6 +35,13 @@ public final class TextMasker {
      */
     public static final String RULE_SET = "rwmask-v2";
 
+    /**
+     * What the masked role reads in place of free text a person wrote (retirement and withdrawal reasons, a correlation
+     * id that is not a UUID): the masking layers cannot recognise a name, so such text is withheld, not masked (PO
+     * decision on PR 24 review Q-1: permanently).
+     */
+    public static final String WITHHELD = "[FREE_TEXT_WITHHELD]";
+
     private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+");
     private static final Pattern IPV4 = Pattern.compile("\\b\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\b");
     private static final Pattern IPV4_ANYWHERE = Pattern.compile("[0-9]{1,3}(?:\\.[0-9]{1,3}){3}");

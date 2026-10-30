@@ -82,7 +82,7 @@ public final class Views {
             return new EventView(eventId, receivedAt, m.mask(service), m.mask(platform), m.mask(surface), m.mask(step),
                 verdict, m.mask(reason), findings, bodyBytes, decisionMicros, user, clientSubnet,
                 m.mask(transport), snapshotVersion,
-                IngestionService.canonicalUuid(correlationId) ? correlationId : m.mask(correlationId), pseudonymKeyId,
+                IngestionService.canonicalUuid(correlationId) ? correlationId : TextMasker.WITHHELD, pseudonymKeyId,
                 appliedRuleIds, monitorRuleIds);
         }
     }

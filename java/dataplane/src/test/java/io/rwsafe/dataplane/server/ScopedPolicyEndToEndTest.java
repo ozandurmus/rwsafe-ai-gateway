@@ -105,6 +105,9 @@ class ScopedPolicyEndToEndTest {
             VerdictEvent e = EVENTS.poll();
             if (e != null) {
                 assertEquals(mtls ? "mtls_verified" : "plain_allowlisted", e.transport());
+                // PR 24 review D-01: the control plane takes only these reason codes; a new one goes there too.
+                org.junit.jupiter.api.Assertions.assertTrue(e.reason() == null
+                    || io.rwsafe.platform.verdict.ReasonCodes.known(e.reason()), "a reason code missing from ReasonCodes");
                 return new Outcome(r, e);
             }
             Thread.sleep(20);

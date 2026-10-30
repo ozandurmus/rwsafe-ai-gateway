@@ -4,6 +4,7 @@ import io.rwsafe.control.config.ControlProperties;
 import io.rwsafe.control.identity.Roles;
 import io.rwsafe.control.privacy.Masking;
 import io.rwsafe.control.privacy.PrivacyKeys;
+import io.rwsafe.control.privacy.IdentifierCheck;
 import io.rwsafe.control.privacy.Pseudonymiser;
 import io.rwsafe.persistence.AuditContext;
 import io.rwsafe.persistence.Database;
@@ -18,6 +19,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -43,6 +45,8 @@ public class PolicyRegistryService {
     public static final String ISSUER = "system:snapshot-issuer";
     static final Duration SCHEDULE_INTERVAL = Duration.ofMinutes(5);
     private static final Logger LOG = LoggerFactory.getLogger(PolicyRegistryService.class);
+    /** The platform the data plane names when no platform row matches (the flow classifier's fallback). */
+    public static final String UNKNOWN_PLATFORM = "unknown";
     private static final Set<String> APPROVER_ROLES = Set.of(Roles.SECURITY_ADMIN, Roles.PRIVACY_OFFICER);
 
     private final Database database;
@@ -51,8 +55,8 @@ public class PolicyRegistryService {
     private final PrivacyKeys keys;
     private final SnapshotSigner signer;
     private final SnapshotCompiler compiler = new SnapshotCompiler();
-    private static final io.rwsafe.detect.DetectorSet REASON_DETECTORS = io.rwsafe.detect.DetectorSet.standard();
     private final Masking masking;
+    private final IdentifierCheck identifiers;
     private final Clock clock;
 
     public PolicyRegistryService(Database database, ControlProperties properties, Pseudonymiser pseudonymiser,
@@ -63,6 +67,7 @@ public class PolicyRegistryService {
         this.keys = keys;
         this.signer = signer;
         this.masking = new Masking(keys, pseudonymiser);
+        this.identifiers = new IdentifierCheck(keys);
         this.clock = Clock.systemUTC();
     }
 
@@ -97,6 +102,21 @@ public class PolicyRegistryService {
 
     public List<PolicyRuleVersion> versions() {
         return database.policyRegistry().versions();
+    }
+
+    /**
+     * The platform ids a verdict event or a traffic filter may name (SR-PRIV-4): every platform rule the registry holds,
+     * in any version, and {@link #UNKNOWN_PLATFORM}. Nothing else is a platform.
+     */
+    public Set<String> platformIds() {
+        Set<String> ids = new HashSet<>();
+        ids.add(UNKNOWN_PLATFORM);
+        for (PolicyRuleVersion v : versions()) {
+            if (RegistryVocabulary.KIND_PLATFORM.equals(v.kind()) && v.platformId() != null) {
+                ids.add(v.platformId());
+            }
+        }
+        return ids;
     }
 
     public Optional<IssuedSnapshot> latestSnapshot() {
@@ -177,6 +197,13 @@ public class PolicyRegistryService {
             && namesEstate(ruleId.substring("platform.".length())))) {
             throw estateRefused();
         }
+        // A platform id becomes ingestion vocabulary and a reason code is shown to every role (the masked one through
+        // the text masker): no identifier shape and no long digit run (a number glued to letters escapes the detectors'
+        // boundary rule).
+        if (carriesIdentifier(body.reasonCode()) || (kind.equals(RegistryVocabulary.KIND_PLATFORM)
+            && carriesIdentifier(ruleId.substring("platform.".length())))) {
+            throw invalid("A platform id or reason code is vocabulary; it may not carry an identifier-shaped value.");
+        }
         String author = pseudonym(loginName);
         Draft shape = switch (kind) {
             case RegistryVocabulary.KIND_CLASS -> classDraft(ruleId, body, author);
@@ -221,6 +248,12 @@ public class PolicyRegistryService {
             throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "INVALID_SCOPE",
                 "A group scope takes 1 to 32 short directory group names of 1 to 256 characters, without commas or "
                     + "control characters, each named once (compared after normalisation: case, Turkish i forms).");
+        }
+        // Directory group names are estate names by nature (no estate check; the masked role sees GRP- pseudonyms), but
+        // never an identifier shape (PO decision on PR 24 confirmation review Q-1).
+        if (groups.stream().anyMatch(IdentifierCheck::identifierShape)) {
+            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "INVALID_SCOPE",
+                "A group name may not carry an identifier-shaped value (a number, a card, an account or a secret).");
         }
         return new Scope(PolicyRuleVersion.SCOPE_GROUPS, groups);
     }
@@ -272,9 +305,15 @@ public class PolicyRegistryService {
             throw new RegistryRefusal(HttpStatus.CONFLICT, "INVALID_PLATFORM_ROW", "The platform row is refused: "
                 + defect + ".");
         }
-        // Vendor-published endpoints only (PLATFORM_MATRIX §2): a host that names an estate term is refused.
+        // Vendor-published endpoints only (PLATFORM_MATRIX §2): a host that names an estate term is refused, and so is
+        // a host label carrying an identifier shape (PR 24 review D-04).
         if (rowNamesEstate(row)) {
             throw estateRefused();
+        }
+        for (List<String> hosts : List.of(row.hostSuffixes(), row.apiHosts(), row.loginHosts())) {
+            if (hosts.stream().anyMatch(IdentifierCheck::identifierShape)) {
+                throw invalid("A host name is vendor vocabulary; it may not carry an identifier-shaped value.");
+            }
         }
         return new Draft(ruleId, RegistryVocabulary.KIND_PLATFORM, null, null, id, row.hostSuffixes(), row.apiHosts(),
             row.loginHosts(), null, b.mode(), b.rolloutStage(), author, b.reasonCode());
@@ -317,6 +356,11 @@ public class PolicyRegistryService {
                 "This activation would leave a registry that does not compile (" + e.reason() + "); nothing changed.");
         }
         for (PolicyRuleVersion v : active) {
+            // Every activating version's free values once more (N-02): the reason code, the platform row, the groups.
+            if (namesEstate(v.reasonCode()) || carriesIdentifier(v.reasonCode())
+                || (v.scopeGroups() != null && v.scopeGroups().stream().anyMatch(IdentifierCheck::identifierShape))) {
+                throw invalid("An active version would carry an identifier or an estate name; nothing changed.");
+            }
             if (RegistryVocabulary.KIND_PLATFORM.equals(v.kind()) && (namesEstate(v.platformId())
                 || rowNamesEstate(new PlatformRow(v.platformId(), v.hostSuffixes(), v.apiHosts(), v.loginHosts())))) {
                 throw estateRefused();
@@ -399,7 +443,10 @@ public class PolicyRegistryService {
             throw new RegistryRefusal(HttpStatus.SERVICE_UNAVAILABLE, "MASKING_UNAVAILABLE",
                 "The reason cannot be checked for identifiers without the masking key and dictionary; nothing changed.");
         }
-        if (!REASON_DETECTORS.scan(reason).isEmpty() || !masking.masker().maskFreeText(reason).equals(reason)) {
+        // A number glued to letters (a TCKN, a phone or a customer number as "ref<digits>") escapes the detectors'
+        // boundary rule: six or more digits in a row are refused too (leak probe); the free-text layers find the rest
+        // (a person's name, hosts, domain accounts, IBAN shapes).
+        if (IdentifierCheck.identifierShape(reason) || !masking.masker().maskFreeText(reason).equals(reason)) {
             throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "REASON_HOLDS_IDENTIFIER",
                 "The reason holds an identifier (an address, a number or a name the masking rules recognise); describe "
                     + "the reason without it.");
@@ -427,31 +474,16 @@ public class PolicyRegistryService {
     }
 
     /**
-     * True when {@code value} contains an estate-dictionary term, compared on letters and digits only and ignoring case
-     * (so {@code SYNTHETIC_ESTATE_X} matches the term {@code synthetic-estate}).
+     * True when {@code value} contains an estate-dictionary term, compared on Turkish-folded letters and digits only
+     * (so {@code SYNTHETIC_ESTATE_X} matches the term {@code synthetic-estate}); the shared check (PR 24 review D-04).
+     * Without the dictionary it refuses with 503 instead of passing the value.
      */
     boolean namesEstate(String value) {
-        if (value == null) {
-            return false;
-        }
-        String v = letters(value);
-        for (String term : keys.estateTerms()) {
-            String t = letters(term);
-            if (!t.isEmpty() && v.contains(t)) {
-                return true;
-            }
-        }
-        return false;
+        return identifiers.namesEstate(value);
     }
 
-    private static String letters(String s) {
-        StringBuilder out = new StringBuilder(s.length());
-        for (char c : s.toLowerCase(Locale.ROOT).toCharArray()) {
-            if (Character.isLetterOrDigit(c)) {
-                out.append(c);
-            }
-        }
-        return out.toString();
+    static boolean carriesIdentifier(String value) {
+        return IdentifierCheck.identifierShape(value);
     }
 
     private static RegistryRefusal estateRefused() {
