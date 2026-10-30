@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(git push:*)", "Bash(git fetch:*)", "Bash(git pull:*)",
+      "Bash(gh repo:*)", "Bash(gh pr:*)", "Bash(gh api:*)", "Bash(gh release:*)", "Bash(gh run:*)",
+      "Bash(python3 tools/review/consult_fable.py:*)", "Bash(python3 tools/review/consult_argon.py:*)",
+      "Bash(python3 tools/review/argon_task.py:*)", "Bash(python3 tools/review/review_guard.py:*)",
+      "Bash(python3 tools/privacy/repository_privacy_check.py:*)",
+      "Bash(bash tools/hosta/inventory_readonly.sh:*)", "Bash(bash tools/delivery/install_hooks.sh)",
+      "Edit(AGENTS.md)", "Edit(roles/**)", "Edit(.claude/settings.json)", "Edit(docs/design/**)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)", "Bash(git push -f:*)",
+      "Bash(gh repo delete:*)", "Bash(gh repo edit --visibility:*)"
+    ]
+  },
+  "autoMode": {
+    "allow": [
+      "$defaults",
+      "Publishing this repository's own committed, privacy-gated content to github.com/ozandurmus/rwsafe-ai-gateway with git push, gh pr or gh api, and merging its pull requests, is standing Product Owner authorisation (AGENTS.md section 9); the repository has one human account, so a GitHub approval is not available and the second review is recorded in the PR instead. Edits to AGENTS.md, roles/, docs/design/ decision records and .claude/settings.json that the Product Owner dictates in chat are authorised. The external review scripts under tools/review/ invoke the installed claude and agy CLIs with read-only tools; they are the authorised consultation path (AGENTS.md section 11)."
+    ]
+  }
+}
