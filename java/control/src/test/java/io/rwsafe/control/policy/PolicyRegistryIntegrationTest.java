@@ -526,6 +526,93 @@ class PolicyRegistryIntegrationTest {
         assertEquals(1, verified(snapshot(internal.snapshotPort(), null)).get("platforms").size());
     }
 
+    // PR 21 review D-06: the service checks the drafting role, platform rows are enforce only, reasons hold no identifier.
+
+    @Test
+    void draftsAreTheSecurityAdministratorsPlatformRowsAreEnforcedAndReasonsHoldNoIdentifier() throws Exception {
+        PolicyRegistryService.DraftRequest body = new PolicyRegistryService.DraftRequest("BLOCK", null, null, null, null,
+            "enforce", null, null, "SYNTHETIC_CHANGE");
+        for (java.util.Set<String> roles : List.of(java.util.Set.of("viewer"), java.util.Set.of("privacy_officer"),
+            java.util.Set.of("security_admin", "replay_viewer"))) {
+            RegistryRefusal refused = org.junit.jupiter.api.Assertions.assertThrows(RegistryRefusal.class,
+                () -> registry.draft("class.TCKN", body, "synthetic-admin", roles));
+            assertEquals("DRAFT_ROLE_MISSING", refused.reason(), roles.toString());
+        }
+        ApiClient admin = signedIn("synthetic-admin");
+        ApiClient.Response monitorPlatform = admin.post("/api/v1/policy/rules/platform.vendor-x/versions",
+            "{\"hostSuffixes\":[\"vendor.example\"],\"apiHosts\":[],\"loginHosts\":[],\"mode\":\"monitor\","
+                + "\"reasonCode\":\"SYNTHETIC_CHANGE\"}", true);
+        assertEquals(400, monitorPlatform.status());
+        assertEquals("ENFORCE_ONLY", monitorPlatform.body().get("reason").asText());
+        String retire = "/api/v1/policy/rules/platform.github/retirement";
+        // Identifier-shaped values are built at runtime (AGENTS.md 4.5).
+        for (String reason : new String[] {"moved, see 192.0.2.10",
+            "contact " + String.join("@", "synthetic.person", "example.com"),
+            "card " + SyntheticCard.luhnValid()}) {
+            ApiClient.Response r = admin.post(retire, JSON.createObjectNode().put("reason", reason).toString(), true);
+            assertEquals(400, r.status(), reason);
+            assertEquals("REASON_HOLDS_IDENTIFIER", r.body().get("reason").asText(), reason);
+            assertFalse(r.body().toString().contains("192.0.2") || r.body().toString().contains("example.com"));
+        }
+        assertEquals(0, ledger("policy_rule_version", "UPDATE", "policy.platform_retire"));
+    }
+
+    /** A Luhn-valid 16-digit number built at runtime (AGENTS.md 4.5: no identifier-shaped literal is committed). */
+    private static final class SyntheticCard {
+        static String luhnValid() {
+            StringBuilder s = new StringBuilder("411111111111111");
+            int sum = 0;
+            for (int i = 0; i < s.length(); i++) {
+                int d = s.charAt(s.length() - 1 - i) - '0';
+                if (i % 2 == 0) {
+                    d *= 2;
+                    if (d > 9) {
+                        d -= 9;
+                    }
+                }
+                sum += d;
+            }
+            return s.append((10 - sum % 10) % 10).toString();
+        }
+    }
+
+    // PR 21 Q-41: a group-scoped version is withdrawn with a reason and the same two approvals as an activation.
+
+    @Test
+    void aGroupScopeIsWithdrawnWithTwoApprovalsAndLeavesTheSnapshot() throws Exception {
+        ApiClient admin = signedIn("synthetic-admin");
+        ApiClient officer = signedIn("synthetic-officer");
+        String versions = "/api/v1/policy/rules/class.TCKN/versions";
+        assertEquals(201, admin.post(versions, scopedBody("BLOCK", "enforce", GROUP_ONE), true).status());
+        assertEquals(200, admin.post(versions + "/2/approvals", role("security_admin"), true).status());
+        assertEquals(200, officer.post(versions + "/2/approvals", role("privacy_officer"), true).status());
+        assertEquals(1, verified(snapshot(internal.snapshotPort(), null)).get("scopedRules").size());
+
+        String withdraw = versions + "/2/withdrawal";
+        String reason = JSON.createObjectNode().put("reason", "Pilot finished").toString();
+        for (String login : new String[] {"synthetic-viewer", "synthetic-officer", "synthetic-aiview"}) {
+            assertEquals(403, signedIn(login).post(withdraw, reason, true).status(), login);
+        }
+        assertEquals("WITHDRAWAL_NOT_APPLICABLE", admin.post(versions + "/1/withdrawal", reason, true).body()
+            .get("reason").asText(), "the ANY baseline is never withdrawn");
+        ApiClient.Response request = admin.post(withdraw, reason, true);
+        assertEquals(201, request.status(), String.valueOf(request.body()));
+        assertEquals(3, request.body().get("version").asInt());
+        assertEquals(2, request.body().get("withdrawal").get("withdrawsVersion").asInt());
+        assertEquals("pending", request.body().get("status").asText());
+
+        assertEquals(200, admin.post(versions + "/3/approvals", role("security_admin"), true).status());
+        assertEquals(1, verified(snapshot(internal.snapshotPort(), null)).get("scopedRules").size(),
+            "one approval withdraws nothing");
+        assertEquals(200, officer.post(versions + "/3/approvals", role("privacy_officer"), true).status());
+        JsonNode doc = verified(snapshot(internal.snapshotPort(), null));
+        assertEquals("[]", doc.get("scopedRules").toString(), "the groups fall back to ANY");
+        JsonNode tckn = find(signedIn("synthetic-viewer").get("/api/v1/policy/rules").body().get("rules"), "class.TCKN");
+        assertEquals("active", tckn.get("versions").get(0).get("status").asText());
+        assertEquals("withdrawn", tckn.get("versions").get(1).get("status").asText());
+        assertEquals(1, ledger("policy_rule_version", "INSERT", "policy.withdraw_request"));
+    }
+
     @Test
     void theMaskedRetirementReasonPassesTheMasker() throws Exception {
         PolicyRuleVersion v = new PolicyRuleVersion("platform.vendor-x", 1, "platform", null, null, "vendor-x",

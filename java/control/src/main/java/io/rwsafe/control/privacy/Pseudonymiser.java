@@ -67,14 +67,17 @@ public class Pseudonymiser {
 
     /**
      * A directory group name as the masked role sees it (PO decision Q-39): {@code GRP-<10 hex>}, keyed, stable per
-     * estate, the same for every spelling that differs only in case or surrounding space (the contract compares group
-     * names that way).
+     * estate, the same for every spelling the shared normal form ({@link io.rwsafe.policy.GroupNames#normalise}: NFC, the
+     * Turkish and Latin i forms, case, surrounding space) treats as one group (PR 21 review D-03). A name that is not a
+     * valid group name is still pseudonymised, never returned.
      */
     public String group(String name) {
         if (name == null || name.isBlank()) {
             return name;
         }
-        return "GRP-" + HexFormat.of().formatHex(keys.hmac("group", name.strip().toLowerCase(Locale.ROOT)), 0, 5);
+        String normal = io.rwsafe.policy.GroupNames.normalise(name);
+        String key = normal != null ? normal : "invalid:" + name.strip().toLowerCase(Locale.ROOT);
+        return "GRP-" + HexFormat.of().formatHex(keys.hmac("group", key), 0, 5);
     }
 
     /** A class-visible token such as {@code TCKN-1a2b}: the same value reads the same across screens (layer 4). */

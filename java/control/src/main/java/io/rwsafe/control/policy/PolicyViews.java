@@ -40,20 +40,29 @@ public final class PolicyViews {
     public record RetirementView(Instant retiredAt, String retiredBy, String reason) {
     }
 
+    /**
+     * A withdrawal (PR 21 Q-41): on a request, the version it withdraws and the reason; on a withdrawn version, when.
+     */
+    public record WithdrawalView(Integer withdrawsVersion, String reason, Instant withdrawnAt) {
+    }
+
     /** One rule version; {@code inSnapshot} is true when the latest issued snapshot compiled it. */
     public record VersionView(String ruleId, int version, String action, Boolean enforceFailClosed,
                               List<String> hostSuffixes, List<String> apiHosts, List<String> loginHosts, String mode,
                               String rolloutStage, ScopeView scope, String status, String source, String author,
                               String reasonCode, Instant createdAt, Instant activatedAt, Instant supersededAt,
-                              RetirementView retirement, List<ApprovalView> approvals, boolean inSnapshot)
+                              RetirementView retirement, WithdrawalView withdrawal, List<ApprovalView> approvals,
+                              boolean inSnapshot)
         implements MaskedView {
 
         static VersionView of(PolicyRuleVersion v, Set<String> inSnapshot) {
             PolicyRuleVersion.Retirement r = v.retirement();
+            WithdrawalView w = v.withdrawsVersion() == null && v.withdrawnAt() == null ? null
+                : new WithdrawalView(v.withdrawsVersion(), v.withdrawalReason(), v.withdrawnAt());
             return new VersionView(v.ruleId(), v.version(), v.action(), v.enforceFailClosed(), v.hostSuffixes(),
                 v.apiHosts(), v.loginHosts(), v.mode(), v.rolloutStage(), new ScopeView(v.scopeKind(), v.scopeGroups()),
                 v.status(), v.source(), v.authorFingerprint(), v.reasonCode(), v.createdAt(), v.activatedAt(),
-                v.supersededAt(), r == null ? null : new RetirementView(r.retiredAt(), r.retiredBy(), r.reason()),
+                v.supersededAt(), r == null ? null : new RetirementView(r.retiredAt(), r.retiredBy(), r.reason()), w,
                 v.approvals().stream().map(a -> new ApprovalView(a.role(), a.approverFingerprint(), a.approvedAt()))
                     .toList(),
                 inSnapshot.contains(v.key()));
@@ -65,6 +74,8 @@ public final class PolicyViews {
                 mask(m, apiHosts), mask(m, loginHosts), mode, rolloutStage, scope.masked(m), status, source, author,
                 m.mask(reasonCode), createdAt, activatedAt, supersededAt, retirement == null ? null
                     : new RetirementView(retirement.retiredAt(), retirement.retiredBy(), m.mask(retirement.reason())),
+                withdrawal == null ? null : new WithdrawalView(withdrawal.withdrawsVersion(),
+                    withdrawal.reason() == null ? null : m.mask(withdrawal.reason()), withdrawal.withdrawnAt()),
                 approvals, inSnapshot);
         }
     }

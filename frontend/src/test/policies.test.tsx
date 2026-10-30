@@ -2,6 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Registry, RuleVersion } from '../api';
+import { foldGroupName } from '../pages/PoliciesPage';
 import { fakeServer } from './fakeServer';
 import { renderApp } from './render';
 
@@ -30,6 +31,7 @@ function version(ruleId: string, v: number, over: Partial<RuleVersion>): RuleVer
     supersededAt: null,
     scope: { kind: 'ANY', groups: [] },
     retirement: null,
+    withdrawal: null,
     approvals: [],
     inSnapshot: true,
     ...over,
@@ -261,6 +263,7 @@ describe('policies screen', () => {
     await userEvent.clear(field);
     await userEvent.type(field, '  GRP-ALPHA {Enter}');
     await userEvent.type(field, 'grp-alpha{Enter}');
+    await userEvent.type(field, 'GRP-ALPHA{Enter}');
     expect(screen.getAllByText(/^GRP-ALPHA$/i)).toHaveLength(1);
     await userEvent.type(field, 'GRP-BETA');
     await userEvent.click(screen.getByRole('button', { name: 'Grubu ekle' }));
@@ -313,6 +316,96 @@ describe('policies screen', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('İkinci onay başka bir kişiden gelmeli');
     expect(alert).toHaveTextContent('APPROVER_ALREADY_APPROVED');
+  });
+});
+
+describe('group name folding', () => {
+  it('folds the Turkish and Latin i forms, case, NFC and spaces like the server', () => {
+    const expected = 'grp-istanbul-iki';
+    for (const raw of [
+      'GRP-\u0130STANBUL-\u0130K\u0130',
+      '  grp-Istanbul-Iki ',
+      'grp-\u0131stanbul-\u0131k\u0131',
+      'grp-i\u0307stanbul-iki',
+      'GRP-I\u0307STANBUL-IKI',
+    ]) {
+      expect(foldGroupName(raw)).toBe(expected);
+    }
+    expect(foldGroupName('GRP-E\u0301QUIPE')).toBe('grp-\u00e9quipe');
+  });
+});
+
+describe('withdrawing a group scope', () => {
+  it('sends a withdrawal request with a reason and a confirmation step, then shows its approval steps', async () => {
+    let requested = false;
+    const server = fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-admin', ['security_admin']) }),
+      'GET /api/v1/policy/rules': () => {
+        const r = registry();
+        const tckn = r.rules[1]!;
+        tckn.versions = tckn.versions.filter((v) => v.status !== 'pending');
+        if (requested) {
+          tckn.versions.unshift(
+            version('class.TCKN', 4, {
+              action: 'BLOCK',
+              status: 'pending',
+              source: 'registry',
+              author: 'USR-00000000a1',
+              reasonCode: 'SCOPE_WITHDRAWAL',
+              activatedAt: null,
+              inSnapshot: false,
+              scope: { kind: 'GROUPS', groups: ['GRP-BETA'] },
+              withdrawal: { withdrawsVersion: 2, reason: 'Pilot finished', withdrawnAt: null },
+            }),
+          );
+        }
+        return { status: 200, body: r };
+      },
+      'POST /api/v1/policy/rules/class.TCKN/versions/2/withdrawal': () => {
+        requested = true;
+        return {
+          status: 201,
+          body: version('class.TCKN', 4, {
+            status: 'pending',
+            withdrawal: { withdrawsVersion: 2, reason: 'Pilot finished', withdrawnAt: null },
+          }),
+        };
+      },
+    });
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+    renderApp('/policies');
+    await userEvent.click(within(await screen.findByRole('table', { name: 'Politika kuralları' })).getByText('TCKN'));
+    const buttons = screen.getAllByRole('button', { name: 'Geri çek' });
+    expect(buttons).toHaveLength(1);
+    await userEvent.click(buttons[0]!);
+    const form = screen.getByRole('form', { name: 'Sürüm 2 gruplarından geri çekilsin' });
+    expect(within(form).getByRole('button', { name: 'Devam et' })).toBeDisabled();
+    await userEvent.type(within(form).getByRole('textbox', { name: /Gerekçe/ }), 'Pilot finished');
+    await userEvent.click(within(form).getByRole('button', { name: 'Devam et' }));
+    expect(within(form).getByText(/İki onay verilene kadar gruplarına uygulanmaya devam eder/)).toBeInTheDocument();
+    expect(server.calls.some((c) => c.method === 'POST')).toBe(false);
+    await userEvent.click(within(form).getByRole('button', { name: 'Evet, onaya gönder' }));
+    expect(await screen.findByText('Geri çekme isteği (sürüm 4) iki onay bekliyor.')).toBeInTheDocument();
+    const post = server.calls.find((c) => c.method === 'POST')!;
+    expect(JSON.parse(String(post.init.body))).toEqual({ reason: 'Pilot finished' });
+    expect(await screen.findByText(/Sürüm 4: GRP-BETA için sürüm 2 geri çekiliyor/)).toBeInTheDocument();
+    expect(screen.getByText(/Sürüm 2 için geri çekme · GRP-BETA · Onay bekliyor · Pilot finished/)).toBeInTheDocument();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('offers no withdrawal to the privacy officer or a masked session', async () => {
+    for (const me of [user('synthetic-officer', ['privacy_officer']), user('', ['replay_viewer', 'security_admin'], true)]) {
+      fakeServer({
+        'GET /api/v1/auth/me': () => ({ status: 200, body: me }),
+        'GET /api/v1/policy/rules': () => ({ status: 200, body: registry() }),
+      });
+      const view = renderApp('/policies');
+      await userEvent.click(within(await screen.findByRole('table', { name: 'Politika kuralları' })).getByText('TCKN'));
+      expect(screen.queryByRole('button', { name: 'Geri çek' })).not.toBeInTheDocument();
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
   });
 });
 

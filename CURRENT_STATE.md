@@ -153,7 +153,12 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
   never deleted, back only through a new two-approval version) and stores the scoped-rule ids of verdict events. The
   compiler emits snapshot format 2 (`scopedRules`, always present); the data-plane side is a separate lane. The masked
   role sees group names only as `GRP-` pseudonyms. Policies shows a scope column and a scope picker instead of the
-  rollout bar; Platforms has the retire action with a reason and a built-in confirmation step.
+  rollout bar; Platforms has the retire action with a reason and a built-in confirmation step. After the second review
+  (`docs/reviews/PR21_2026_10_30_RESPONSE.md`): group names use the shared `java/policy` `GroupNames` normal form
+  everywhere (API, database check, compiler, masked pseudonyms, UI duplicate check); a retirement supersedes the
+  platform's pending drafts; an active group-scoped version can be withdrawn with a reason and two approvals (Q-41,
+  status `withdrawn`, its groups fall back to `ANY`); drafts for different scopes wait side by side; verdict events
+  carry only `class.<CLASS>@<version>` rule ids and the read paths return them; free-text reasons refuse identifiers.
 - Screens: Policies (registry table with action, mode, scope, version, status; versions, approval steps,
   simulation panel and a new-version form for a selected rule) and Platforms (platform rows). The masked role reads both
   through the funnel and changes nothing.
@@ -190,8 +195,9 @@ request 14) added the signed snapshot pull, Secure ICAP with a required client c
 admission, the body budget, the drain window, the verdict spool with backpressure and fixed-label metrics.
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
 neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeScript rules for `frontend/`; control plane
-later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules, a way to withdraw an
-active group-scoped version other than replacing it, a server-side user settings store for the UI language, the
+later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules, the PO's
+confirmation of the orchestrator's Q-41 decision (withdrawal of a group scope under two approvals), a server-side user
+settings store for the UI language, the
 ratified decision record that mirrors the seed fixture, C3 capture store, the Incidents, Identities and roles and
 Administration screens, Playwright masked-role leak probe, the cluster PostgreSQL Job); the
 Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with them); Trivy image scanning and SBOM (with

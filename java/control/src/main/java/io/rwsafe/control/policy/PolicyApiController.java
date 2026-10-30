@@ -48,7 +48,21 @@ public class PolicyApiController {
     @PostMapping("/rules/{ruleId}/versions")
     public ResponseEntity<VersionView> draft(@PathVariable("ruleId") String ruleId,
                                              @RequestBody PolicyRegistryService.DraftRequest body, Authentication auth) {
-        VersionView created = VersionView.of(registry.draft(ruleId, body, auth.getName()), Set.of());
+        VersionView created = VersionView.of(registry.draft(ruleId, body, auth.getName(), roles(auth)), Set.of());
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    /**
+     * Requests the withdrawal of an active group-scoped class version (PR 21 Q-41), with a reason; it takes effect with
+     * the two approvals given on the returned version through the approval route.
+     */
+    @PostMapping("/rules/{ruleId}/versions/{version}/withdrawal")
+    public ResponseEntity<VersionView> withdraw(@PathVariable("ruleId") String ruleId,
+                                                @PathVariable("version") int version,
+                                                @RequestBody PolicyRegistryService.RetireRequest body,
+                                                Authentication auth) {
+        VersionView created = VersionView.of(registry.requestWithdrawal(ruleId, version, body, auth.getName(),
+            roles(auth)), Set.of());
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 

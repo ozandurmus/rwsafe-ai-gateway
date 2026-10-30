@@ -153,7 +153,20 @@ next snapshot leaves the platform out; the ledger (`audit_event`, action `policy
 administrator and carries the reason. The last active platform cannot be retired (`RETIRE_WOULD_NOT_COMPILE`). Bringing a
 platform back is a new version under the two approvals. As a request:
 `POST /api/v1/policy/rules/platform.<id>/retirement` with `{"reason":"..."}` (security administrator only; 403 for the
-viewer, the privacy officer and the masked role).
+viewer, the privacy officer and the masked role). A retirement also supersedes the platform's pending drafts, so an
+approval given before it never counts afterwards. A reason (retirement or withdrawal) is refused when it holds an
+identifier: an address, an e-mail address, a phone, card, IBAN or TCKN number, a secret shape or an estate term
+(`REASON_HOLDS_IDENTIFIER`, `ESTATE_NAME_REFUSED`).
+
+Withdrawing a group scope (PR 21 decision Q-41): signed in as `synthetic-admin`, open Policies, select the class, press
+"Geri çek" beside an active group-scoped version, write the reason, press "Devam et" and confirm with "Evet, onaya
+gönder". The request appears as a new pending version ("Sürüm N için geri çekme") with its own approval steps; it takes
+the same two approvals as an activation (security administrator, then `synthetic-officer` as privacy officer). With the
+second approval the scoped version becomes `withdrawn`, the request stays active as the scope's marker, and the next
+snapshot no longer lists the scoped rule, so those groups follow the rule for everyone again. Until then the version
+keeps applying. As a request: `POST /api/v1/policy/rules/class.<CLASS>/versions/<version>/withdrawal` with
+`{"reason":"..."}`, then the usual approvals on the returned version. Drafts for different scopes (or modes) of one rule
+wait side by side; a new draft replaces only the pending version of its own rule, mode and scope.
 
 The signed snapshot, as the data plane pulls it:
 

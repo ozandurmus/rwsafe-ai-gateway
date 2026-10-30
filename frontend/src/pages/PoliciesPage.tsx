@@ -66,9 +66,35 @@ export function baseline(rule: Rule): RuleVersion | undefined {
   );
 }
 
-/** The active group-scoped versions (snapshot scopedRules, enforce and monitor), oldest first. */
+/**
+ * The active group-scoped versions (snapshot scopedRules, enforce and monitor), oldest first. An active withdrawal
+ * request only marks a withdrawn scope (its groups follow everyone's rule) and is left out.
+ */
 export function scopedVersions(rule: Rule): RuleVersion[] {
-  return rule.versions.filter((v) => v.status === 'active' && v.scope.kind === 'GROUPS').reverse();
+  return rule.versions
+    .filter((v) => v.status === 'active' && v.scope.kind === 'GROUPS' && !isWithdrawalRequest(v))
+    .reverse();
+}
+
+/** PR 21 Q-41: a version that asks to withdraw another (it names the version it withdraws). */
+export function isWithdrawalRequest(v: RuleVersion): boolean {
+  return v.withdrawal?.withdrawsVersion != null;
+}
+
+/**
+ * The comparison form of a directory group name, the same rule as the server's (java/policy GroupNames): trim, NFC,
+ * the Turkish capital dotted I, capital I and dotless i become i, lower case, a combining dot above after an i removed,
+ * NFC again. Used only to tell the operator at once that a name is already in the list (PR 21 review D-07); the server
+ * stores and compares this form itself.
+ */
+export function foldGroupName(name: string): string {
+  return name
+    .trim()
+    .normalize('NFC')
+    .replace(/[İIı]/g, 'i')
+    .toLowerCase()
+    .replace(/i̇/g, 'i')
+    .normalize('NFC');
 }
 
 /** "Herkes" / "Everyone", or the group names (as the server sends them: real names, or pseudonyms when masked). */
@@ -245,7 +271,11 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
   const { t } = i18n;
   const { me } = useAuth();
   const canDraft = !!me && !me.masked && me.roles.includes('security_admin');
-  const pending = rule.versions.find((v) => v.status === 'pending');
+  const [withdrawing, setWithdrawing] = useState<number | null>(null);
+  const [withdrawSent, setWithdrawSent] = useState<number | null>(null);
+  // Q-41: drafts for different scopes may wait side by side; each has its own approval steps.
+  const pendings = rule.versions.filter((v) => v.status === 'pending');
+  const newestPending = pendings[0];
   return (
     <Box display="grid" gap={2}>
       <Card variant="outlined">
@@ -253,18 +283,30 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
           <Typography variant="h6" component="h2" gutterBottom>
             {ruleName(i18n, rule)} · {t('policies.versions')}
           </Typography>
+          {withdrawSent !== null && (
+            <Alert severity="success" sx={{ mb: 1 }} onClose={() => setWithdrawSent(null)}>
+              {t('policies.withdrawSent', { version: withdrawSent })}
+            </Alert>
+          )}
           <Box component="ul" sx={{ m: 0, pl: 2.5, display: 'grid', gap: 0.5 }}>
             {rule.versions.map((v) => (
               <li key={v.version}>
-                <Typography variant="body2">
+                <Typography variant="body2" color={v.status === 'withdrawn' ? 'text.disabled' : undefined}>
                   <strong>{t('policies.version', { version: v.version })}</strong>{' '}
-                  {t('policies.versionLine', {
-                    action: valueOf(i18n, v),
-                    mode: modeLabel(i18n, v.mode),
-                    scope: scopeText(i18n, v.scope),
-                    status: statusLabel(i18n, v.status),
-                    reason: v.source === 'seed' ? t('policies.seedSource') : v.reasonCode,
-                  })}
+                  {isWithdrawalRequest(v)
+                    ? t('policies.withdrawalLine', {
+                        target: v.withdrawal?.withdrawsVersion ?? '—',
+                        scope: scopeText(i18n, v.scope),
+                        status: statusLabel(i18n, v.status),
+                        reason: v.withdrawal?.reason ?? '—',
+                      })
+                    : t('policies.versionLine', {
+                        action: valueOf(i18n, v),
+                        mode: modeLabel(i18n, v.mode),
+                        scope: scopeText(i18n, v.scope),
+                        status: statusLabel(i18n, v.status),
+                        reason: v.source === 'seed' ? t('policies.seedSource') : v.reasonCode,
+                      })}
                   {v.rolloutStage !== 'all' && (
                     <Chip
                       size="small"
@@ -274,15 +316,140 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
                     />
                   )}
                   {v.inSnapshot && <Chip size="small" sx={{ ml: 1 }} label={t('policies.inSnapshot')} />}
+                  {canDraft &&
+                    v.status === 'active' &&
+                    v.scope.kind === 'GROUPS' &&
+                    !isWithdrawalRequest(v) &&
+                    withdrawing !== v.version && (
+                      <Button
+                        size="small"
+                        color="warning"
+                        sx={{ ml: 1 }}
+                        onClick={() => {
+                          setWithdrawSent(null);
+                          setWithdrawing(v.version);
+                        }}
+                      >
+                        {t('policies.withdraw')}
+                      </Button>
+                    )}
                 </Typography>
+                {withdrawing === v.version && (
+                  <WithdrawForm
+                    version={v}
+                    onCancel={() => setWithdrawing(null)}
+                    onSent={(request) => {
+                      setWithdrawing(null);
+                      setWithdrawSent(request);
+                      onChanged();
+                    }}
+                  />
+                )}
               </li>
             ))}
           </Box>
         </CardContent>
       </Card>
-      <ApprovalSteps version={pending} onChanged={onChanged} />
-      {rule.kind === 'class_action' && <SimulationPanel rule={rule} proposed={pending?.action ?? null} />}
+      {pendings.length === 0 ? (
+        <ApprovalSteps version={undefined} onChanged={onChanged} />
+      ) : (
+        pendings.map((p) => <ApprovalSteps key={p.version} version={p} onChanged={onChanged} />)
+      )}
+      {rule.kind === 'class_action' && <SimulationPanel rule={rule} proposed={newestPending?.action ?? null} />}
       {canDraft && <DraftForm rule={rule} registry={registry} onChanged={onChanged} />}
+    </Box>
+  );
+}
+
+/**
+ * PR 21 Q-41: the request to withdraw an active group-scoped version, with a required reason and a confirmation step in
+ * the page. The request then waits for the same two approvals as an activation; until then the version keeps applying.
+ */
+function WithdrawForm({
+  version,
+  onCancel,
+  onSent,
+}: {
+  version: RuleVersion;
+  onCancel: () => void;
+  onSent: (requestVersion: number) => void;
+}) {
+  const { t } = useI18n();
+  const [reason, setReason] = useState('');
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const trimmed = reason.trim();
+  const valid = trimmed.length > 0 && trimmed.length <= 500;
+
+  async function send() {
+    setBusy(true);
+    setError(null);
+    try {
+      const request = await api.requestWithdrawal(version.ruleId, version.version, trimmed);
+      onSent(request.version);
+    } catch (e) {
+      setError(e);
+      setConfirming(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Box
+      component="form"
+      display="grid"
+      gap={1}
+      my={1}
+      aria-label={t('policies.withdrawTitle', { version: version.version })}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (valid) {
+          setConfirming(true);
+        }
+      }}
+    >
+      <Typography variant="subtitle2" component="h3">
+        {t('policies.withdrawTitle', { version: version.version })}
+      </Typography>
+      <TextField
+        size="small"
+        required
+        label={t('policies.withdrawReason')}
+        value={reason}
+        disabled={confirming || busy}
+        inputProps={{ maxLength: 500 }}
+        onChange={(e) => setReason(e.target.value)}
+        helperText={t('policies.withdrawHelp')}
+      />
+      {error !== null && <ErrorPanel error={error} />}
+      {confirming ? (
+        <Alert
+          severity="warning"
+          action={
+            <Box display="flex" gap={1}>
+              <Button color="warning" variant="contained" size="small" disabled={busy} onClick={() => void send()}>
+                {t('policies.withdrawYes')}
+              </Button>
+              <Button size="small" disabled={busy} onClick={() => setConfirming(false)}>
+                {t('policies.withdrawCancel')}
+              </Button>
+            </Box>
+          }
+        >
+          {t('policies.withdrawConfirm', { version: version.version })}
+        </Alert>
+      ) : (
+        <Box display="flex" gap={1}>
+          <Button type="submit" variant="contained" color="warning" size="small" disabled={!valid}>
+            {t('policies.withdrawContinue')}
+          </Button>
+          <Button size="small" onClick={onCancel}>
+            {t('policies.withdrawCancel')}
+          </Button>
+        </Box>
+      )}
     </Box>
   );
 }
@@ -332,12 +499,18 @@ function ApprovalSteps({ version, onChanged }: { version: RuleVersion | undefine
           {t('approval.title')}
         </Typography>
         <Typography variant="body2" color="text.secondary" gutterBottom>
-          {t('approval.forVersion', {
-            version: version.version,
-            action: valueOf(i18n, version),
-            mode: modeLabel(i18n, version.mode),
-            scope: scopeText(i18n, version.scope),
-          })}
+          {isWithdrawalRequest(version)
+            ? t('approval.forWithdrawal', {
+                version: version.version,
+                target: version.withdrawal?.withdrawsVersion ?? '—',
+                scope: scopeText(i18n, version.scope),
+              })
+            : t('approval.forVersion', {
+                version: version.version,
+                action: valueOf(i18n, version),
+                mode: modeLabel(i18n, version.mode),
+                scope: scopeText(i18n, version.scope),
+              })}
         </Typography>
         {error !== null && <ErrorPanel error={error} />}
         <Stepper activeStep={activeStep} orientation="vertical" aria-label={t('approval.title')}>
@@ -594,7 +767,7 @@ export function ScopePicker({ scope, max, onChange }: { scope: Scope; max: numbe
     if (!name || full || comma) {
       return;
     }
-    if (!scope.groups.some((g) => g.toLowerCase() === name.toLowerCase())) {
+    if (!scope.groups.some((g) => foldGroupName(g) === foldGroupName(name))) {
       onChange({ kind: 'GROUPS', groups: [...scope.groups, name] });
     }
     setEntry('');

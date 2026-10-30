@@ -118,6 +118,12 @@ class ControlPlaneIntegrationTest {
             + "FROM verdict_event WHERE event_id = ?::uuid", String.class, scoped.get("eventId").asText()));
         assertEquals(0, jdbc.queryForObject("SELECT cardinality(applied_rule_ids) FROM verdict_event WHERE "
             + "event_id = ?::uuid", Integer.class, plain.get("eventId").asText()), "absent is empty");
+        // PR 21 review D-02: the read path returns them (the masked role too: they are vocabulary).
+        for (String login : new String[] {"synthetic-viewer", "synthetic-aiview"}) {
+            JsonNode detail = signedIn(login).get("/api/v1/traffic/" + scoped.get("eventId").asText()).body();
+            assertEquals("[\"class.SECRET@4\"]", detail.get("appliedRuleIds").toString(), login);
+            assertEquals("[\"class.TCKN@7\",\"class.TR_IBAN@2\"]", detail.get("monitorRuleIds").toString(), login);
+        }
 
         ObjectNode tooMany = event("claude", "ALLOW", null, null);
         var many = tooMany.putArray("appliedRuleIds");
@@ -128,7 +134,13 @@ class ControlPlaneIntegrationTest {
         tooLong.putArray("monitorRuleIds").add("class." + "X".repeat(130) + "@1");
         ObjectNode notAnId = event("claude", "ALLOW", null, null);
         notAnId.putArray("appliedRuleIds").add("192.0.2.10");
-        for (ObjectNode bad : new ObjectNode[] {tooMany, tooLong, notAnId}) {
+        ObjectNode platformId = event("claude", "ALLOW", null, null);
+        platformId.putArray("appliedRuleIds").add("platform.claude@1");
+        ObjectNode unknownClass = event("claude", "ALLOW", null, null);
+        unknownClass.putArray("monitorRuleIds").add("class.SYNTHETIC_VALUE@1");
+        ObjectNode duplicate = event("claude", "ALLOW", null, null);
+        duplicate.putArray("appliedRuleIds").add("class.TCKN@3").add("class.TCKN@3");
+        for (ObjectNode bad : new ObjectNode[] {tooMany, tooLong, notAnId, platformId, unknownClass, duplicate}) {
             ApiClient.Response refused = internalClient().post("/internal/v1/verdict-events", batch(bad), false);
             assertEquals(400, refused.status());
             assertEquals("INVALID_EVENT", refused.body().get("reason").asText());

@@ -7,10 +7,12 @@ import java.util.List;
  * One version of a policy-registry rule (AGENTS.md section 6) as stored. The vocabulary is the registry's: {@code kind} is
  * {@code class_action}, {@code platform} or {@code flow}; {@code mode} {@code monitor} or {@code enforce};
  * {@code rolloutStage} {@code all} (the percentage stages {@code pilot}, {@code pct25}, {@code pct50} survive on old rows
- * only, PO decision Q-39); {@code status} {@code pending}, {@code active}, {@code superseded} or {@code retired} (a
- * platform row only, Q-40); {@code source} {@code seed} (the committed fixture) or {@code registry}; {@code scopeKind}
- * {@code ANY} (everyone) or {@code GROUPS} with 1 to 32 directory group names in {@code scopeGroups} (runtime data typed
- * by the operator: never logged, never a metrics label). Fields that do not belong to the kind are null.
+ * only, PO decision Q-39); {@code status} {@code pending}, {@code active}, {@code superseded}, {@code retired} (a
+ * platform row only, Q-40) or {@code withdrawn} (a group-scoped class version, Q-41); {@code source} {@code seed} (the
+ * committed fixture) or {@code registry}; {@code scopeKind} {@code ANY} (everyone) or {@code GROUPS} with 1 to 32
+ * directory group names in {@code scopeGroups} (runtime data typed by the operator: never logged, never a metrics label).
+ * A withdrawal request names the version it withdraws in {@code withdrawsVersion}, with its reason; it is never compiled.
+ * Fields that do not belong to the kind are null.
  */
 public record PolicyRuleVersion(String ruleId, int version, String kind, String dataClass, String action,
                                 String platformId, List<String> hostSuffixes, List<String> apiHosts,
@@ -18,7 +20,26 @@ public record PolicyRuleVersion(String ruleId, int version, String kind, String 
                                 String status, String source, String authorFingerprint, String reasonCode,
                                 Instant createdAt, Instant activatedAt, Instant supersededAt,
                                 List<PolicyApproval> approvals, String scopeKind, List<String> scopeGroups,
-                                Retirement retirement) {
+                                Retirement retirement, Integer withdrawsVersion, String withdrawalReason,
+                                Instant withdrawnAt) {
+
+    /** A version that is not a withdrawal request and was not withdrawn. */
+    public PolicyRuleVersion(String ruleId, int version, String kind, String dataClass, String action,
+                             String platformId, List<String> hostSuffixes, List<String> apiHosts,
+                             List<String> loginHosts, Boolean enforceFailClosed, String mode, String rolloutStage,
+                             String status, String source, String authorFingerprint, String reasonCode,
+                             Instant createdAt, Instant activatedAt, Instant supersededAt,
+                             List<PolicyApproval> approvals, String scopeKind, List<String> scopeGroups,
+                             Retirement retirement) {
+        this(ruleId, version, kind, dataClass, action, platformId, hostSuffixes, apiHosts, loginHosts, enforceFailClosed,
+            mode, rolloutStage, status, source, authorFingerprint, reasonCode, createdAt, activatedAt, supersededAt,
+            approvals, scopeKind, scopeGroups, retirement, null, null, null);
+    }
+
+    /** True for a withdrawal request (Q-41): it names a version to withdraw and is never compiled. */
+    public boolean withdrawalRequest() {
+        return withdrawsVersion != null;
+    }
 
     public static final String SCOPE_ANY = "ANY";
     public static final String SCOPE_GROUPS = "GROUPS";
@@ -41,7 +62,7 @@ public record PolicyRuleVersion(String ruleId, int version, String kind, String 
                              List<PolicyApproval> approvals) {
         this(ruleId, version, kind, dataClass, action, platformId, hostSuffixes, apiHosts, loginHosts, enforceFailClosed,
             mode, rolloutStage, status, source, authorFingerprint, reasonCode, createdAt, activatedAt, supersededAt,
-            approvals, SCOPE_ANY, List.of(), null);
+            approvals, SCOPE_ANY, List.of(), null, null, null, null);
     }
 
     /** {@code rule@vN}: the ledger's row key and the snapshot's rule-version reference. */

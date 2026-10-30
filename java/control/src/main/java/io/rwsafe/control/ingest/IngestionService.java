@@ -129,12 +129,13 @@ public class IngestionService {
     static final int MAX_RULE_IDS = 16;
     static final int MAX_RULE_ID_LENGTH = 128;
     private static final com.google.re2j.Pattern RULE_ID =
-        com.google.re2j.Pattern.compile("(class|platform|flow)\\.[A-Za-z0-9_-]{1,64}@[1-9][0-9]{0,9}");
+        com.google.re2j.Pattern.compile("class\\.([A-Z][A-Z0-9_]{1,31})@[1-9][0-9]{0,9}");
 
     /**
-     * The optional scoped-rule ids of snapshot format 2 ({@code <rule id>@<version>}): absent is empty; at most 16, each
-     * at most 128 characters in the registry's rule-id shape (so no value can ride along); anything else refuses the
-     * batch.
+     * The optional scoped-rule ids of snapshot format 2: absent is empty; at most 16, each a DLP class rule and version
+     * ({@code class.<CLASS>@<version>}, a class the platform knows, at most 128 characters), none twice (PR 21 review
+     * D-04: a scoped rule is always a class rule, so no free suffix exists for a value to ride in); anything else refuses
+     * the batch. The database checks the same.
      */
     private static List<String> ruleIds(int i, String field, List<String> ids) {
         if (ids == null) {
@@ -143,12 +144,26 @@ public class IngestionService {
         if (ids.size() > MAX_RULE_IDS) {
             throw new InvalidEventException(i, field);
         }
+        Set<String> seen = new HashSet<>();
         for (String id : ids) {
-            if (id == null || id.length() > MAX_RULE_ID_LENGTH || !RULE_ID.matcher(id).matches()) {
+            if (id == null || id.length() > MAX_RULE_ID_LENGTH || !seen.add(id)) {
+                throw new InvalidEventException(i, field);
+            }
+            com.google.re2j.Matcher m = RULE_ID.matcher(id);
+            if (!m.matches() || !knownDataClass(m.group(1))) {
                 throw new InvalidEventException(i, field);
             }
         }
         return ids;
+    }
+
+    private static boolean knownDataClass(String name) {
+        for (io.rwsafe.platform.verdict.DataClass c : io.rwsafe.platform.verdict.DataClass.values()) {
+            if (c.name().equals(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static List<FindingCount> findings(int i, List<VerdictEventPayload.FindingPayload> findings) {

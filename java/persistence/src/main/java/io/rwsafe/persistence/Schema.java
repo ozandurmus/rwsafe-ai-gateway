@@ -93,6 +93,12 @@ final class Schema {
     static final Field<String> RV_RETIRED_BY = DSL.field(DSL.name("policy_rule_version", "retired_by"), SQLDataType.CLOB);
     static final Field<String> RV_RETIRED_REASON = DSL.field(DSL.name("policy_rule_version", "retired_reason"),
         SQLDataType.CLOB);
+    static final Field<Integer> RV_WITHDRAWS = DSL.field(DSL.name("policy_rule_version", "withdraws_version"),
+        SQLDataType.INTEGER);
+    static final Field<String> RV_WITHDRAWAL_REASON = DSL.field(DSL.name("policy_rule_version", "withdrawal_reason"),
+        SQLDataType.CLOB);
+    static final Field<Instant> RV_WITHDRAWN_AT = DSL.field(DSL.name("policy_rule_version", "withdrawn_at"),
+        SQLDataType.INSTANT);
 
     static final Table<Record> APPROVAL = DSL.table(DSL.name("policy_approval"));
     static final Field<String> AP_RULE_ID = DSL.field(DSL.name("policy_approval", "rule_id"), SQLDataType.CLOB);

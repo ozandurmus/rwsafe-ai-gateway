@@ -60,7 +60,7 @@ class SnapshotCompilerTest {
 
     /** An active, approved group-scoped version of a class rule (synthetic group names only). */
     static PolicyRuleVersion scoped(String dataClass, int version, String action, String mode, List<String> groups) {
-        return scopedRaw(dataClass, version, action, mode, GroupNames.normaliseAll(groups));
+        return scopedRaw(dataClass, version, action, mode, ScopeGroups.normalise(groups));
     }
 
     /** As stored, without the service's normalisation (to prove the compiler's own check). */
@@ -105,23 +105,28 @@ class SnapshotCompilerTest {
     void theDocumentIsOneTheDataPlaneCodecAccepts() throws Exception {
         Instant now = Instant.parse("2026-10-30T18:00:00Z");
         List<PolicyRuleVersion> active = replacingClass("TCKN", "BLOCK", "enforce", "all");
-        active.add(scoped("TR_IBAN", 2, "BLOCK", "enforce", List.of("GRP-ALPHA")));
+        active.add(scoped("TR_IBAN", 2, "BLOCK", "enforce", List.of("GRP-ALPHA", "GRP-İSTANBUL")));
+        active.add(scoped("SECRET", 3, "REDACT", "monitor", List.of("GRP-BETA")));
         byte[] body = compiler.compile(active).render(7, now).document()
             .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        io.rwsafe.policy.PolicySnapshot parsed;
-        try {
-            parsed = io.rwsafe.policy.SnapshotCodec.parse(body, now.plusSeconds(30));
-        } catch (io.rwsafe.policy.SnapshotCodec.Rejected e) {
-            // Format 2 reaches the data plane codec in the java/policy lane, developed in parallel; until that lands
-            // this check is skipped (visibly), never passed.
-            org.junit.jupiter.api.Assumptions.assumeFalse("FORMAT".equals(e.reason()),
-                "the data plane codec on this branch does not read format 2 yet");
-            throw e;
-        }
+        // The data plane's own codec (java/policy) reads the document: exact root, platform and scoped-rule fields, the
+        // shared group normal form and the rule-id bound; any difference refuses the whole snapshot.
+        io.rwsafe.policy.PolicySnapshot parsed = io.rwsafe.policy.SnapshotCodec.parse(body, now.plusSeconds(30));
         assertEquals(7, parsed.version());
         assertEquals(io.rwsafe.policy.Action.BLOCK,
             parsed.actionFor(io.rwsafe.platform.verdict.DataClass.TCKN));
         assertEquals(9, parsed.platforms().size());
+        assertEquals(2, parsed.scopedRules().size());
+        io.rwsafe.policy.ScopedRule iban = parsed.scopedRules().stream()
+            .filter(r -> r.id().equals("class.TR_IBAN@2")).findFirst().orElseThrow();
+        assertEquals(java.util.Set.of("grp-alpha", "grp-istanbul"), iban.groups());
+        assertEquals(io.rwsafe.policy.ScopedRule.Mode.ENFORCE, iban.mode());
+        assertEquals(io.rwsafe.policy.ScopedRule.Mode.MONITOR, parsed.scopedRules().stream()
+            .filter(r -> r.id().equals("class.SECRET@3")).findFirst().orElseThrow().mode());
+        assertEquals(io.rwsafe.policy.SnapshotCodec.MAX_RULE_ID, SnapshotCompiler.MAX_RULE_ID_LENGTH);
+        assertTrue(parsed.scopedRules().stream().allMatch(r -> r.id().length() <= SnapshotCompiler.MAX_RULE_ID_LENGTH));
+        // The longest id the registry can produce stays inside the bound: class.<64 characters>@<10 digits>.
+        assertTrue(("class." + "X".repeat(64) + "@" + Integer.MAX_VALUE).length() <= SnapshotCompiler.MAX_RULE_ID_LENGTH);
     }
 
     // PR 16 review D-01: a compiled version is the seed's or holds two approvals; a snapshot has platform rows.
@@ -273,5 +278,21 @@ class SnapshotCompilerTest {
         }
         assertEquals("SNAPSHOT_REGISTRY_INCOMPLETE",
             assertThrows(RegistryRefusal.class, () -> compiler.compile(tooMany)).reason());
+    }
+
+    // PR 21 Q-41: an active withdrawal request marks a withdrawn scope and is never compiled.
+
+    @Test
+    void aWithdrawalRequestIsNeverCompiled() {
+        PolicyRuleVersion s = scoped("TCKN", 3, "BLOCK", "enforce", List.of("GRP-ALPHA"));
+        PolicyRuleVersion marker = new PolicyRuleVersion(s.ruleId(), 3, s.kind(), s.dataClass(), s.action(), null, null,
+            null, null, null, s.mode(), "all", "active", "registry", s.authorFingerprint(), "SCOPE_WITHDRAWAL",
+            Instant.EPOCH, Instant.EPOCH, null, TWO_APPROVALS, "GROUPS", s.scopeGroups(), null, 2, "Pilot finished",
+            null);
+        List<PolicyRuleVersion> active = new ArrayList<>(seedActive());
+        active.add(marker);
+        PolicySnapshotStore.Compiled compiled = compiler.compile(active);
+        assertEquals(compiler.compile(seedActive()).rulesDigest(), compiled.rulesDigest());
+        assertTrue(!compiled.ruleVersions().contains("class.TCKN@v3"));
     }
 }

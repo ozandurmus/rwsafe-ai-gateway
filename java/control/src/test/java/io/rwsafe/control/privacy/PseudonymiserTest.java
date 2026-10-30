@@ -33,6 +33,19 @@ class PseudonymiserTest {
         assertNull(p.user("  "));
     }
 
+    // PR 21 review D-03: one group, one pseudonym, under the shared normal form (NFC, the Turkish and Latin i forms).
+    @Test
+    void groupPseudonymsFollowTheSharedNormalForm() {
+        String g = p.group("grp-istanbul");
+        assertTrue(g.matches("GRP-[0-9a-f]{10}"));
+        for (String spelling : new String[] {"GRP-İSTANBUL", " grp-ıstanbul ", "GRP-ISTANBUL",
+            "grp-i̇stanbul", "GRP-İSTANBUL"}) {
+            assertEquals(g, p.group(spelling), spelling);
+        }
+        assertNotEquals(g, p.group("grp-izmir"));
+        assertTrue(p.group("grp-a,grp-b").matches("GRP-[0-9a-f]{10}"), "an invalid name is still never shown");
+    }
+
     @Test
     void anotherKeyGivesOtherPseudonyms() {
         assertNotEquals(p.user("synthetic.user.001"), new Pseudonymiser(keys(2)).user("synthetic.user.001"));

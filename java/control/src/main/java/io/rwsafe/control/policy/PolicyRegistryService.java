@@ -2,6 +2,7 @@ package io.rwsafe.control.policy;
 
 import io.rwsafe.control.config.ControlProperties;
 import io.rwsafe.control.identity.Roles;
+import io.rwsafe.control.privacy.Masking;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
 import io.rwsafe.persistence.AuditContext;
@@ -50,6 +51,8 @@ public class PolicyRegistryService {
     private final PrivacyKeys keys;
     private final SnapshotSigner signer;
     private final SnapshotCompiler compiler = new SnapshotCompiler();
+    private static final io.rwsafe.detect.DetectorSet REASON_DETECTORS = io.rwsafe.detect.DetectorSet.standard();
+    private final Masking masking;
     private final Clock clock;
 
     public PolicyRegistryService(Database database, ControlProperties properties, Pseudonymiser pseudonymiser,
@@ -59,6 +62,7 @@ public class PolicyRegistryService {
         this.pseudonymiser = pseudonymiser;
         this.keys = keys;
         this.signer = signer;
+        this.masking = new Masking(keys, pseudonymiser);
         this.clock = Clock.systemUTC();
     }
 
@@ -139,8 +143,13 @@ public class PolicyRegistryService {
         }
     }
 
-    /** Adds the next version of a rule as pending, authored by the signed-in {@code loginName} (as its pseudonym). */
-    public PolicyRuleVersion draft(String ruleId, DraftRequest body, String loginName) {
+    /**
+     * Adds the next version of a rule as pending, authored by the signed-in {@code loginName} (as its pseudonym). Only a
+     * security administrator drafts, never in a masked session (PR 21 review D-06: the service checks it as well as
+     * SecurityConfig); a platform row or the flow is drafted in enforce mode only.
+     */
+    public PolicyRuleVersion draft(String ruleId, DraftRequest body, String loginName, Set<String> sessionRoles) {
+        requireSecurityAdmin(sessionRoles, "DRAFT_ROLE_MISSING", "Only a security administrator drafts a version.");
         String kind = RegistryVocabulary.kindOf(ruleId);
         if (kind == null) {
             throw new RegistryRefusal(HttpStatus.NOT_FOUND, "UNKNOWN_RULE", "The registry knows no such rule id.");
@@ -157,6 +166,10 @@ public class PolicyRegistryService {
         if (body.rolloutStage() != null && !RegistryVocabulary.STAGE_ALL.equals(body.rolloutStage())) {
             throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "ROLLOUT_STAGE_RETIRED",
                 "Percentage rollout stages are retired; choose a scope (everyone or directory groups) instead.");
+        }
+        if (!kind.equals(RegistryVocabulary.KIND_CLASS) && !"enforce".equals(body.mode())) {
+            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "ENFORCE_ONLY",
+                "A platform row or the flow is drafted in enforce mode only; a monitor version of it is never sent.");
         }
         Scope scope = scope(kind, body.scope());
         // PR 16 review D-05: the reason code and a platform id are free values too; neither may name the estate.
@@ -203,7 +216,7 @@ public class PolicyRegistryService {
             throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "INVALID_SCOPE",
                 "Only a DLP class rule takes a group scope; platform rows and the flow apply to everyone.");
         }
-        List<String> groups = GroupNames.normaliseAll(requested.groups());
+        List<String> groups = ScopeGroups.normalise(requested.groups());
         if (groups == null) {
             throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "INVALID_SCOPE",
                 "A group scope takes 1 to 32 short directory group names of 1 to 256 characters, without commas or "
@@ -319,24 +332,12 @@ public class PolicyRegistryService {
      */
     public List<PolicyRuleVersion> retirePlatform(String ruleId, RetireRequest body, String loginName,
                                                   Set<String> sessionRoles) {
-        if (!sessionRoles.contains(Roles.SECURITY_ADMIN) || sessionRoles.contains(Roles.REPLAY_VIEWER)) {
-            throw new RegistryRefusal(HttpStatus.FORBIDDEN, "RETIRE_ROLE_MISSING",
-                "Only a security administrator retires a platform row.");
-        }
+        requireSecurityAdmin(sessionRoles, "RETIRE_ROLE_MISSING", "Only a security administrator retires a platform row.");
         if (!RegistryVocabulary.KIND_PLATFORM.equals(RegistryVocabulary.kindOf(ruleId))) {
             throw new RegistryRefusal(HttpStatus.NOT_FOUND, "UNKNOWN_PLATFORM",
                 "Only a platform row is retired; the registry knows no such platform.");
         }
-        String reason = body == null || body.reason() == null ? "" : body.reason().strip();
-        if (reason.isEmpty() || reason.length() > MAX_RETIRE_REASON
-            || reason.chars().anyMatch(Character::isISOControl)) {
-            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "INVALID_RETIREMENT",
-                "A retirement needs a reason of 1 to 500 characters on one line.");
-        }
-        // PR 16 review D-05: a free value written to the registry never names the estate.
-        if (namesEstate(reason)) {
-            throw estateRefused();
-        }
+        String reason = reasonText(body == null ? null : body.reason(), "INVALID_RETIREMENT", "retirement");
         String admin = pseudonym(loginName);
         try {
             return database.policyRegistry().retirePlatform(ruleId, admin, reason,
@@ -345,6 +346,64 @@ public class PolicyRegistryService {
         } catch (RegistryConflict e) {
             throw conflict(e);
         }
+    }
+
+    /**
+     * Requests the withdrawal of an active group-scoped class version (PR 21 Q-41): its groups fall back to the
+     * {@code ANY} baseline once the request has the same two approvals as an activation (removing a stricter group rule
+     * loosens policy). A security administrator requests it with a reason; the approvals use the normal approval route
+     * on the request's version.
+     */
+    public PolicyRuleVersion requestWithdrawal(String ruleId, int version, RetireRequest body, String loginName,
+                                               Set<String> sessionRoles) {
+        requireSecurityAdmin(sessionRoles, "WITHDRAW_ROLE_MISSING",
+            "Only a security administrator requests a withdrawal.");
+        if (!RegistryVocabulary.KIND_CLASS.equals(RegistryVocabulary.kindOf(ruleId))) {
+            throw new RegistryRefusal(HttpStatus.NOT_FOUND, "UNKNOWN_RULE",
+                "Only a group-scoped DLP class version is withdrawn.");
+        }
+        String reason = reasonText(body == null ? null : body.reason(), "INVALID_WITHDRAWAL", "withdrawal");
+        String author = pseudonym(loginName);
+        try {
+            return database.policyRegistry().requestWithdrawal(ruleId, version, reason, author,
+                new AuditContext(author, "policy.withdraw_request", reason, UUID.randomUUID().toString()));
+        } catch (RegistryConflict e) {
+            throw conflict(e);
+        }
+    }
+
+    private static void requireSecurityAdmin(Set<String> sessionRoles, String reason, String message) {
+        if (!sessionRoles.contains(Roles.SECURITY_ADMIN) || sessionRoles.contains(Roles.REPLAY_VIEWER)) {
+            throw new RegistryRefusal(HttpStatus.FORBIDDEN, reason, message);
+        }
+    }
+
+    /**
+     * A free-text reason (retirement, withdrawal): 1 to 500 characters on one line, and no identifier (PR 21 review
+     * D-06): nothing a Tier-1 detector finds (secret shapes, TCKN, IBAN, payment cards), nothing the masking layers would
+     * change (e-mail and IP addresses, phone numbers) and no estate-dictionary term, because unmasked roles read it in
+     * full on the row and in the ledger. The refusal never echoes the text.
+     */
+    String reasonText(String raw, String invalidReason, String what) {
+        String reason = raw == null ? "" : raw.strip();
+        if (reason.isEmpty() || reason.length() > MAX_RETIRE_REASON || reason.chars().anyMatch(Character::isISOControl)) {
+            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, invalidReason,
+                "A " + what + " needs a reason of 1 to 500 characters on one line.");
+        }
+        // PR 16 review D-05: a free value written to the registry never names the estate.
+        if (namesEstate(reason)) {
+            throw estateRefused();
+        }
+        if (!masking.available()) {
+            throw new RegistryRefusal(HttpStatus.SERVICE_UNAVAILABLE, "MASKING_UNAVAILABLE",
+                "The reason cannot be checked for identifiers without the masking key and dictionary; nothing changed.");
+        }
+        if (!REASON_DETECTORS.scan(reason).isEmpty() || !masking.masker().mask(reason).equals(reason)) {
+            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "REASON_HOLDS_IDENTIFIER",
+                "The reason holds an identifier (an address, a number or a name the masking rules recognise); describe "
+                    + "the reason without it.");
+        }
+        return reason;
     }
 
     /** The registry left by a retirement must still compile (every class, the flow, at least one platform row). */

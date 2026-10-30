@@ -37,7 +37,7 @@ public final class SnapshotCompiler implements PolicySnapshotStore.Compiler {
     public static final int FORMAT = 2;
     /** POLICY_SNAPSHOT_CONTRACT format 2: at most 256 scoped rules, each with 1 to 32 groups of 1 to 256 characters. */
     public static final int MAX_SCOPED_RULES = 256;
-    public static final int MAX_SCOPE_GROUPS = GroupNames.MAX_GROUPS;
+    public static final int MAX_SCOPE_GROUPS = ScopeGroups.MAX_GROUPS;
     /** A scoped rule id ({@code <rule id>@<version>}) is at most 128 characters (the data plane's bound). */
     public static final int MAX_RULE_ID_LENGTH = 128;
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -46,10 +46,13 @@ public final class SnapshotCompiler implements PolicySnapshotStore.Compiler {
     public PolicySnapshotStore.Compiled compile(List<PolicyRuleVersion> active) {
         List<PolicyRuleVersion> baseline = active.stream()
             .filter(v -> "active".equals(v.status()) && "enforce".equals(v.mode()) && "all".equals(v.rolloutStage())
-                && !v.scopedToGroups())
+                && !v.scopedToGroups() && !v.withdrawalRequest())
             .sorted(Comparator.comparing(PolicyRuleVersion::ruleId)).toList();
+        // A withdrawal request (Q-41) is the marker of a withdrawn scope: it is never compiled, so those groups follow
+        // the ANY baseline.
         List<PolicyRuleVersion> scoped = active.stream()
-            .filter(v -> "active".equals(v.status()) && "all".equals(v.rolloutStage()) && v.scopedToGroups())
+            .filter(v -> "active".equals(v.status()) && "all".equals(v.rolloutStage()) && v.scopedToGroups()
+                && !v.withdrawalRequest())
             .sorted(Comparator.comparing(PolicyRuleVersion::ruleId).thenComparingInt(PolicyRuleVersion::version))
             .toList();
 
@@ -181,12 +184,12 @@ public final class SnapshotCompiler implements PolicySnapshotStore.Compiler {
     }
 
     /**
-     * A stored group list as the contract carries it: every name already in the {@link GroupNames} normal form, 1 to 32,
+     * A stored group list as the contract carries it: every name already in the {@link ScopeGroups} normal form, 1 to 32,
      * none twice, sorted; null when the stored list breaks any of these (the compiler never emits what the data plane
      * refuses).
      */
     static List<String> groups(List<String> stored) {
-        if (stored == null || !GroupNames.storedFormOk(stored)) {
+        if (stored == null || !ScopeGroups.storedFormOk(stored)) {
             return null;
         }
         return stored.stream().sorted().toList();
