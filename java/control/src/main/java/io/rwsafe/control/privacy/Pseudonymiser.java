@@ -71,7 +71,7 @@ public class Pseudonymiser {
     }
 
     /** Strict dotted-quad parse without name resolution; null for anything else. */
-    static int[] ipv4(String s) {
+    public static int[] ipv4(String s) {
         String[] parts = s.split("\\.", -1);
         if (parts.length != 4) {
             return null;

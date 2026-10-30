@@ -33,14 +33,11 @@ class MaskingUnavailableIntegrationTest {
         assertEquals(202, new ApiClient(internal.port()).post("/internal/v1/verdict-events",
             batch(event("claude", "ALLOW", "synthetic.user.x", "192.0.2.5")), false).status());
         ApiClient aiview = new ApiClient(port);
-        // The login answer is itself a masked page, so even it is 503.
-        assertEquals(503, aiview.login("synthetic-aiview", ControlTestEnvironment.PASSWORDS.get("synthetic-aiview"))
-            .status());
-        for (String path : new String[] {"/api/v1/overview", "/api/v1/traffic", "/api/v1/health", "/api/v1/auth/me"}) {
-            ApiClient.Response r = aiview.get(path);
-            assertEquals(503, r.status(), path);
-            assertEquals("MASKING_UNAVAILABLE", r.body().get("reason").asText(), path);
-        }
+        // A masked session that cannot be served is not opened at all (N-02).
+        ApiClient.Response login = aiview.login("synthetic-aiview", ControlTestEnvironment.PASSWORDS.get("synthetic-aiview"));
+        assertEquals(503, login.status());
+        assertEquals("MASKING_UNAVAILABLE", login.body().get("reason").asText());
+        assertEquals(401, aiview.get("/api/v1/overview").status());
         ApiClient viewer = new ApiClient(port);
         assertEquals(200, viewer.login("synthetic-viewer", ControlTestEnvironment.PASSWORDS.get("synthetic-viewer"))
             .status());

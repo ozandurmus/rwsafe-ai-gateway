@@ -94,6 +94,8 @@ from a config tree (`RWSAFE_SECRETS_DIR`, default `/run/secrets/rwsafe/`, file `
 `RWSAFE_LDAP_BIND_DN`, `RWSAFE_LDAP_BIND_PASSWORD_FILE`, `RWSAFE_LDAP_USER_SEARCH_BASE` and
 `RWSAFE_LDAP_USER_SEARCH_FILTER` (group-to-role bindings as `rwsafe.identity.ldap.group-roles[<group DN>]=<role>`).
 `RWSAFE_BREAK_GLASS_ENABLED=true` with `RWSAFE_BREAK_GLASS_PASSWORD_FILE` creates the break-glass account at first start.
+Behind an ingress, `RWSAFE_FORWARD_HEADERS=native` with `RWSAFE_TRUSTED_PROXIES` (a regular expression naming the ingress
+addresses only) gives the login throttle the real client address; both are off by default.
 Every secret is a mounted file; none is a property value. Without the key file ingestion answers 503 and stores nothing;
 without the dictionary the masked role gets 503.
 

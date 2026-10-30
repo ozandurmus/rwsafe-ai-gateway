@@ -15,6 +15,7 @@ import com.unboundid.ldap.sdk.SimpleBindRequest;
 import com.unboundid.util.ssl.HostNameSSLSocketVerifier;
 import com.unboundid.util.ssl.SSLUtil;
 import io.rwsafe.control.config.ControlProperties;
+import io.rwsafe.control.privacy.Pseudonymiser;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -121,8 +122,13 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
         } else {
             connection = new LDAPConnection(options, url.getHost(), url.getPort());
         }
-        connection.bind(config.bindDn(), bindPassword());
-        pool = new LDAPConnectionPool(connection, 1, 2);
+        try {
+            connection.bind(config.bindDn(), bindPassword());
+            pool = new LDAPConnectionPool(connection, 1, 2);
+        } catch (LDAPException e) {
+            connection.close();
+            throw e;
+        }
         pool.setRetryFailedOperationsDueToInvalidConnections(true);
         return pool;
     }
@@ -141,9 +147,13 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
         return password;
     }
 
-    /** A literal loopback address or {@code localhost}; no name is resolved. */
+    /** A literal loopback address (127.0.0.0/8 dotted quad, ::1) or {@code localhost}; no name is resolved (N-03). */
     static boolean loopback(String host) {
-        return "localhost".equalsIgnoreCase(host) || host.startsWith("127.") || "::1".equals(host)
+        if (host == null) {
+            return false;
+        }
+        int[] v4 = Pseudonymiser.ipv4(host);
+        return (v4 != null && v4[0] == 127) || "localhost".equalsIgnoreCase(host) || "::1".equals(host)
             || "[::1]".equals(host);
     }
 

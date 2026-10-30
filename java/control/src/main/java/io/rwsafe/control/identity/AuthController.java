@@ -116,6 +116,11 @@ public class AuthController {
         }
         AuthenticatedUser user = result.user();
         boolean masked = user.roles().contains(Roles.REPLAY_VIEWER);
+        // A masked session that cannot be served is not opened, recorded or ledgered (PR 12 review N-02).
+        if (masked && !keys.maskingAvailable()) {
+            return error(HttpStatus.SERVICE_UNAVAILABLE, "MASKING_UNAVAILABLE",
+                "The masking key or dictionary is missing; a masked session cannot be opened.");
+        }
         // Every accepted sign-in is ledgered under the login name's pseudonym (ARCHITECTURE.md §4.4, D-02, D-09). Without
         // the privacy key no pseudonym exists: only break-glass may sign in then, recorded under its system actor.
         String actor;

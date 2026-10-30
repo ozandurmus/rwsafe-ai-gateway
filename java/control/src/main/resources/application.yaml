@@ -25,8 +25,14 @@ spring:
 
 server:
   port: ${RWSAFE_HTTP_PORT:8080}
-  # The client address behind the ingress (trusted internal proxies only); used by the login throttle, never stored.
-  forward-headers-strategy: native
+  # The client address behind the ingress, for the login throttle only (never stored). Off unless the deploy names its
+  # ingress: forwarded headers are trusted only from RWSAFE_TRUSTED_PROXIES (a regular expression; matches nothing by
+  # default), so a client cannot choose its own address (PR 12 review N-01).
+  forward-headers-strategy: ${RWSAFE_FORWARD_HEADERS:none}
+  tomcat:
+    remoteip:
+      internal-proxies: ${RWSAFE_TRUSTED_PROXIES:^$}
+    max-swallow-size: 2MB
   address: ${RWSAFE_HTTP_BIND:127.0.0.1}
   error:
     include-message: never
@@ -45,8 +51,6 @@ server:
         same-site: strict
         path: /
       tracking-modes: cookie
-  tomcat:
-    max-swallow-size: 2MB
 
 rwsafe:
   capture-sink:

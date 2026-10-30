@@ -45,12 +45,13 @@ public class MaskingFunnel implements ResponseBodyAdvice<Object> {
         }
         response.getHeaders().set(MASKED_HEADER, "true");
         response.getHeaders().set(RULES_HEADER, TextMasker.RULE_SET);
+        if (body == null) {
+            // Nothing to mask (a 204 such as logout), so nothing to refuse (PR 12 review N-02).
+            return null;
+        }
         if (!masking.available()) {
             response.setStatusCode(HttpStatus.SERVICE_UNAVAILABLE);
             return ApiError.of("MASKING_UNAVAILABLE", "The masking key or dictionary is missing; nothing is served.");
-        }
-        if (body == null) {
-            return null;
         }
         if (body instanceof MaskedView view) {
             return view.masked(masking.masker());

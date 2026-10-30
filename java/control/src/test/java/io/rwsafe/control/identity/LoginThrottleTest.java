@@ -15,7 +15,7 @@ class LoginThrottleTest {
     @Test
     void fiveFailuresLockThePairNotTheNameEverywhere() {
         LoginThrottle t = new LoginThrottle(clock);
-        for (int i = 0; i < LoginThrottle.MAX_PER_SOURCE; i++) {
+        for (int i = 0; i < LoginThrottle.MAX_PER_PAIR; i++) {
             t.failure("breakglass", "source-a");
         }
         assertTrue(t.locked("breakglass", "source-a"));
@@ -23,25 +23,27 @@ class LoginThrottleTest {
     }
 
     @Test
-    void manySourcesLockTheName() {
+    void aSprayFromOneClientLocksThatClientOnly() {
         LoginThrottle t = new LoginThrottle(clock);
-        for (int i = 0; i < LoginThrottle.MAX_PER_NAME; i++) {
-            t.failure("synthetic-admin", "source-" + i);
+        for (int i = 0; i < LoginThrottle.MAX_PER_SOURCE; i++) {
+            t.failure("synthetic-name-" + i, "source-a");
         }
-        assertTrue(t.locked("synthetic-admin", "source-new"));
+        assertTrue(t.locked("synthetic-admin", "source-a"));
+        assertFalse(t.locked("synthetic-admin", "source-b"));
     }
 
     @Test
-    void locksAreNeverEvictedByAFloodOfNewNames() {
+    void aFloodNeitherEvictsLocksNorLocksOutCleanClients() {
         LoginThrottle t = new LoginThrottle(clock);
-        for (int i = 0; i < LoginThrottle.MAX_PER_SOURCE; i++) {
+        for (int i = 0; i < LoginThrottle.MAX_PER_PAIR; i++) {
             t.failure("synthetic-admin", "source-a");
         }
         for (int i = 0; i < LoginThrottle.MAX_ENTRIES; i++) {
-            t.failure("synthetic-dummy-" + i, "source-a");
+            t.failure("synthetic-dummy-" + i, "source-flood-" + i);
         }
-        assertTrue(t.locked("synthetic-admin", "source-a"));
-        assertTrue(t.locked("synthetic-never-seen", "source-z"), "a full throttle refuses unknown names");
+        assertTrue(t.locked("synthetic-admin", "source-a"), "the lock survives the flood");
+        assertFalse(t.locked("breakglass", "source-clean"), "a clean client still signs in");
+        assertFalse(t.locked("synthetic-admin", "source-clean"));
     }
 
     @Test
@@ -56,6 +58,8 @@ class LoginThrottleTest {
         assertTrue(LdapAuthenticator.loopback("127.0.0.1"));
         assertTrue(LdapAuthenticator.loopback("localhost"));
         assertFalse(LdapAuthenticator.loopback("synthetic.example.test"));
+        assertFalse(LdapAuthenticator.loopback("127.synthetic.example.test"));
+        assertFalse(LdapAuthenticator.loopback(null));
         LdapAuthenticator remote = new LdapAuthenticator(new io.rwsafe.control.config.ControlProperties.Ldap(
             "ldap://synthetic.example.test:389", "cn=synthetic-service,dc=example,dc=test", null,
             "dc=example,dc=test", "(uid={0})", null, null));
