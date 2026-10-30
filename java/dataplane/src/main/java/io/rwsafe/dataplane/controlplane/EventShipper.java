@@ -28,11 +28,15 @@ import java.util.concurrent.atomic.AtomicLong;
  * Drains the verdict queue on its own thread and posts batches to the control plane
  * ({@code POST /internal/v1/verdict-events}). Verdict events are not dropped (ADR-010 §3, SR-DP-12):
  * <ul>
- *   <li>a batch the control plane does not take goes to a bounded spool file on the pod's emptyDir; while the spool holds
+ *   <li>a batch the control plane does not take goes to a bounded spool on the pod's emptyDir; while the spool holds
  *       anything, new batches join it there so order is kept, and a replay is tried at most once per back-off interval, so
  *       the queue drains at disk speed during an outage (PR 14 review D-02);</li>
- *   <li>the replay streams the spool line by line and compacts it through a temporary file moved atomically, never
- *       rewriting the file in place;</li>
+ *   <li>the spool is a series of numbered segment files ({@code verdict-spool-<n>.jsonl}, one batch per line): batches
+ *       are appended to the newest, which rolls at {@link #SEGMENT_BYTES}; the replay streams the oldest segment first,
+ *       deletes a segment once every line in it is sent, and compacts only the one segment it stopped in through a
+ *       temporary file moved atomically. Disk use therefore peaks at the cap plus one segment, never twice the cap, so the
+ *       emptyDir's sizeLimit holds (ADR-001 §3, PR 18 review D-05). A legacy single spool file is picked up as the oldest
+ *       segment at start;</li>
  *   <li>when the spool is full the shipper holds the batch and stops draining, the queue fills past its high-water mark,
  *       and the engine blocks fail-closed flows;</li>
  *   <li>on shutdown the shipper drains the queue to the control plane or the spool before it returns (D-01), within the
@@ -44,7 +48,13 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class EventShipper implements Runnable {
 
     private static final int BATCH = 200;
-    private static final String SPOOL = "verdict-spool.jsonl";
+    /** The single-file spool of earlier versions; picked up as the oldest segment at start. */
+    private static final String LEGACY_SPOOL = "verdict-spool.jsonl";
+    private static final String SEGMENT_PREFIX = "verdict-spool-";
+    private static final String SEGMENT_SUFFIX = ".jsonl";
+    private static final String TMP_SUFFIX = ".tmp";
+    /** The segment size: a segment rolls before a batch would take it past this (a larger batch gets its own). */
+    public static final long SEGMENT_BYTES = 8L * 1024 * 1024;
     private static final int SHUTDOWN_ATTEMPTS = 3;
     private static final Duration POST_TIMEOUT = Duration.ofSeconds(5);
     /** The flush bound of {@link #stop()}. */
@@ -55,6 +65,8 @@ public final class EventShipper implements Runnable {
     private final HttpClient client;
     private final Path spoolDir;
     private final long spoolCap;
+    private final long segmentBytes;
+    private final AtomicLong peakDiskBytes = new AtomicLong();
     private final Duration retryPause;
     private final AtomicLong shipped = new AtomicLong();
     private final AtomicLong discarded = new AtomicLong();
@@ -71,6 +83,19 @@ public final class EventShipper implements Runnable {
 
     /** @param spoolDir emptyDir path for the spool, or null for no spool (the queue alone absorbs an outage) */
     public EventShipper(BoundedEventQueue queue, URI endpoint, Path spoolDir, long spoolCap, Duration retryPause) {
+        this(queue, endpoint, spoolDir, spoolCap, SEGMENT_BYTES, retryPause);
+    }
+
+    /**
+     * @param spoolCap     the spool's bytes on disk at most, segments together; a compaction adds at most one segment
+     * @param segmentBytes the segment size ({@link #SEGMENT_BYTES} in the product; smaller in tests)
+     */
+    public EventShipper(BoundedEventQueue queue, URI endpoint, Path spoolDir, long spoolCap, long segmentBytes,
+                        Duration retryPause) {
+        if (segmentBytes <= 0) {
+            throw new IllegalArgumentException("segmentBytes must be positive");
+        }
+        this.segmentBytes = segmentBytes;
         this.queue = queue;
         this.endpoint = endpoint;
         this.client = endpoint == null ? null
@@ -79,13 +104,88 @@ public final class EventShipper implements Runnable {
         this.spoolCap = spoolCap;
         this.retryPause = retryPause;
         if (spoolDir != null) {
+            pickUp();
+        }
+    }
+
+    /**
+     * Restart pickup: drops a compaction's temporary file left by a crash (its segment is intact), moves a legacy
+     * single-file spool in front of the segments, and counts what is on disk.
+     */
+    private void pickUp() {
+        try {
+            if (Files.isDirectory(spoolDir)) {
+                try (var files = Files.list(spoolDir)) {
+                    for (Path tmp : files.filter(f -> f.getFileName().toString().endsWith(TMP_SUFFIX)).toList()) {
+                        Files.deleteIfExists(tmp);
+                    }
+                }
+                Path legacy = spoolDir.resolve(LEGACY_SPOOL);
+                if (Files.exists(legacy)) {
+                    List<Long> numbers = segmentNumbers(spoolDir);
+                    long first = numbers.isEmpty() ? 1 : numbers.get(0) - 1;
+                    Files.move(legacy, segment(spoolDir, first), StandardCopyOption.ATOMIC_MOVE);
+                }
+            }
+        } catch (IOException e) {
+            // Counted below from whatever is there; a failed pickup never loses a segment.
+        }
+        recount();
+    }
+
+    /** The spool's segment files, oldest first (empty when the directory does not exist). */
+    public static List<Path> spoolSegments(Path spoolDir) {
+        List<Path> out = new ArrayList<>();
+        for (long n : segmentNumbers(spoolDir)) {
+            out.add(segment(spoolDir, n));
+        }
+        return out;
+    }
+
+    private static List<Long> segmentNumbers(Path spoolDir) {
+        List<Long> numbers = new ArrayList<>();
+        if (spoolDir == null || !Files.isDirectory(spoolDir)) {
+            return numbers;
+        }
+        try (var files = Files.list(spoolDir)) {
+            for (Path f : (Iterable<Path>) files::iterator) {
+                String name = f.getFileName().toString();
+                if (name.startsWith(SEGMENT_PREFIX) && name.endsWith(SEGMENT_SUFFIX)) {
+                    try {
+                        numbers.add(Long.parseLong(
+                            name.substring(SEGMENT_PREFIX.length(), name.length() - SEGMENT_SUFFIX.length())));
+                    } catch (NumberFormatException e) {
+                        // Not a segment of ours.
+                    }
+                }
+            }
+        } catch (IOException e) {
+            return numbers;
+        }
+        numbers.sort(null);
+        return numbers;
+    }
+
+    private static Path segment(Path spoolDir, long number) {
+        return spoolDir.resolve(SEGMENT_PREFIX + String.format("%019d", number) + SEGMENT_SUFFIX);
+    }
+
+    /** spoolBytes = the sizes of the segments on disk. */
+    private void recount() {
+        long total = 0;
+        for (Path seg : spoolSegments(spoolDir)) {
             try {
-                Path f = spoolDir.resolve(SPOOL);
-                spoolBytes.set(Files.exists(f) ? Files.size(f) : 0);
+                total += Files.size(seg);
             } catch (IOException e) {
-                spoolBytes.set(0);
+                // Gone between the listing and the size: nothing to count.
             }
         }
+        spoolBytes.set(total);
+        notePeak(total);
+    }
+
+    private void notePeak(long bytesOnDisk) {
+        peakDiskBytes.accumulateAndGet(bytesOnDisk, Math::max);
     }
 
     @Override
@@ -192,33 +292,50 @@ public final class EventShipper implements Runnable {
             return false;
         }
         byte[] line = (json + "\n").getBytes(StandardCharsets.UTF_8);
-        // One batch of margin stays free so a compaction can always write its temporary file.
-        if (spoolBytes.get() + line.length > spoolCap - line.length) {
+        // The cap bounds the segments together; a compaction adds at most one segment on top (replaySegment).
+        if (spoolBytes.get() + line.length > spoolCap) {
             return false;
         }
         try {
             Files.createDirectories(spoolDir);
-            Files.write(spoolDir.resolve(SPOOL), line, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            spoolBytes.addAndGet(line.length);
+            List<Long> numbers = segmentNumbers(spoolDir);
+            long newest = numbers.isEmpty() ? 1 : numbers.get(numbers.size() - 1);
+            Path target = segment(spoolDir, newest);
+            long size = Files.exists(target) ? Files.size(target) : 0;
+            if (size > 0 && size + line.length > segmentBytes) {
+                target = segment(spoolDir, newest + 1);
+            }
+            Files.write(target, line, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            notePeak(spoolBytes.addAndGet(line.length));
             return true;
         } catch (IOException e) {
             return false;
         }
     }
 
-    /**
-     * Streams spooled batches in order and posts them; stops at the first refusal. Sent lines are removed by copying the
-     * rest to a temporary file that replaces the spool atomically; nothing is rewritten when nothing was sent.
-     */
+    /** Replays the segments oldest first; true when the spool is empty afterwards. Stops at the first refusal. */
     private boolean replaySpool() {
-        Path f = spoolDir.resolve(SPOOL);
-        if (!Files.exists(f)) {
-            spoolBytes.set(0);
+        try {
+            for (Path seg : spoolSegments(spoolDir)) {
+                if (!replaySegment(seg)) {
+                    return false;
+                }
+            }
             return true;
+        } finally {
+            recount();
         }
+    }
+
+    /**
+     * Streams one segment's batches in order and posts them; true when every line was sent and the segment deleted.
+     * After a refusal the sent lines are removed by copying the rest to a temporary file that replaces the segment
+     * atomically, so the extra disk is at most this one segment; nothing is rewritten when nothing was sent.
+     */
+    private boolean replaySegment(Path seg) {
         long sentLines = 0;
         boolean stopped = false;
-        try (BufferedReader in = Files.newBufferedReader(f, StandardCharsets.UTF_8)) {
+        try (BufferedReader in = Files.newBufferedReader(seg, StandardCharsets.UTF_8)) {
             String line;
             while ((line = in.readLine()) != null) {
                 if (!line.isBlank() && !post(line)) {
@@ -233,15 +350,16 @@ public final class EventShipper implements Runnable {
         }
         try {
             if (!stopped) {
-                Files.deleteIfExists(f);
-                spoolBytes.set(0);
+                long size = Files.size(seg);
+                Files.deleteIfExists(seg);
+                spoolBytes.addAndGet(-size);
                 return true;
             }
             if (sentLines == 0) {
                 return false;
             }
-            Path tmp = spoolDir.resolve(SPOOL + ".tmp");
-            try (BufferedReader in = Files.newBufferedReader(f, StandardCharsets.UTF_8);
+            Path tmp = seg.resolveSibling(seg.getFileName() + TMP_SUFFIX);
+            try (BufferedReader in = Files.newBufferedReader(seg, StandardCharsets.UTF_8);
                  BufferedWriter out = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
                 for (long i = 0; i < sentLines; i++) {
                     in.readLine();
@@ -252,8 +370,8 @@ public final class EventShipper implements Runnable {
                     out.write('\n');
                 }
             }
-            Files.move(tmp, f, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            spoolBytes.set(Files.size(f));
+            notePeak(spoolBytes.get() + Files.size(tmp));
+            Files.move(tmp, seg, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             return false;
         } catch (IOException e) {
             return false;
@@ -330,5 +448,10 @@ public final class EventShipper implements Runnable {
 
     public long spoolBytes() {
         return spoolBytes.get();
+    }
+
+    /** The most spool bytes this shipper has had on disk at once, a compaction's temporary file included. */
+    public long peakDiskBytes() {
+        return peakDiskBytes.get();
     }
 }

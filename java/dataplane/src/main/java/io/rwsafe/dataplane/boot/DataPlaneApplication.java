@@ -37,6 +37,12 @@ import java.util.Map;
  */
 public final class DataPlaneApplication {
 
+    /**
+     * The verdict spool cap: with one segment of compaction on top (EventShipper.SEGMENT_BYTES, 8 MiB) disk use stays at
+     * most 248 MiB, under the 256Mi emptyDir sizeLimit of ADR-001 section 3, so the kubelet never evicts at the cap.
+     */
+    static final long SPOOL_CAP_BYTES = 240L * 1024 * 1024;
+
     private DataPlaneApplication() {
     }
 
@@ -52,7 +58,7 @@ public final class DataPlaneApplication {
         String events = System.getenv("RWSAFE_CONTROL_EVENTS_URL");
         String spool = System.getenv("RWSAFE_SPOOL_DIR");
         EventShipper shipper = new EventShipper(queue, blank(events) ? null : URI.create(events),
-            blank(spool) ? null : Path.of(spool), 256L * 1024 * 1024, Duration.ofSeconds(1));
+            blank(spool) ? null : Path.of(spool), SPOOL_CAP_BYTES, Duration.ofSeconds(1));
         Thread shipperThread = new Thread(shipper, "rwsafe-event-shipper");
         shipperThread.start();
 

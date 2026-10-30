@@ -112,7 +112,7 @@ class ShutdownSequenceTest {
             assertEquals(250, received.get(), "posted to the control plane, not left on the pod's emptyDir");
             assertEquals(250, shipper.shipped());
             assertEquals(0, shipper.lost());
-            assertFalse(Files.exists(spool.resolve("verdict-spool.jsonl")));
+            assertTrue(EventShipper.spoolSegments(spool).isEmpty(), "nothing spooled");
         } finally {
             cp.stop(0);
         }

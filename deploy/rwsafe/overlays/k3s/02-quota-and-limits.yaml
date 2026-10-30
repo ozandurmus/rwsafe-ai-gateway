@@ -1,6 +1,6 @@
 # ADR-001 §3, PORTS_AND_RESOURCES §4.2, CAPACITY §1: the ceiling rwsafe may never exceed on HOST-A. Every emptyDir in the
-# workload manifests carries a sizeLimit (at most 512Mi runtime scratch, 320Mi verdict spool over the engine's 256 MiB
-# cap, 4Gi build); the manifest test (tools/deploy/manifest_check.py) enforces it and that the workloads plus one
+# workload manifests carries a sizeLimit (at most 512Mi runtime scratch, 256Mi verdict spool over the engine's 240 MiB
+# segment cap plus one 8 MiB compaction segment, 4Gi build); the manifest test (tools/deploy/manifest_check.py) enforces it and that the workloads plus one
 # rolling-update surge pod per Deployment fit this quota (PLAT-F6). Requests sum with neXus and system stays under 75 % of
 # the node (AC-1). PORT-3: this object exists only in the k3s overlay.
 apiVersion: v1

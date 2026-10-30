@@ -130,10 +130,11 @@ spec:
       volumes:
         - name: tmp
           emptyDir: { sizeLimit: 64Mi }
-        # The verdict spool: the engine caps it at 256 MiB itself (DataPlaneApplication); the sizeLimit leaves room for
-        # the file being written when the cap is reached, so the kubelet never evicts at the application's own cap.
+        # The verdict spool: 256Mi as ADR-001 section 3 says. The engine caps its segments at 240 MiB (DataPlaneApplication
+        # SPOOL_CAP_BYTES) and a replay compacts one 8 MiB segment at a time (EventShipper), so disk use peaks at 248 MiB
+        # and the kubelet never evicts at the application's cap.
         - name: spool
-          emptyDir: { sizeLimit: 320Mi }
+          emptyDir: { sizeLimit: 256Mi }
         - name: snapshot-cache
           emptyDir: { sizeLimit: 64Mi }
         - name: icap-tls
