@@ -6,7 +6,7 @@
 //   ./java/gradlew -p java architectureTest   the ArchUnit fences (AGENTS.md section 5 and 4.14)
 //   ./java/gradlew -p java resolveAndLockAll --write-locks   refresh the lockfiles after a dependency change
 //   ./java/gradlew -p java generateMavenSmokeBuild   write build/maven-smoke/pom.xml for the Maven-portability smoke build
-//   ./java/gradlew -p java :dataplane:fuzzTest   fuzz the parsers (Jazzer fuzzing mode; `unitTest` replays the corpus)
+//   ./java/gradlew -p java fuzzTest   fuzz the parsers (Jazzer fuzzing mode; `unitTest` replays the corpus)
 
 subprojects {
     apply(plugin = "java-library")
@@ -56,6 +56,7 @@ subprojects {
 }
 
 val productModules = listOf("platform-core", "detect", "policy", "dataplane", "persistence", "control", "worker", "cli")
+extra["productModules"] = productModules
 
 tasks.register("unitTest") {
     group = "verification"
@@ -69,10 +70,45 @@ tasks.register("architectureTest") {
     dependsOn(":architecture-tests:test")
 }
 
+// SR-DP-4: the modules whose parsers are fuzzed. `test` replays every @FuzzTest's committed corpus (Jazzer regression
+// mode, part of `unitTest`); `fuzzTest` fuzzes for the duration each @FuzzTest declares, one JVM per test class (Jazzer's
+// fuzzer is one per process, so every *FuzzTest class holds exactly one @FuzzTest), and writes a crashing input next to
+// the corpus. A per-input @Timeout on each target becomes libFuzzer's -timeout. Never cached: a fuzzing run is not a
+// function of its inputs. `detect` joins this list with the normaliser, its first parser (it adds jazzer-junit then).
+val fuzzModules = listOf("dataplane")
+
+configure(fuzzModules.map { project(":$it") }) {
+    tasks.named<Test>("test") {
+        environment("JAZZER_FUZZ", "")
+    }
+    val testSourceSet = extensions.getByType<SourceSetContainer>()["test"]
+    tasks.register<Test>("fuzzTest") {
+        group = "verification"
+        description = "Fuzzes the parsers (Jazzer fuzzing mode, SR-DP-4)."
+        testClassesDirs = testSourceSet.output.classesDirs
+        classpath = testSourceSet.runtimeClasspath
+        useJUnitPlatform()
+        filter.includeTestsMatching("*FuzzTest")
+        environment("JAZZER_FUZZ", "1")
+        forkEvery = 1
+        outputs.upToDateWhen { false }
+        outputs.cacheIf { false }
+    }
+}
+
+tasks.register("fuzzTest") {
+    group = "verification"
+    description = "Fuzzes the parsers of every fuzzed module."
+    dependsOn(fuzzModules.map { ":$it:fuzzTest" })
+}
+
 // ADR-011 §4 mitigation for the Gradle deviation from the corporate Maven standard: the Maven-portability smoke build.
 // Each product module gets a generated pom.xml under build/maven-smoke/ that points at the module's standard source
 // directories, declares the same dependency edges and pins every resolved version to the Gradle lock, so CI can build and
-// test the product with plain Maven. A build that needs Gradle-only logic to compile breaks this job first.
+// test the product with plain Maven. A build that needs Gradle-only logic to compile breaks this job first. The generator
+// refuses what it cannot translate faithfully (PR 7 review D-06): a classifier, artifact selector or exclusion, an
+// annotation processor, or one library resolved at two versions in the module's classpaths. Gradle's api/implementation
+// split has no Maven equivalent (both become compile scope); the Gradle build and the ArchUnit module graph hold it.
 val mavenScopes = linkedMapOf(
     "api" to "compile", "implementation" to "compile", "compileOnly" to "provided", "runtimeOnly" to "runtime",
     "testImplementation" to "test", "testCompileOnly" to "test", "testRuntimeOnly" to "test",
@@ -87,6 +123,10 @@ fun mavenModulePom(module: Project): String {
     val declared = linkedMapOf<String, String>()
     for ((configuration, scope) in mavenScopes) {
         module.configurations.findByName(configuration)?.dependencies?.forEach { dependency ->
+            if (dependency is ModuleDependency && (dependency.artifacts.isNotEmpty() || dependency.excludeRules.isNotEmpty())) {
+                throw GradleException("${module.path}: $configuration ${dependency.name} has a classifier, artifact or " +
+                    "exclusion the Maven smoke build cannot reproduce")
+            }
             val key = when {
                 dependency is ProjectDependency -> "io.rwsafe:${dependency.name}"
                 dependency is ExternalModuleDependency && !isPlatform(dependency) -> "${dependency.group}:${dependency.name}"
@@ -95,12 +135,21 @@ fun mavenModulePom(module: Project): String {
             if (key != null) declared.putIfAbsent(key, scope)
         }
     }
+    for (processors in listOf("annotationProcessor", "testAnnotationProcessor")) {
+        if (module.configurations.getByName(processors).allDependencies.isNotEmpty()) {
+            throw GradleException("${module.path}: $processors is not translated to the Maven smoke build")
+        }
+    }
     val locked = sortedMapOf<String, String>()
     for (configuration in listOf("compileClasspath", "runtimeClasspath", "testCompileClasspath", "testRuntimeClasspath")) {
         module.configurations.getByName(configuration).incoming.resolutionResult.allComponents.forEach { component ->
             val id = component.id
             if (id is org.gradle.api.artifacts.component.ModuleComponentIdentifier) {
-                locked.putIfAbsent("${id.group}:${id.module}", id.version)
+                val previous = locked.putIfAbsent("${id.group}:${id.module}", id.version)
+                if (previous != null && previous != id.version) {
+                    throw GradleException("${module.path}: ${id.group}:${id.module} resolves to $previous and " +
+                        "${id.version}; one Maven version cannot reproduce both")
+                }
             }
         }
     }
@@ -190,7 +239,8 @@ tasks.register("generateMavenSmokeBuild") {
             |${plugin("maven-compiler-plugin", "3.13.0", "<configuration><release>21</release><showWarnings>true</showWarnings>" +
                 "<failOnWarning>true</failOnWarning><compilerArgs><arg>-Xlint:all</arg><arg>-Xpkginfo:always</arg>" +
                 "</compilerArgs></configuration>")}
-            |${plugin("maven-surefire-plugin", "3.5.2")}
+            |${plugin("maven-surefire-plugin", "3.5.2", "<configuration><environmentVariables><JAZZER_FUZZ></JAZZER_FUZZ>" +
+                "</environmentVariables></configuration>")}
             |${plugin("maven-jar-plugin", "3.4.2")}
             |${plugin("maven-install-plugin", "3.1.3")}
             |      </plugins>

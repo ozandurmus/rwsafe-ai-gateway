@@ -1,9 +1,16 @@
 package io.rwsafe.dataplane.fuzz;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.code_intelligence.jazzer.junit.FuzzTest;
+import java.io.File;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Wires the Jazzer harness (SR-DP-4) before the ICAP and HTTP decoders exist: one placeholder target with the contract
@@ -12,7 +19,8 @@ import java.nio.charset.StandardCharsets;
  * <p>Corpus: {@code src/test/resources/io/rwsafe/dataplane/fuzz/<Class>Inputs/<method>/}, replayed by {@code test}
  * (regression mode) and extended by {@code fuzzTest}. Seeds are synthetic (example.invalid, no prompt body). Replace this
  * class with {@code IcapDecoderFuzzTest}, {@code ChunkedDecoderFuzzTest} and the others the ICAP spec lists when the
- * decoders land; each keeps its own corpus directory.
+ * decoders land: one {@code @FuzzTest} per class (one fuzzer per JVM), each with a per-input {@code @Timeout}, its own
+ * corpus directory and a test that the directory is on the classpath and holds a seed.
  */
 class PlaceholderParserFuzzTest {
 
@@ -21,8 +29,18 @@ class PlaceholderParserFuzzTest {
     private static final int MAX_LINE = 8192;
 
     @FuzzTest(maxDuration = "60s")
+    @Timeout(value = 5, unit = TimeUnit.SECONDS)
     void parse(byte[] input) {
         assertNotNull(parseRequestLine(input));
+    }
+
+    /** A misnamed corpus directory would replay only Jazzer's empty input and pass silently. */
+    @Test
+    void corpusIsOnTheClasspathWithASeed() throws URISyntaxException {
+        URL corpus = getClass().getResource("PlaceholderParserFuzzTestInputs/parse");
+        assertNotNull(corpus, "corpus directory missing from the test classpath");
+        File[] seeds = new File(corpus.toURI()).listFiles(File::isFile);
+        assertTrue(seeds != null && seeds.length > 0, "corpus directory holds no seed");
     }
 
     /** A bounded request-line check standing in for the ICAP decoder: three tokens before the first CRLF. */

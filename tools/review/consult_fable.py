@@ -17,6 +17,15 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 
+def _mask_local_paths(text: str) -> tuple[str, int]:
+    """AGENTS.md 4.2: the workspace and home paths name a local account; masking them is the only alteration."""
+    count = 0
+    for path, mask in ((str(BASE_DIR), "<workspace-root>"), (str(Path.home()), "<home>")):
+        count += text.count(path)
+        text = text.replace(path, mask)
+    return text, count
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--brief", required=True, type=Path)
@@ -48,9 +57,10 @@ def main() -> int:
         return 1
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(f"<!-- Fable consultation {stamp}, model {a.model}, exit {proc.returncode}; unaltered output -->\n\n"
-                   + proc.stdout + (("\n\n<!-- stderr -->\n" + proc.stderr[-2000:]) if proc.stderr.strip() else ""),
-                   encoding="utf-8")
+    body, masked = _mask_local_paths(
+        proc.stdout + (("\n\n<!-- stderr -->\n" + proc.stderr[-2000:]) if proc.stderr.strip() else ""))
+    out.write_text(f"<!-- Fable consultation {stamp}, model {a.model}, exit {proc.returncode}; unaltered output except "
+                   f"{masked} local paths masked (AGENTS.md 4.2) -->\n\n" + body, encoding="utf-8")
     print(f"[*] written: {out.relative_to(BASE_DIR)} (exit {proc.returncode}, {len(proc.stdout)} chars)")
     return proc.returncode
 

@@ -13,3 +13,14 @@ dependencies {
     testImplementation(libs.archunit.junit5)
     testImplementation(libs.slf4j.api)
 }
+
+// The fences import exactly the classes the product modules compile (PR 7 review D-05): each module's build directory,
+// passed as module=path pairs, so a class in an unexpected package is still imported and attributed to its module.
+@Suppress("UNCHECKED_CAST")
+val productModules = rootProject.extra["productModules"] as List<String>
+tasks.named<Test>("test") {
+    val outputs = productModules.joinToString(";") { module ->
+        "$module=" + project(":$module").layout.buildDirectory.get().asFile.toURI().rawPath.trimEnd('/') + "/"
+    }
+    systemProperty("rwsafe.moduleOutputs", outputs)
+}

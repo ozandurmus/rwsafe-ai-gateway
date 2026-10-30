@@ -56,13 +56,19 @@ Public GitHub repository with branch protection; pull requests 1, 2 (decisions a
   ERROR/WARNING fail unless an exact, owned, unexpired acceptance names them; the gate has its own self-test.
 - Jazzer harness (SR-DP-4): `jazzer-junit` in `dataplane` tests, a placeholder `@FuzzTest` with its committed synthetic
   corpus under `src/test/resources/.../PlaceholderParserFuzzTestInputs/`; `unitTest` replays the corpus and CI fuzzes
-  for 60 s (`:dataplane:fuzzTest`). The ICAP and HTTP decoder targets replace the placeholder when the decoders land.
+  for 60 s per target (`fuzzTest`, one JVM per target class, 5 s per input). The ICAP and HTTP decoder targets replace the placeholder when the decoders land.
 - Maven-portability smoke build (ADR-011 §4): `generateMavenSmokeBuild` writes `java/build/maven-smoke/pom.xml` and one
   pom per product module (the module's standard source directories, the same dependency edges, every version pinned to
   the Gradle lock); the `maven-portability` job builds and tests the product with plain Maven.
 - ArchUnit module-graph fence (PR 4 review D-06): each module depends only on the modules ARCHITECTURE §9 lists (the
   data plane never on persistence, control, worker or CLI; nothing on the data plane) and every class belongs to a
-  module; proved on fixtures by `FenceSelfTest.moduleGraphFence`.
+  module; proved on fixtures by `FenceSelfTest.moduleGraphFence`. The fences import every class the product modules
+  compile, and a class must declare a package under its own module's root (`classesLiveUnderTheirModuleRoot`).
+- Second independent review of pull request 7 (Argon, `docs/reviews/PR7_2026_10_30_ARGON_CI_HARDENING.md`) answered by
+  ID in `PR7_2026_10_30_RESPONSE.md`: fail-closed severities and a policy floor, empty-scan refusal and a real-scanner
+  canary step, per-resource misconfiguration acceptances with a 90-day cap, one JVM per fuzz class with a per-input
+  timeout, and a Maven generator that refuses what it cannot translate. The privacy gate gains `LOCAL_HOME_PATH`, and
+  the review scripts mask the workspace and home paths in their output.
 
 ## Pending on the Product Owner
 

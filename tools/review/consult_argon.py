@@ -15,6 +15,15 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 
+def _mask_local_paths(text: str) -> tuple[str, int]:
+    """AGENTS.md 4.2: the workspace and home paths name a local account; masking them is the only alteration."""
+    count = 0
+    for path, mask in ((str(BASE_DIR), "<workspace-root>"), (str(Path.home()), "<home>")):
+        count += text.count(path)
+        text = text.replace(path, mask)
+    return text, count
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--brief", required=True, type=Path)
@@ -36,9 +45,10 @@ def main() -> int:
     result = subprocess.run(cmd, cwd=BASE_DIR, capture_output=True, text=True)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(f"<!-- Argon consultation {stamp}, model {a.model}, effort {a.effort}; unaltered output -->\n\n"
-                   + result.stdout + (("\n\n<!-- stderr -->\n" + result.stderr) if result.stderr.strip() else ""),
-                   encoding="utf-8")
+    body, masked = _mask_local_paths(
+        result.stdout + (("\n\n<!-- stderr -->\n" + result.stderr) if result.stderr.strip() else ""))
+    out.write_text(f"<!-- Argon consultation {stamp}, model {a.model}, effort {a.effort}; unaltered output except {masked} "
+                   f"local paths masked (AGENTS.md 4.2) -->\n\n" + body, encoding="utf-8")
     print(f"[*] written: {out.relative_to(BASE_DIR)} (exit {result.returncode})")
     return result.returncode
 
