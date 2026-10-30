@@ -28,4 +28,5 @@ __pycache__/
 
 # Claude Code session state; the project settings file .claude/settings.json is committed.
 .claude/scheduled_tasks.lock
-.claude/settings.local.json
+.claude/*.local.json
+.claude/worktrees/
