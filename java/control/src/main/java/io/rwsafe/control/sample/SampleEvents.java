@@ -41,7 +41,9 @@ public final class SampleEvents {
         new Platform("unknown", 2, new String[] {"unknown"}, "other"),
     };
     private static final int TOTAL_WEIGHT = java.util.Arrays.stream(PLATFORMS).mapToInt(Platform::weight).sum();
-    private static final String[] NON_VERDICT_REASONS = {"BINARY", "MULTIPART", "UNSUPPORTED_MEDIA", "ENCODED"};
+    /** The data plane's reason classes for UNINSPECTABLE (ICAP engine slice 1). */
+    private static final String[] NON_VERDICT_REASONS = {"BINARY", "MULTIPART", "UNSUPPORTED_MEDIA", "ENCODED", "OVERSIZE",
+        "UNSUPPORTED_CHARSET"};
 
     private final Random random;
     private final int users;
@@ -87,7 +89,6 @@ public final class SampleEvents {
         double r = random.nextDouble();
         if (p.id().equals("unknown")) {
             verdict = "UNKNOWN_FLOW";
-            reason = "UNKNOWN_PLATFORM";
         } else if ("login".equals(p.step())) {
             // Sign-in steps: tenant restriction refuses a personal account (ADR-007, ADR-009 PC-9), never a DLP class.
             verdict = r < 0.9 ? "ALLOW" : r < 0.98 ? "BLOCK" : "UNINSPECTABLE";
@@ -102,7 +103,6 @@ public final class SampleEvents {
             verdict = "ALLOW";
         } else if (r < 0.80) {
             verdict = "WARN";
-            reason = "POLICY_NOTICE";
         } else if (r < 0.89) {
             verdict = "REDACT";
             reason = "customer_data";
@@ -120,10 +120,10 @@ public final class SampleEvents {
             reason = NON_VERDICT_REASONS[random.nextInt(NON_VERDICT_REASONS.length)];
         } else if (r < 0.99) {
             verdict = "MALFORMED";
-            reason = "FRAMING";
+            reason = random.nextBoolean() ? "HTTP_HEAD" : "JSON";
         } else if (r < 0.996) {
             verdict = "INSPECTION_TIMEOUT";
-            reason = "SLOW_BODY";
+            reason = "BODY_RECEIVE";
         } else {
             verdict = "INSPECTION_FAILED";
             reason = "INTERNAL";
