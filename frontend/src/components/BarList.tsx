@@ -1,5 +1,5 @@
 import { Box, Typography } from '@mui/material';
-import { formatCount } from '../labels';
+import { useI18n } from '../i18n';
 
 export interface BarRow {
   key: string;
@@ -14,6 +14,7 @@ export interface BarRow {
  * detail are always visible, so the colour of a bar is never the only carrier of meaning.
  */
 export function BarList({ rows, ariaLabel }: { rows: BarRow[]; ariaLabel: string }) {
+  const { fmt } = useI18n();
   const max = Math.max(1, ...rows.map((r) => r.value));
   return (
     <Box component="ul" aria-label={ariaLabel} sx={{ listStyle: 'none', m: 0, p: 0, display: 'grid', gap: 1.25 }}>
@@ -24,7 +25,7 @@ export function BarList({ rows, ariaLabel }: { rows: BarRow[]; ariaLabel: string
               {r.label}
             </Typography>
             <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-              {formatCount(r.value)}
+              {fmt.count(r.value)}
               {r.detail && (
                 <Typography component="span" variant="body2" color="text.secondary">
                   {' '}

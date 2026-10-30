@@ -1,10 +1,10 @@
-import { ThemeProvider, createTheme } from '@mui/material';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { Overview } from '../api';
 import { HourlyChart, buckets } from '../components/HourlyChart';
 import { VERDICT_GROUP } from '../labels';
 import { groupTotals } from '../pages/OverviewPage';
+import { renderWithI18n } from './render';
 
 const overview: Overview = {
   from: '2026-10-30T06:00:00Z',
@@ -40,11 +40,7 @@ describe('overview data', () => {
   });
 
   it('shows a tooltip on hover and offers a table view', () => {
-    render(
-      <ThemeProvider theme={createTheme()}>
-        <HourlyChart overview={overview} />
-      </ThemeProvider>,
-    );
+    renderWithI18n(<HourlyChart overview={overview} />, 'en');
     expect(screen.getByRole('img', { name: /Events per hour, 6 hours/ })).toBeInTheDocument();
     fireEvent.mouseEnter(screen.getAllByTestId('hour-hit')[1]!);
     expect(screen.getByRole('tooltip')).toHaveTextContent('Total6');

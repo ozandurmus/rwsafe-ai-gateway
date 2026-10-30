@@ -20,15 +20,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, type EventItem, type Verdict } from '../api';
 import { Empty, ErrorPanel, Loading } from '../components/StatePanel';
 import { VerdictPill } from '../components/VerdictPill';
-import {
-  VERDICTS,
-  VERDICT_LABEL,
-  dataClassLabel,
-  formatBytes,
-  formatMicros,
-  formatTime,
-  platformLabel,
-} from '../labels';
+import { useI18n } from '../i18n';
+import { VERDICTS, dataClassLabel, platformLabel, verdictLabel } from '../labels';
 import { WINDOWS, type WindowId, useApi, windowRange } from '../useApi';
 
 const PSEUDONYM = /^USR-[0-9a-f]{10}$/;
@@ -39,6 +32,8 @@ const PAGE = 50;
  * back; the user filter takes a USR- pseudonym only.
  */
 export function TrafficPage() {
+  const i18n = useI18n();
+  const { t, fmt } = i18n;
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const win = (params.get('window') as WindowId) || '24h';
@@ -106,45 +101,65 @@ export function TrafficPage() {
   return (
     <Box display="grid" gap={2}>
       <Typography variant="h5" component="h1" sx={{ fontWeight: 600 }}>
-        Traffic
+        {t('traffic.title')}
       </Typography>
-      <Box display="flex" flexWrap="wrap" gap={1.5} alignItems="flex-start" role="search" aria-label="Traffic filters">
+      <Box display="flex" flexWrap="wrap" gap={1.5} alignItems="flex-start" role="search" aria-label={t('traffic.filters')}>
         <FormControl size="small" sx={{ minWidth: 150 }}>
-          <InputLabel id="f-window">Window</InputLabel>
-          <Select labelId="f-window" label="Window" value={win} onChange={(e) => set('window', e.target.value)}>
+          <InputLabel id="f-window">{t('window.label')}</InputLabel>
+          <Select
+            labelId="f-window"
+            label={t('window.label')}
+            value={win}
+            onChange={(e) => set('window', e.target.value)}
+          >
             {WINDOWS.map((w) => (
               <MenuItem key={w.id} value={w.id}>
-                {w.label}
+                {t(`window.${w.id}`)}
               </MenuItem>
             ))}
           </Select>
         </FormControl>
         <FormControl size="small" sx={{ minWidth: 180 }}>
-          <InputLabel id="f-platform">Platform</InputLabel>
-          <Select labelId="f-platform" label="Platform" value={platform} onChange={(e) => set('platform', e.target.value)}>
-            <MenuItem value="">All platforms</MenuItem>
+          <InputLabel id="f-platform">{t('traffic.platform')}</InputLabel>
+          <Select
+            labelId="f-platform"
+            label={t('traffic.platform')}
+            value={platform}
+            onChange={(e) => set('platform', e.target.value)}
+          >
+            <MenuItem value="">{t('traffic.allPlatforms')}</MenuItem>
             {(platforms.data?.platforms ?? (platform ? [platform] : [])).map((p) => (
               <MenuItem key={p} value={p}>
-                {platformLabel(p)}
+                {platformLabel(i18n, p)}
               </MenuItem>
             ))}
           </Select>
         </FormControl>
         <FormControl size="small" sx={{ minWidth: 170 }}>
-          <InputLabel id="f-verdict">Verdict</InputLabel>
-          <Select labelId="f-verdict" label="Verdict" value={verdict} onChange={(e) => set('verdict', e.target.value)}>
-            <MenuItem value="">All verdicts</MenuItem>
+          <InputLabel id="f-verdict">{t('traffic.verdict')}</InputLabel>
+          <Select
+            labelId="f-verdict"
+            label={t('traffic.verdict')}
+            value={verdict}
+            onChange={(e) => set('verdict', e.target.value)}
+          >
+            <MenuItem value="">{t('traffic.allVerdicts')}</MenuItem>
             {VERDICTS.map((v) => (
               <MenuItem key={v} value={v}>
-                {VERDICT_LABEL[v]}
+                {verdictLabel(i18n, v)}
               </MenuItem>
             ))}
           </Select>
         </FormControl>
         <FormControl size="small" sx={{ minWidth: 140 }}>
-          <InputLabel id="f-service">Service</InputLabel>
-          <Select labelId="f-service" label="Service" value={service} onChange={(e) => set('service', e.target.value)}>
-            <MenuItem value="">Both</MenuItem>
+          <InputLabel id="f-service">{t('traffic.service')}</InputLabel>
+          <Select
+            labelId="f-service"
+            label={t('traffic.service')}
+            value={service}
+            onChange={(e) => set('service', e.target.value)}
+          >
+            <MenuItem value="">{t('traffic.bothServices')}</MenuItem>
             <MenuItem value="reqmod">REQMOD</MenuItem>
             <MenuItem value="respmod">RESPMOD</MenuItem>
           </Select>
@@ -160,14 +175,14 @@ export function TrafficPage() {
         >
           <TextField
             size="small"
-            label="User pseudonym"
+            label={t('traffic.userFilter')}
             placeholder="USR-0123456789"
             value={userDraft}
             onChange={(e) => setUserDraft(e.target.value.trim())}
             onBlur={() => userValid && set('user', userDraft)}
             error={!userValid}
-            helperText={userValid ? 'Pseudonyms only; names are not searchable' : 'Use the USR- pseudonym form'}
-            inputProps={{ 'aria-label': 'User pseudonym' }}
+            helperText={userValid ? t('traffic.userHelp') : t('traffic.userInvalid')}
+            inputProps={{ 'aria-label': t('traffic.userFilter') }}
           />
         </Box>
       </Box>
@@ -175,19 +190,19 @@ export function TrafficPage() {
       {error !== null && <ErrorPanel error={error} />}
       <Card variant="outlined">
         <TableContainer>
-          <Table size="small" aria-label="Verdict events">
+          <Table size="small" aria-label={t('traffic.table')}>
             <TableHead>
               <TableRow>
-                <TableCell>Time (Istanbul)</TableCell>
-                <TableCell>Platform</TableCell>
-                <TableCell>Surface · step</TableCell>
-                <TableCell>Service</TableCell>
-                <TableCell>Verdict</TableCell>
-                <TableCell>Findings</TableCell>
-                <TableCell>User</TableCell>
-                <TableCell>Subnet</TableCell>
-                <TableCell align="right">Decision</TableCell>
-                <TableCell align="right">Body</TableCell>
+                <TableCell>{t('traffic.col.time')}</TableCell>
+                <TableCell>{t('traffic.col.platform')}</TableCell>
+                <TableCell>{t('traffic.col.surfaceStep')}</TableCell>
+                <TableCell>{t('traffic.col.service')}</TableCell>
+                <TableCell>{t('traffic.col.verdict')}</TableCell>
+                <TableCell>{t('traffic.col.findings')}</TableCell>
+                <TableCell>{t('traffic.col.user')}</TableCell>
+                <TableCell>{t('traffic.col.subnet')}</TableCell>
+                <TableCell align="right">{t('traffic.col.decision')}</TableCell>
+                <TableCell align="right">{t('traffic.col.body')}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -200,8 +215,8 @@ export function TrafficPage() {
                   onClick={() => navigate(`/traffic/${e.eventId}?${params.toString()}`)}
                   onKeyDown={(k) => k.key === 'Enter' && navigate(`/traffic/${e.eventId}?${params.toString()}`)}
                 >
-                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatTime(e.receivedAt)}</TableCell>
-                  <TableCell>{platformLabel(e.platform)}</TableCell>
+                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{fmt.time(e.receivedAt)}</TableCell>
+                  <TableCell>{platformLabel(i18n, e.platform)}</TableCell>
                   <TableCell>
                     {e.surface} · {e.step}
                   </TableCell>
@@ -212,12 +227,12 @@ export function TrafficPage() {
                   <TableCell>
                     {e.findings.length === 0
                       ? '—'
-                      : e.findings.map((f) => `${dataClassLabel(f.dataClass)} ×${f.count}`).join(', ')}
+                      : e.findings.map((f) => `${dataClassLabel(i18n, f.dataClass)} ×${f.count}`).join(', ')}
                   </TableCell>
                   <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{e.user ?? '—'}</TableCell>
                   <TableCell sx={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{e.clientSubnet ?? '—'}</TableCell>
-                  <TableCell align="right">{formatMicros(e.decisionMicros)}</TableCell>
-                  <TableCell align="right">{formatBytes(e.bodyBytes)}</TableCell>
+                  <TableCell align="right">{fmt.micros(e.decisionMicros)}</TableCell>
+                  <TableCell align="right">{fmt.bytes(e.bodyBytes)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -225,7 +240,7 @@ export function TrafficPage() {
         </TableContainer>
         {!loading && items.length === 0 && error === null && (
           <Box px={2}>
-            <Empty>No events match these filters.</Empty>
+            <Empty>{t('traffic.empty')}</Empty>
           </Box>
         )}
         {loading && (
@@ -235,7 +250,7 @@ export function TrafficPage() {
         )}
         {!loading && cursor && (
           <Box p={1.5}>
-            <Button onClick={more}>Load more</Button>
+            <Button onClick={more}>{t('traffic.more')}</Button>
           </Box>
         )}
       </Card>
