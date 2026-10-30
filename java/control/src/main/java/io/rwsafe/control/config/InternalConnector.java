@@ -75,24 +75,28 @@ public class InternalConnector {
     }
 
     /**
-     * True when both internal listeners are bound and started (the readiness endpoint; the admin listener answers the
-     * probe itself, and the migrations ran before the context, and so any listener, came up).
+     * True when the three additional listeners (capture sink, snapshot feed, metrics) are bound and started (the
+     * readiness endpoint; the admin listener answers the probe itself, and the migrations ran before the context, and so
+     * any listener, came up). PR 27 review D-04: the metrics listener counts too.
      */
     public boolean listening() {
-        return started(captureSink) && started(snapshotFeed);
+        return started(captureSink) && started(snapshotFeed) && started(metrics);
     }
 
     private static boolean started(Connector connector) {
         return connector.getState() == LifecycleState.STARTED && connector.getLocalPort() > 0;
     }
 
-    /** True when {@code uri} may be served on {@code localPort}. */
-    boolean routeAllowed(String uri, int localPort) {
+    /**
+     * True when {@code method} {@code uri} may be served on {@code localPort}. The metrics listener serves
+     * {@code GET /metrics} and nothing else (PR 27 review D-04).
+     */
+    boolean routeAllowed(String method, String uri, int localPort) {
         boolean internalRoute = uri.startsWith(INTERNAL_PREFIX);
         boolean snapshotRoute = uri.startsWith(SNAPSHOT_PREFIX);
         boolean metricsRoute = uri.equals(METRICS_PATH);
         if (localPort == metricsPort()) {
-            return metricsRoute;
+            return metricsRoute && "GET".equals(method);
         }
         if (localPort == snapshotPort()) {
             return snapshotRoute;
@@ -109,7 +113,7 @@ public class InternalConnector {
             @Override
             protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
                 throws ServletException, IOException {
-                if (!routeAllowed(request.getRequestURI(), request.getLocalPort())) {
+                if (!routeAllowed(request.getMethod(), request.getRequestURI(), request.getLocalPort())) {
                     response.setStatus(HttpServletResponse.SC_NOT_FOUND);
                     return;
                 }

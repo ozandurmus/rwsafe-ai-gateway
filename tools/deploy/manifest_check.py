@@ -12,8 +12,9 @@ cluster), and asserts the shared-host rules on every object:
     §6), seccomp RuntimeDefault only; read-only root filesystem
   - requests and limits for CPU and memory on every container, within the LimitRange maximum; the namespace's workloads
     (init containers and volumeClaimTemplates included, and one rolling-update surge pod per Deployment) and its PVCs
-    fit the ResourceQuota; every PVC is within the LimitRange's PVC maximum and every claimed PVC is rendered; every
-    rendered namespace has a ResourceQuota and a LimitRange
+    fit the ResourceQuota; every PVC and claim template is within the LimitRange's PVC maximum and every claimed PVC
+    is rendered; all requested storage together is within HOST_FREE_STORAGE_BUDGET; every rendered namespace has a
+    ResourceQuota and a LimitRange
   - every Namespace enforces PSA `restricted` (only `rwsafe-build` may enforce `baseline`) and audits and warns at
     `restricted`
   - images pinned by digest, never `latest`; with --release the all-zero placeholder digest is refused too
@@ -21,9 +22,12 @@ cluster), and asserts the shared-host rules on every object:
     ServiceAccount token is never mounted, and every ServiceAccount sets automountServiceAccountToken false
   - a default-deny NetworkPolicy per namespace and a NetworkPolicy selecting every workload; every egress rule names its
     destination, no ipBlock is 0.0.0.0/0, and with --release no ipBlock is an RFC 5737 documentation placeholder; no
-    placeholder is shared by two NetworkPolicies (the estate patch replaces each by one value); no NodePort Service
+    placeholder is shared by two NetworkPolicies (the estate patch replaces each by one value); an ipBlock without a
+    valid cidr, an ingress rule without `from`, an empty peer and an empty namespace or pod selector in a peer fail
+    (EMPTY_SELECTOR_EXCEPTIONS lists deliberate ones); no NodePort Service
   - a PodDisruptionBudget for every multi-replica workload, keeping at least one pod and allowing at least one eviction
-  - no Secret is ever rendered; every referenced Secret or uncommitted ConfigMap key is in the runtime contract
+  - no Secret is ever rendered; every referenced Secret or uncommitted ConfigMap key (env, volume, projected volume)
+    is in the runtime contract
   - nothing anywhere in any object (keys, values, tokens of names, URLs and selectors) names a `ui2*` or `nexus-ui2`
     object, namespace or label (neXus's)
 
@@ -67,6 +71,15 @@ ZERO_DIGEST = "sha256:" + "0" * 64
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 POD_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "Pod", "CronJob"}
 OFFLINE_ENV = {**os.environ, "KUBECONFIG": os.devnull}
+# NetworkPolicies whose peers deliberately carry an empty namespaceSelector or podSelector (every pod of the policy's
+# own namespace, or every namespace), as ident -> reason. Empty: no committed policy needs one (PR 27 review D-03); an
+# entry is added only with its reason and a review in the pull request that adds it.
+EMPTY_SELECTOR_EXCEPTIONS: dict[str, str] = {}
+# PR 27 review D-06: the storage all rwsafe namespaces may request together on HOST-A. PORTS_AND_RESOURCES §1 (measured
+# 2026-10-30): 189 GiB free on the one root filesystem, minus the kubelet's hard eviction reserve nodefs.available 5 %
+# of 1005 GiB (50.25 GiB) = 138.75 GiB, rounded down. local-path reserves nothing, so this is a budget, not a guarantee;
+# re-measure before raising it (a PO decision, DEPLOY_AND_SHARED_HOST_RUNBOOK §7.5).
+HOST_FREE_STORAGE_BUDGET = 138 * 2**30
 
 
 # ---- rendering ---------------------------------------------------------------------------------------------------------
@@ -209,6 +222,11 @@ def pod_resources(spec: dict) -> dict[str, float]:
             total = sum(value(c) for c in list(spec.get("containers") or []) + sidecars)
             out[key] = max([total] + [value(c) for c in ordinary])
     return out
+
+
+def empty_selector(selector) -> bool:
+    """True for a label selector that selects everything ({} or no labels and no expressions)."""
+    return not ((selector or {}).get("matchLabels") or (selector or {}).get("matchExpressions"))
 
 
 def documentation_range(net) -> bool:
@@ -363,6 +381,15 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
                 if (ns, claim) not in rendered_claims:
                     fail(obj, f"volume {vol.get('name')} claims PVC {claim}, which the render does not hold")
             for proj in (vol.get("projected") or {}).get("sources", []):
+                # PR 27 review D-05: a projected Secret or ConfigMap is a reference like any other.
+                if "secret" in proj:
+                    src = proj["secret"] or {}
+                    check_ref(obj, fail, "Secret", src.get("name"), [i["key"] for i in src.get("items") or []],
+                              secret_contract, None, ns, src.get("optional"))
+                if "configMap" in proj:
+                    src = proj["configMap"] or {}
+                    check_ref(obj, fail, "ConfigMap", src.get("name"), [i["key"] for i in src.get("items") or []],
+                              configmap_contract, rendered_configmaps, ns, src.get("optional"))
                 if "serviceAccountToken" in proj:
                     fail(obj, f"volume {vol.get('name')} projects a ServiceAccount token")
 
@@ -433,35 +460,48 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
                 and not p["spec"].get("ingress") and not p["spec"].get("egress")]
         if not deny:
             failures.append(f"Namespace/{ns}: no default-deny NetworkPolicy (Ingress and Egress)")
+    # The deploy's estate patch replaces each placeholder by text (DEPLOY_AND_SHARED_HOST_RUNBOOK §7.4), so one
+    # placeholder in two policies would give two destinations (the directory, the SIEM) one estate value.
+    placeholder_users: dict[str, set[str]] = {}
     for p in policies:
-        for rule in p["spec"].get("egress") or []:
-            if not rule.get("to"):
-                fail(p, "egress rule without a destination (`to`) reaches every address")
+        # A rule without peers admits every source (ingress) or reaches every address (egress) (PR 27 review D-03).
+        for direction, peers_key, what in (("ingress", "from", "a source (`from`) admits every peer"),
+                                           ("egress", "to", "a destination (`to`) reaches every address")):
+            for rule in p["spec"].get(direction) or []:
+                if not rule.get(peers_key):
+                    fail(p, f"{direction} rule without {what}")
         for direction, peers_key in (("ingress", "from"), ("egress", "to")):
             for rule in p["spec"].get(direction) or []:
                 for peer in rule.get(peers_key) or []:
+                    if not peer:
+                        fail(p, f"{direction} peer is empty and matches everything")
+                        continue
+                    for selector in ("namespaceSelector", "podSelector"):
+                        if selector in peer and empty_selector(peer[selector]) \
+                                and ident(p) not in EMPTY_SELECTOR_EXCEPTIONS:
+                            fail(p, f"{direction} peer has an empty {selector}, which matches every "
+                                    f"{'namespace' if selector == 'namespaceSelector' else 'pod'}")
+                    if "ipBlock" not in peer:
+                        continue
+                    # PR 27 review D-01: an empty estate value renders `cidr:` (null); never skipped.
                     cidr = (peer.get("ipBlock") or {}).get("cidr")
                     if not cidr:
+                        fail(p, f"{direction} ipBlock has no cidr (an empty estate value)")
                         continue
-                    net = ipaddress.ip_network(cidr, strict=False)
+                    try:
+                        net = ipaddress.ip_network(cidr, strict=False)
+                    except ValueError:
+                        fail(p, f"{direction} ipBlock cidr is not a network")
+                        continue
                     if net.prefixlen == 0:
                         fail(p, f"{direction} ipBlock {cidr} is every address")
                     elif documentation_range(net):
+                        placeholder_users.setdefault(cidr, set()).add(ident(p))
                         if release:
                             fail(p, f"{direction} ipBlock is a documentation-range placeholder in a release render")
                         else:
                             notes.append(f"{ident(p)}: {direction} ipBlock is a documentation-range placeholder "
                                          f"(the deploy's estate patch sets the real addresses)")
-    # The deploy's estate patch replaces each placeholder by text (DEPLOY_AND_SHARED_HOST_RUNBOOK §7.4), so one
-    # placeholder in two policies would give two destinations (the directory, the SIEM) one estate value.
-    placeholder_users: dict[str, set[str]] = {}
-    for p in policies:
-        for direction, peers_key in (("ingress", "from"), ("egress", "to")):
-            for rule in p["spec"].get(direction) or []:
-                for peer in rule.get(peers_key) or []:
-                    cidr = (peer.get("ipBlock") or {}).get("cidr")
-                    if cidr and documentation_range(ipaddress.ip_network(cidr, strict=False)):
-                        placeholder_users.setdefault(cidr, set()).add(ident(p))
     for cidr, users in sorted(placeholder_users.items()):
         if len(users) > 1:
             failures.append(f"documentation-range placeholder {cidr} is shared by {', '.join(sorted(users))}; each "
@@ -520,6 +560,15 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
                     storage = pvc["spec"].get("resources", {}).get("requests", {}).get("storage", "0")
                     if quantity(storage) > quantity(mx):
                         fail(pvc, f"requests.storage {storage} above LimitRange PVC max {mx}")
+                # PR 27 review D-05: a StatefulSet's claim templates become PVCs under the same maximum.
+                for obj, _, _ in workloads:
+                    if obj["metadata"].get("namespace") != ns or obj.get("kind") != "StatefulSet":
+                        continue
+                    for vct in obj["spec"].get("volumeClaimTemplates") or []:
+                        storage = (vct.get("spec") or {}).get("resources", {}).get("requests", {}).get("storage", "0")
+                        if quantity(storage) > quantity(mx):
+                            fail(obj, f"volumeClaimTemplate {vct.get('metadata', {}).get('name')}: requests.storage "
+                                      f"{storage} above LimitRange PVC max {mx}")
                 continue
             if limit.get("type") != "Container" or not limit.get("max"):
                 continue
@@ -560,6 +609,18 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
             if key in hard and value > quantity(hard[key]) + 1e-9:
                 failures.append(f"{ident(rq)}: {key} needs {value:g} (with one surge pod per Deployment), "
                                 f"quota is {hard[key]}")
+
+    # PR 27 review D-06: every PVC and claim template of every rendered namespace together within the host's free disk.
+    requested = sum(quantity(o["spec"].get("resources", {}).get("requests", {}).get("storage", "0"))
+                    for o in objects if o.get("kind") == "PersistentVolumeClaim")
+    for obj, _, _ in workloads:
+        if obj.get("kind") == "StatefulSet":
+            requested += int(obj["spec"].get("replicas", 1)) * sum(
+                quantity((v.get("spec") or {}).get("resources", {}).get("requests", {}).get("storage", "0"))
+                for v in obj["spec"].get("volumeClaimTemplates") or [])
+    if requested > HOST_FREE_STORAGE_BUDGET:
+        failures.append(f"requested storage of all namespaces is {requested / 2**30:g}Gi, above the host-free budget "
+                        f"{HOST_FREE_STORAGE_BUDGET / 2**30:g}Gi (PORTS_AND_RESOURCES §1)")
     return failures, notes
 
 

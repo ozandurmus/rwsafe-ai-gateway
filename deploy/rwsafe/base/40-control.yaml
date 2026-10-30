@@ -5,7 +5,7 @@
 #   8092 verdict-event ingestion from the data plane
 #   9400 GET /metrics (Prometheus text) for the metrics scraper (k3s overlay NetworkPolicy)
 # Recreate (PORTS_AND_RESOURCES §4.3): one replica that runs migrations at start; the data plane keeps serving from its
-# snapshot during the gap. Ready (GET /readyz) only when all three listeners are up, which is after Flyway ran (PR 18 review
+# snapshot during the gap. Ready (GET /readyz) only when all four listeners are up, which is after Flyway ran (PR 18 review
 # D-01). The preStop sleep lets in-flight verdict-event batches on 8092 finish and the endpoint removal propagate before
 # SIGTERM (D-02); the runbook rolls this Deployment, and waits for it, before the data plane (§7.4). Secrets are mounted
 # files only (AGENTS.md 4.2, CORPORATE_TECHNOLOGY_STACK §2): the two database passwords (ADR-002: rwsafe_app for the
@@ -242,10 +242,11 @@ spec:
           persistentVolumeClaim:
             claimName: rwsafe-capture-store
 ---
-# The capture store (ADR-009 §3, PORTS_AND_RESOURCES §4.2 storage caps): 100Gi against the quota's requests.storage 150Gi
-# (with rwsafe-db-data's 20Gi: 120Gi; 30Gi left for the model store's 10Gi) and the LimitRange's 100Gi PVC maximum. The
-# application caps the store at 80 GiB (RWSAFE_CAPTURE_MAX_STORE_BYTES, oldest records without a hold evicted first), so
-# the claim is 25 % above the cap, room for the file-system overhead of 8-64 KiB chunk files and the hourly orphan
+# The capture store (ADR-009 §3, PORTS_AND_RESOURCES §4.2 storage caps): 40Gi, below the frozen plan's 100Gi until the
+# PO decides on HOST-A's disk (PR 27 review D-06, Q-2). With rwsafe-db-data's 20Gi the namespace requests 60Gi of its
+# 150Gi requests.storage quota, within the 138Gi host-free budget manifest_check.py enforces (PORTS_AND_RESOURCES §1
+# free space minus the kubelet's eviction reserve). The application caps the store at 32 GiB
+# (RWSAFE_CAPTURE_MAX_STORE_BYTES, oldest records without a hold evicted first), so the claim is 25 % above the cap, room for the file-system overhead of 8-64 KiB chunk files and the hourly orphan
 # sweep. local-path enforces no size (measured), so the binding limits are the application's cap and the disk watermark
 # breaker (redacted content stops at 85 % node-disk use, SR-HOST-2). One writer only (the Recreate control plane).
 apiVersion: v1
@@ -258,7 +259,7 @@ spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: 100Gi
+      storage: 40Gi
 ---
 apiVersion: v1
 kind: Service

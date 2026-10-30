@@ -67,13 +67,14 @@ data:
   RWSAFE_SIEM_HEC_CA_FILE: "/etc/rwsafe/siem/ca.crt"
   RWSAFE_SIEM_HEC_TOKEN_FILE: "/run/secrets/rwsafe-siem/hec-token"
   # Redacted capture (Q-4 b, ADR-009): off until the PO turns it on together with the data plane (runbook §7.5). The
-  # store is the PVC rwsafe-capture-store (100Gi requested, PORTS_AND_RESOURCES §4.2); the application caps it at
-  # ADR-009's MAX_STORE_BYTES, 80 GiB, written out. The key directory is the capture-key Secret, mounted whole (its
+  # store is the PVC rwsafe-capture-store (40Gi requested); the application caps it at 32 GiB, below ADR-009's 80 GiB
+  # MAX_STORE_BYTES, until the PO decides on HOST-A's disk (PR 27 review D-06, Q-2: 80 % used, redacted capture stops
+  # at 85 %); raising it is the PO's decision. The key directory is the capture-key Secret, mounted whole (its
   # `<key id>.key` files, `active`, `shredded`). The watermark breaker reads the store's filesystem and /tmp (an emptyDir
   # on the kubelet's node filesystem, the one the kubelet evicts on; on k3s local-path both are the node's root
   # filesystem, where the database volume lives too).
   RWSAFE_CAPTURE_MODE: "off"
   RWSAFE_CAPTURE_STORE_DIR: "/var/lib/rwsafe/capture"
-  RWSAFE_CAPTURE_MAX_STORE_BYTES: "85899345920"
+  RWSAFE_CAPTURE_MAX_STORE_BYTES: "34359738368"
   RWSAFE_CAPTURE_KEY_DIR: "/run/secrets/rwsafe-capture-key"
   RWSAFE_CAPTURE_WATERMARK_PATHS: "/tmp"

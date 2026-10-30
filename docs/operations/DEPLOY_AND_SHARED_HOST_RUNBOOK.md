@@ -124,7 +124,7 @@ release.
 | Path | What |
 |---|---|
 | `deploy/images/dataplane.Containerfile`, `deploy/images/control.Containerfile` | multi-stage builds: Gradle `imageDist` (the locked, checksum-verified runtime classpath) on UBI 9 OpenJDK 21, then the UBI 9 OpenJDK 21 runtime; digest-pinned bases, UID 185 with group 0, read-only-root friendly, no shell entry point |
-| `deploy/rwsafe/base/` | ServiceAccounts (no token), committed ConfigMaps, `rwsafe-icap` (Deployment of the `rwsafe-dataplane` image, ClusterIP `rwsafe-icap`, PDB; preStop `/admin/drain` on the metrics port 9401, grace 30 s), `rwsafe-control` (Deployment, Service 8080/8091/8092 and metrics 9400, ready on `/readyz` when 8080, 8091 and 8092 listen; the SIEM, capture-key and notice values mounted from their contract objects; PVC `rwsafe-capture-store` 100Gi), `rwsafe-db` (PVC `rwsafe-db-data` 20Gi, StatefulSet, Service; roles `rwsafe_migrate` and `rwsafe_app` and the ADR-002 §7 tuning from `base/db/`), NetworkPolicies between rwsafe's workloads with a default deny |
+| `deploy/rwsafe/base/` | ServiceAccounts (no token), committed ConfigMaps, `rwsafe-icap` (Deployment of the `rwsafe-dataplane` image, ClusterIP `rwsafe-icap`, PDB; preStop `/admin/drain` on the metrics port 9401, grace 30 s), `rwsafe-control` (Deployment, Service 8080/8091/8092 and metrics 9400, ready on `/readyz` when 8080, 8091, 8092 and 9400 listen; the SIEM, capture-key and notice values mounted from their contract objects; PVC `rwsafe-capture-store` 40Gi), `rwsafe-db` (PVC `rwsafe-db-data` 20Gi, StatefulSet, Service; roles `rwsafe_migrate` and `rwsafe_app` and the ADR-002 §7 tuning from `base/db/`), NetworkPolicies between rwsafe's workloads with a default deny |
 | `deploy/rwsafe/overlays/k3s/` | namespaces, PriorityClasses and their assignment, quota and limits, the ICAP ServiceLB Service, the platform-peer NetworkPolicies (DNS, ServiceLB, Traefik, the metrics scraper on 9400 and 9401) and the directory and SIEM egress, each with its own RFC 5737 placeholder CIDR, the in-cluster registry image names with a placeholder digest |
 | `deploy/rwsafe/contracts/runtime-contracts.json` | names and keys of the Secrets and uncommitted ConfigMaps the manifests reference; never rendered, never applied |
 | `tools/deploy/manifest_check.py` | renders the k3s overlay offline and asserts the section 8 rules; CI job `manifests` |
@@ -177,8 +177,8 @@ render | kubectl apply --server-side -f -
 kubectl -n rwsafe rollout status deploy/rwsafe-icap --timeout=5m
 ```
 
-The control plane is ready only when `/readyz` answers, that is after Flyway ran as `rwsafe_migrate` and with all three
-listeners (8080, 8091, 8092) up; its 5 s preStop lets in-flight event batches on 8092 finish. The ICAP pods drain from
+The control plane is ready only when `/readyz` answers, that is after Flyway ran as `rwsafe_migrate` and with all four
+listeners (8080, 8091, 8092, 9400) up; its 5 s preStop lets in-flight event batches on 8092 finish. The ICAP pods drain from
 their preStop hook (`/admin/drain`, §1.2) and end inside the 30 s grace period. `--release` refuses the committed
 all-zero placeholder digest and the documentation-range directory and SIEM CIDRs. The digest edit lives only in the scratch copy (or in the
 deploy script's memory) and is never committed. The data plane is ready only once it holds a valid signed
@@ -228,7 +228,10 @@ shred -u "${d}"/* && rmdir "${d}"
 
 The Secret is mounted whole, so a rotation (a new `<id>.key`, `active` pointed at it) and an emergency shred (the id
 added to `shredded`, its key file removed) reach the running pod without a manifest change (LOCAL_RUN.md "Redacted
-capture"). The capture store is the PVC `rwsafe-capture-store` (100Gi requested; the application caps it at 80 GiB).
+capture"). The capture store is the PVC `rwsafe-capture-store` (40Gi requested; the application caps it at 32 GiB,
+below ADR-009's 80 GiB, while HOST-A's disk is 80 % used). Raising the cap and the claim is the PO's decision, after a
+new disk measurement; `tools/deploy/manifest_check.py` refuses a render whose PVCs together exceed its host-free budget
+(`HOST_FREE_STORAGE_BUDGET`, 138Gi: PORTS_AND_RESOURCES §1 free space minus the kubelet's 5 % eviction reserve).
 
 **Turning capture on.** Only with the notice versioned, the key Secret present and the PO's go-ahead (Q-4 b): one pull
 request sets `RWSAFE_CAPTURE_MODE: "redacted"` in both `rwsafe-control-config` and `rwsafe-icap-config`; §7.4 applies
@@ -263,7 +266,9 @@ One test event per format before production (clears the LEEF UNVERIFIED mark in 
 Keep the format the SIEM parsed correctly; a failure leaves the destination DOWN on Health with its reason, never a
 silent drop.
 
-**Metrics (9400 control plane, 9401 ICAP).** Both NetworkPolicies admit only a namespace labelled
-`rwsafe.io/metrics-scraper=true`. Labelling the scraper's namespace is a change outside rwsafe's namespaces, asked of the
-PO first (AGENTS.md section 8); until then nothing scrapes. The control plane's `/metrics` carries the `rwsafe_siem_*`
+**Metrics (9400 control plane, 9401 ICAP).** Both NetworkPolicies admit only pods labelled
+`rwsafe.io/metrics-scraper=true` in a namespace with the same label: both the scraper's namespace and its pods carry
+it. Labelling them is a change outside rwsafe's namespaces, asked of the PO first (AGENTS.md section 8); until then
+nothing scrapes. Residual (accepted, PR 27 review Q-1): 9401 also holds the ICAP preStop drain (`/admin/drain`), so an
+admitted scraper pod could drain an ICAP pod; label only the scraper itself. The control plane's `/metrics` carries the `rwsafe_siem_*`
 series.

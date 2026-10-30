@@ -215,7 +215,14 @@ class ControlPlaneIntegrationTest {
         assertEquals(404, metrics.get("/readyz").status(), "nothing else on the metrics port");
         assertEquals(404, metrics.get("/api/v1/auth/csrf").status());
         assertEquals(404, metrics.get("/internal/v1/policy/snapshot").status());
-        assertTrue(metrics.post("/metrics", "[]", false).status() >= 400, "GET only");
+        assertEquals(404, metrics.post("/metrics", "[]", false).status(), "GET only, refused before security");
+        for (String method : new String[] {"PUT", "DELETE", "OPTIONS"}) {
+            HttpResponse<String> other = HttpClient.newHttpClient().send(HttpRequest.newBuilder(
+                    URI.create("http://127.0.0.1:" + internal.metricsPort() + "/metrics"))
+                .method(method, HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(404, other.statusCode(), method);
+        }
+        assertTrue(internal.listening(), "readiness counts the metrics listener (PR 27 review D-04)");
         assertEquals(404, admin().get("/metrics").status(), "never on the admin listener behind the ingress");
         assertEquals(404, internalClient().get("/metrics").status(), "not on the capture sink");
         assertEquals(404, new ApiClient(internal.snapshotPort()).get("/metrics").status(), "not on the snapshot feed");

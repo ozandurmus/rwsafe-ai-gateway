@@ -78,8 +78,10 @@ spec:
 # PORTS_AND_RESOURCES §3: the ICAP pods' metrics port (9401) from the metrics scraper only. Which namespace scrapes on
 # HOST-A is UNVERIFIED (2026-10-30); the rule admits a namespace that carries the label below, which no namespace carries
 # until the PO labels the scraper's (a change outside rwsafe's namespaces, asked of the PO first, AGENTS.md section 8), so
-# until then nothing is admitted. The same listener holds the preStop drain (/admin/drain): an admitted scraper could
-# drain a pod, which is why nothing else is admitted to this port.
+# until then nothing is admitted; the scraper's pods must carry the same label. The same listener holds the preStop drain
+# (/admin/drain): an admitted scraper pod could drain an ICAP pod. That residual is accepted (PR 27 review Q-1: 9402 is
+# the gateway's port, so the drain gets no port of its own; CURRENT_STATE.md, runbook §7.5), and is why nothing else is
+# admitted to this port.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -93,7 +95,12 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
+        # PR 27 review D-02: the scraper's namespace AND the scraper's pods (one peer, both selectors), never every pod
+        # of a labelled namespace.
         - namespaceSelector:
+            matchLabels:
+              rwsafe.io/metrics-scraper: "true"
+          podSelector:
             matchLabels:
               rwsafe.io/metrics-scraper: "true"
       ports:
@@ -149,8 +156,8 @@ spec:
         - { protocol: TCP, port: 8088 }
 ---
 # PORTS_AND_RESOURCES §3: the control plane's metrics port (9400, GET /metrics only) from the metrics scraper only, by
-# the same namespace label as the ICAP pods' 9401 (no namespace carries it until the PO labels the scraper's, so until
-# then nothing is admitted). Nothing else listens on 9400.
+# the same namespace and pod labels as the ICAP pods' 9401 (nothing carries them until the PO labels the scraper's
+# namespace and pods, so until then nothing is admitted). Nothing else answers on 9400.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -164,7 +171,12 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
+        # PR 27 review D-02: the scraper's namespace AND the scraper's pods (one peer, both selectors), never every pod
+        # of a labelled namespace.
         - namespaceSelector:
+            matchLabels:
+              rwsafe.io/metrics-scraper: "true"
+          podSelector:
             matchLabels:
               rwsafe.io/metrics-scraper: "true"
       ports:

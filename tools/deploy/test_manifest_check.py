@@ -310,6 +310,90 @@ class Mutations(unittest.TestCase):
         objects[-1]["spec"]["resources"]["requests"]["storage"] = "2Gi"
         self.assertFails(objects, "requests.storage 2Gi above LimitRange PVC max 1Gi")
 
+    # PR 27 review D-01: an empty estate value (null or empty cidr) and a malformed one fail, release or not.
+    def test_ip_block_without_a_valid_cidr_fails(self):
+        for cidr, fragment in ((None, "ipBlock has no cidr"), ("", "ipBlock has no cidr"),
+                               ("not-a-network", "ipBlock cidr is not a network")):
+            for release in (False, True):
+                with self.subTest(cidr=cidr, release=release):
+                    objects = compliant()
+                    policy = next(o for o in objects
+                                  if o["kind"] == "NetworkPolicy" and o["metadata"]["name"] == "fixture-app")
+                    policy["spec"]["egress"].append({"to": [{"ipBlock": {"cidr": cidr}}],
+                                                     "ports": [{"protocol": "TCP", "port": 636}]})
+                    self.assertFails(objects, fragment, release=release)
+
+    def test_ip_block_null_cidr_from_a_rendered_empty_value_fails(self):
+        objects = compliant()
+        policy = next(o for o in objects if o["kind"] == "NetworkPolicy" and o["metadata"]["name"] == "fixture-app")
+        policy["spec"]["egress"].append({"to": [{"ipBlock": {}}], "ports": [{"protocol": "TCP", "port": 636}]})
+        self.assertFails(objects, "ipBlock has no cidr")
+
+    # PR 27 review D-03: ingress without `from`, empty peers and empty selectors in peers.
+    def test_ingress_without_source_and_empty_peers_fail(self):
+        def with_rule(direction, rule):
+            objects = compliant()
+            policy = next(o for o in objects if o["kind"] == "NetworkPolicy" and o["metadata"]["name"] == "fixture-app")
+            policy["spec"].setdefault(direction, []).append(rule)
+            policy["spec"]["policyTypes"] = ["Ingress", "Egress"]
+            return objects
+        self.assertFails(with_rule("ingress", {"ports": [{"protocol": "TCP", "port": 9400}]}),
+                         "ingress rule without a source")
+        self.assertFails(with_rule("ingress", {"from": [{}]}), "ingress peer is empty")
+        self.assertFails(with_rule("egress", {"to": [{}]}), "egress peer is empty")
+        self.assertFails(with_rule("ingress", {"from": [{"namespaceSelector": {}}]}),
+                         "ingress peer has an empty namespaceSelector")
+        self.assertFails(with_rule("ingress", {"from": [{"podSelector": {}}]}), "ingress peer has an empty podSelector")
+        self.assertFails(with_rule("egress", {"to": [{"namespaceSelector": {"matchLabels": {"a": "b"}},
+                                                      "podSelector": {}}]}), "egress peer has an empty podSelector")
+        objects = with_rule("ingress", {"from": [{"podSelector": {}}]})
+        mc.EMPTY_SELECTOR_EXCEPTIONS["NetworkPolicy/fixture/fixture-app"] = "fixture: every pod of the namespace"
+        try:
+            failures, _ = mc.check(objects, CONTRACTS)
+            self.assertEqual(failures, [], "a listed exception passes")
+        finally:
+            mc.EMPTY_SELECTOR_EXCEPTIONS.clear()
+        self.assertEqual(mc.EMPTY_SELECTOR_EXCEPTIONS, {}, "no committed policy needs an exception")
+
+    # PR 27 review D-05: projected Secret and ConfigMap sources, and claim templates under the LimitRange maximum.
+    def test_projected_sources_go_through_the_contract(self):
+        for source, fragment in (({"secret": {"name": "fixture-unknown"}}, "Secret fixture-unknown is neither"),
+                                 ({"secret": {"name": "fixture-secret", "items": [{"key": "other", "path": "o"}]}},
+                                  "key(s) other not in the runtime contract"),
+                                 ({"configMap": {"name": "fixture-unknown-cm"}}, "ConfigMap fixture-unknown-cm is")):
+            with self.subTest(str(source)):
+                objects = compliant()
+                pod(objects)["volumes"].append({"name": "proj", "projected": {"sources": [source]}})
+                self.assertFails(objects, fragment)
+        objects = compliant()
+        pod(objects)["volumes"].append({"name": "proj", "projected": {"sources": [
+            {"secret": {"name": "fixture-secret", "items": [{"key": "value", "path": "v"}]}}]}})
+        self.assertEqual(mc.check(objects, CONTRACTS)[0], [])
+
+    def test_volume_claim_templates_are_within_the_limitrange_maximum(self):
+        objects = compliant()
+        next(o for o in objects if o["kind"] == "LimitRange")["spec"]["limits"].append(
+            {"type": "PersistentVolumeClaim", "max": {"storage": "1Gi"}})
+        objects.append({"apiVersion": "apps/v1", "kind": "StatefulSet",
+                        "metadata": {"name": "fixture-db", "namespace": "fixture"},
+                        "spec": {"replicas": 1, "selector": {"matchLabels": {"app.kubernetes.io/name": "fixture-app"}},
+                                 "template": copy.deepcopy(deployment(objects)["spec"]["template"]),
+                                 "volumeClaimTemplates": [{"metadata": {"name": "data"}, "spec": {
+                                     "resources": {"requests": {"storage": "2Gi"}}}}]}})
+        self.assertFails(objects, "volumeClaimTemplate data: requests.storage 2Gi above LimitRange PVC max 1Gi")
+
+    # PR 27 review D-06: all requested storage together within the host-free budget.
+    def test_requested_storage_of_all_namespaces_is_within_the_host_budget(self):
+        objects = compliant()
+        for name, size in (("fixture-a", "100Gi"), ("fixture-b", "39Gi")):
+            objects.append({"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+                            "metadata": {"name": name, "namespace": "other"},
+                            "spec": {"resources": {"requests": {"storage": size}}}})
+        self.assertFails(objects, "requested storage of all namespaces is 139Gi, above the host-free budget 138Gi")
+        objects[-1]["spec"]["resources"]["requests"]["storage"] = "38Gi"
+        failures, _ = mc.check(objects, CONTRACTS)
+        self.assertFalse(any("host-free budget" in f for f in failures), failures)
+
     def test_default_deny_with_rules_does_not_count(self):
         objects = compliant()
         deny = next(o for o in objects if o["kind"] == "NetworkPolicy" and o["metadata"]["name"] == "default-deny")
