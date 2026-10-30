@@ -1,0 +1,185 @@
+# rwsafe-control: the Spring Boot control plane (ARCHITECTURE §3.2). Listeners (application.yaml, LOCAL_RUN.md):
+#   8080 admin UI and API, reached through Traefik by host name (k3s overlay NetworkPolicy; the Ingress object follows
+#        with the estate host names, ADR-003)
+#   8091 the signed policy snapshot feed for the data plane (POLICY_SNAPSHOT_CONTRACT.md)
+#   8092 verdict-event ingestion from the data plane
+# Recreate (PORTS_AND_RESOURCES §4.3): one replica that runs migrations at start; the data plane keeps serving from its
+# snapshot during the gap. Ready (GET /readyz) only when all three listeners are up, which is after Flyway ran (PR 18 review
+# D-01). The preStop sleep lets in-flight verdict-event batches on 8092 finish and the endpoint removal propagate before
+# SIGTERM (D-02); the runbook rolls this Deployment, and waits for it, before the data plane (§7.4). Secrets are mounted
+# files only (AGENTS.md 4.2, CORPORATE_TECHNOLOGY_STACK §2): the two database passwords (ADR-002: rwsafe_app for the
+# application, rwsafe_migrate for Flyway) through Spring's config tree, the privacy HMAC key, the snapshot signing key and
+# the LDAP bind password as paths. The estate values (directory URL and base DNs, trusted ingress addresses, the estate dictionary) come from the
+# uncommitted ConfigMap `rwsafe-estate`; without it the pod does not start (fail closed, AGENTS.md 4.10).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rwsafe-control
+  namespace: rwsafe
+  labels:
+    app.kubernetes.io/part-of: rwsafe
+    app.kubernetes.io/name: rwsafe-control
+    app.kubernetes.io/component: control
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-control
+      app.kubernetes.io/component: control
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: rwsafe
+        app.kubernetes.io/name: rwsafe-control
+        app.kubernetes.io/component: control
+    spec:
+      serviceAccountName: rwsafe-control
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: control
+          image: rwsafe-control
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: rwsafe-control-config
+          env:
+            # Spring config tree: each file is a property (`spring.datasource.password`).
+            - name: RWSAFE_SECRETS_DIR
+              value: /run/secrets/rwsafe/
+            - name: RWSAFE_PRIVACY_HMAC_KEY_FILE
+              value: /run/secrets/rwsafe-privacy-hmac-key/key
+            - name: RWSAFE_SNAPSHOT_SIGNING_KEY
+              value: /run/secrets/rwsafe-snapshot-signing-key/rwsafe-snapshot-1.pem
+            - name: RWSAFE_LDAP_BIND_PASSWORD_FILE
+              value: /run/secrets/rwsafe-ldap/password
+            - name: RWSAFE_LDAP_URL
+              valueFrom: { configMapKeyRef: { name: rwsafe-estate, key: ldap-url } }
+            - name: RWSAFE_LDAP_BIND_DN
+              valueFrom: { configMapKeyRef: { name: rwsafe-estate, key: ldap-bind-dn } }
+            - name: RWSAFE_LDAP_USER_SEARCH_BASE
+              valueFrom: { configMapKeyRef: { name: rwsafe-estate, key: ldap-user-search-base } }
+            - name: RWSAFE_TRUSTED_PROXIES
+              valueFrom: { configMapKeyRef: { name: rwsafe-estate, key: trusted-proxies } }
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: snapshot-feed
+              containerPort: 8091
+              protocol: TCP
+            - name: ingest
+              containerPort: 8092
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            # PORTS_AND_RESOURCES §4.3 quota sum (1.5 CPU, 3Gi): keeps a data-plane surge pod inside the 8 CPU quota.
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: 1500m, memory: 3Gi }
+          securityContext:
+            runAsNonRoot: true
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: db-password
+              mountPath: /run/secrets/rwsafe
+              readOnly: true
+            - name: privacy-hmac-key
+              mountPath: /run/secrets/rwsafe-privacy-hmac-key
+              readOnly: true
+            - name: snapshot-signing-key
+              mountPath: /run/secrets/rwsafe-snapshot-signing-key
+              readOnly: true
+            - name: ldap-bind
+              mountPath: /run/secrets/rwsafe-ldap
+              readOnly: true
+            - name: estate-dictionary
+              mountPath: /etc/rwsafe/estate
+              readOnly: true
+      volumes:
+        # Tomcat's work directory and multipart scratch.
+        - name: tmp
+          emptyDir: { sizeLimit: 512Mi }
+        - name: db-password
+          secret:
+            secretName: rwsafe-db-credentials
+            defaultMode: 288   # 0440 octal, written in decimal (YAML 1.2 reads a leading zero as decimal)
+            items:
+              - { key: spring.datasource.password, path: spring.datasource.password }
+              - { key: rwsafe.migration.password, path: rwsafe.migration.password }
+        - name: privacy-hmac-key
+          secret:
+            secretName: rwsafe-privacy-hmac-key
+            defaultMode: 288
+            items:
+              - { key: key, path: key }
+        - name: snapshot-signing-key
+          secret:
+            secretName: rwsafe-snapshot-signing-key
+            defaultMode: 288
+            items:
+              - { key: rwsafe-snapshot-1.pem, path: rwsafe-snapshot-1.pem }
+        - name: ldap-bind
+          secret:
+            secretName: rwsafe-ldap-bind
+            defaultMode: 288
+            items:
+              - { key: password, path: password }
+        - name: estate-dictionary
+          configMap:
+            name: rwsafe-estate
+            defaultMode: 288
+            items:
+              - { key: estate-dictionary.txt, path: estate-dictionary.txt }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rwsafe-control
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-control, app.kubernetes.io/component: control }
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rwsafe-control
+    app.kubernetes.io/component: control
+  ports:
+    - { name: http, port: 8080, targetPort: http, protocol: TCP }
+    - { name: snapshot-feed, port: 8091, targetPort: snapshot-feed, protocol: TCP }
+    - { name: ingest, port: 8092, targetPort: ingest, protocol: TCP }

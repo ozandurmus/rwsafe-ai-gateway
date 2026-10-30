@@ -1,0 +1,48 @@
+# Committed runtime configuration: ports, in-cluster addresses and mount paths only (AGENTS.md section 8: deploy/rwsafe/
+# is the single source of runtime configuration). Nothing here names a real host, address, account or key; real names
+# live in the uncommitted ConfigMap `rwsafe-estate` and secrets in the Secrets named in ../contracts/runtime-contracts.json.
+# Paths to key and password files are set in the pod specs next to their volume mounts, not here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rwsafe-icap-config
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap }
+data:
+  # Plain ICAP stays open only while hardening exception H-2 (pilot) is open; with Secure ICAP configured the engine
+  # opens 1344 only because this value asks for it (D-09). Set to "0" when H-2 closes.
+  RWSAFE_ICAP_PORT: "1344"
+  RWSAFE_ICAPS_PORT: "11344"
+  RWSAFE_METRICS_PORT: "9401"
+  # The control plane's cluster-internal listeners (POLICY_SNAPSHOT_CONTRACT.md, LOCAL_RUN.md). With a snapshot URL set,
+  # the engine is not ready until it holds a valid signed snapshot (fail closed: no built-in development policy).
+  RWSAFE_SNAPSHOT_URL: "http://rwsafe-control.rwsafe.svc.cluster.local:8091/internal/v1/policy/snapshot"
+  RWSAFE_CONTROL_EVENTS_URL: "http://rwsafe-control.rwsafe.svc.cluster.local:8092/internal/v1/verdict-events"
+  RWSAFE_SPOOL_DIR: "/var/lib/rwsafe/spool"
+  RWSAFE_SNAPSHOT_CACHE: "/var/cache/rwsafe/snapshot"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rwsafe-control-config
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-control }
+data:
+  # application.yaml binds all three listeners to loopback by default; in the pod they listen on the pod address and the
+  # NetworkPolicies decide who reaches them. The control plane is ready (GET /readyz on 8080) only when all three listen.
+  RWSAFE_HTTP_BIND: "0.0.0.0"
+  RWSAFE_HTTP_PORT: "8080"
+  RWSAFE_SNAPSHOT_FEED_BIND: "0.0.0.0"
+  RWSAFE_SNAPSHOT_FEED_PORT: "8091"
+  RWSAFE_CAPTURE_SINK_BIND: "0.0.0.0"
+  RWSAFE_CAPTURE_SINK_PORT: "8092"
+  RWSAFE_DB_URL: "jdbc:postgresql://rwsafe-db.rwsafe.svc.cluster.local:5432/rwsafe"
+  # ADR-002 §1-§2: the application queries as the DML role; Flyway migrates as the schema owner. Both passwords are
+  # config-tree files from Secret `rwsafe-db-credentials` (spring.datasource.password, rwsafe.migration.password).
+  RWSAFE_DB_USER: "rwsafe_app"
+  RWSAFE_DB_MIGRATE_USER: "rwsafe_migrate"
+  RWSAFE_ESTATE_DICTIONARY_FILE: "/etc/rwsafe/estate/estate-dictionary.txt"
+  # Behind Traefik: forwarded headers are trusted only from RWSAFE_TRUSTED_PROXIES (from `rwsafe-estate`).
+  RWSAFE_FORWARD_HEADERS: "native"
+  RWSAFE_COOKIE_SECURE: "true"
+  RWSAFE_BREAK_GLASS_ENABLED: "false"

@@ -1,7 +1,8 @@
 # ADR-001 §3, council ARCH-2: strictly below every neXus service class (system-cluster-critical = 2000000000) and above
 # the default (0) only for the data plane, so a build pod is evicted before the ICAP engine. preemptionPolicy Never:
 # rwsafe never preempts anything. Measured 2026-10-30: neXus uses system-cluster-critical for its services and
-# `ui2-low` (-100) for packet analysis; OPEN_QUESTIONS Q-10 covers the relation to `ui2-low`.
+# `ui2-low` (-100) for packet analysis. PO decision Q-10 (PO_DECISION_RECORD_2026_10_30_MVP_BLOCKING_QUESTIONS item 8):
+# the data plane (1000) sits above that class and below every other neXus class; manifest_check.py caps rwsafe at 1000.
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
@@ -30,4 +31,4 @@ metadata:
 value: -200
 globalDefault: false
 preemptionPolicy: Never
-description: "rwsafe worker, async classifiers, e2e and build jobs: below neXus ui2-low."
+description: "rwsafe worker, async classifiers, e2e and build jobs: below neXus's packet-analysis class (-100)."

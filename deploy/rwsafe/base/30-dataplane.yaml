@@ -1,0 +1,178 @@
+# rwsafe-icap: the ICAP role of the `rwsafe-dataplane` image (ADR-004, ICAP spec, ARCHITECTURE §3, DEPLOY runbook §1.2).
+# Stateless (AGENTS.md section 5): its only writable state is the verdict spool and the last good snapshot, both on
+# size-capped emptyDirs. No database credential, no ServiceAccount token, no hostPort (ServiceLB holds the node port in the
+# k3s overlay).
+#
+# Rollout (AC-2): 2 replicas, RollingUpdate maxSurge 1 / maxUnavailable 0, PDB minAvailable 1. Termination (runbook §1.2,
+# PR 18 review D-02), every bound counted from the preStop hook:
+#   preStop GET /admin/drain on the metrics listener: OPTIONS and /ready answer 503 at once and every response carries
+#     Connection: close; the hook returns after the 15 s serve window, so endpoint removal and the ProxySG health check
+#     converge while the pod still serves
+#   SIGTERM: new transactions are refused; the drain ends at zero in flight or 20 s (IcapServer DRAIN_TOTAL_MILLIS); the
+#     listeners and loops close within 3 s; the drain's verdict events are posted (or spooled) within 5 s; 2 s margin
+#   terminationGracePeriodSeconds = 20 + 3 + 5 + 2 = 30 (java ShutdownSequence, tested against this file)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rwsafe-icap
+  namespace: rwsafe
+  labels:
+    app.kubernetes.io/part-of: rwsafe
+    app.kubernetes.io/name: rwsafe-icap
+    app.kubernetes.io/component: icap
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-icap
+      app.kubernetes.io/component: icap
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: rwsafe
+        app.kubernetes.io/name: rwsafe-icap
+        app.kubernetes.io/component: icap
+    spec:
+      serviceAccountName: rwsafe-icap
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: icap
+          image: rwsafe-dataplane
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: rwsafe-icap-config
+          env:
+            # Secure ICAP with a required client certificate (the ProxySG's; H-1, PLAT-F2). Files from Secret
+            # `rwsafe-icap-tls`; the key is PKCS#8 PEM.
+            - name: RWSAFE_TLS_CERT
+              value: /run/secrets/rwsafe-icap-tls/tls.crt
+            - name: RWSAFE_TLS_KEY
+              value: /run/secrets/rwsafe-icap-tls/tls.key
+            - name: RWSAFE_TLS_CLIENT_CA
+              value: /run/secrets/rwsafe-icap-tls/client-ca.crt
+            # Snapshot verification keys, one file per key id (`<key id>.pem`); rotation adds the second slot here.
+            - name: RWSAFE_SNAPSHOT_PUBLIC_KEYS
+              value: /etc/rwsafe/snapshot-keys/rwsafe-snapshot-1.pem
+          ports:
+            - name: icap
+              containerPort: 1344
+              protocol: TCP
+            - name: icaps
+              containerPort: 11344
+              protocol: TCP
+            # PORTS_AND_RESOURCES §3: 9401 is the ICAP pods' metrics port (/metrics, /ready, /admin/drain).
+            - name: metrics
+              containerPort: 9401
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: metrics
+            periodSeconds: 2
+            failureThreshold: 60
+          # Ready only with a loaded, verified policy snapshot and not draining (MetricsEndpoint /ready).
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              httpGet:
+                path: /admin/drain
+                port: metrics
+          resources:
+            # PORTS_AND_RESOURCES §4.3: 2Gi = heap + 512 MiB direct + 256 MiB full-body semaphore (PLAT-F1).
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: 1500m, memory: 2Gi }
+          securityContext:
+            runAsNonRoot: true
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: spool
+              mountPath: /var/lib/rwsafe/spool
+            - name: snapshot-cache
+              mountPath: /var/cache/rwsafe/snapshot
+            - name: icap-tls
+              mountPath: /run/secrets/rwsafe-icap-tls
+              readOnly: true
+            - name: snapshot-keys
+              mountPath: /etc/rwsafe/snapshot-keys
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+        # The verdict spool: 256Mi as ADR-001 section 3 says. The engine caps its segments at 240 MiB (DataPlaneApplication
+        # SPOOL_CAP_BYTES) and a replay compacts one 8 MiB segment at a time (EventShipper), so disk use peaks at 248 MiB
+        # and the kubelet never evicts at the application's cap.
+        - name: spool
+          emptyDir: { sizeLimit: 256Mi }
+        - name: snapshot-cache
+          emptyDir: { sizeLimit: 64Mi }
+        - name: icap-tls
+          secret:
+            secretName: rwsafe-icap-tls
+            defaultMode: 288   # 0440 octal, written in decimal (YAML 1.2 reads a leading zero as decimal)
+        - name: snapshot-keys
+          configMap:
+            name: rwsafe-snapshot-public-keys
+            defaultMode: 292   # 0444 octal
+---
+# Cluster-internal ICAP and metrics (the in-cluster ICAP e2e Job, scraping). The node-level exposure is the k3s overlay's
+# LoadBalancer Service `rwsafe-icap-lb`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rwsafe-icap
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap, app.kubernetes.io/component: icap }
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rwsafe-icap
+    app.kubernetes.io/component: icap
+  ports:
+    - { name: icap, port: 1344, targetPort: icap, protocol: TCP }
+    - { name: icaps, port: 11344, targetPort: icaps, protocol: TCP }
+    - { name: metrics, port: 9401, targetPort: metrics, protocol: TCP }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rwsafe-icap
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap }
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-icap
+      app.kubernetes.io/component: icap

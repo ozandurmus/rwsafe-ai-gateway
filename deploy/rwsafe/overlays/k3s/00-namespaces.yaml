@@ -1,5 +1,6 @@
 # ADR-001 §3: the three rwsafe namespaces. PSA `restricted` on rwsafe and rwsafe-security; `baseline` on rwsafe-build
-# because kaniko needs it (the one documented relaxation, PLAT-F6). Label value is `rwsafe`, never `nexus-ui2`.
+# because kaniko needs it (the one documented relaxation, PLAT-F6), audited and warned at `restricted`. The part-of label
+# value is `rwsafe`, never neXus's. manifest_check.py enforces these labels.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -18,6 +19,7 @@ metadata:
     app.kubernetes.io/part-of: rwsafe
     app.kubernetes.io/component: image-build
     pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
 ---
 apiVersion: v1
@@ -28,3 +30,5 @@ metadata:
     app.kubernetes.io/part-of: rwsafe
     app.kubernetes.io/component: security-scan
     pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
