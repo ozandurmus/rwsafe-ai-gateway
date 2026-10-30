@@ -23,6 +23,7 @@ import io.rwsafe.platform.verdict.Finding;
 import io.rwsafe.platform.verdict.Verdict;
 import io.rwsafe.policy.Action;
 import io.rwsafe.policy.Decision;
+import io.rwsafe.policy.EffectiveActions;
 import io.rwsafe.policy.Flow;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -51,7 +52,8 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         List.of("Content-Length", "Transfer-Encoding", "Content-Type", "Content-Encoding", "Host");
 
     /** Non-verdicts that can hide findings: a response with them is terminated, not passed (PR 11 recheck N-01). */
-    private static final java.util.Set<String> TERMINATING_REASONS = java.util.Set.of("FINDING_LIMIT", "NORMALISATION");
+    private static final java.util.Set<String> TERMINATING_REASONS = java.util.Set.of("FINDING_LIMIT", "NORMALISATION",
+        "UNDECODABLE_BLOB");
     /** Spec §3: never more than 64 KiB of a response held per transaction. */
     private static final int MAX_HELD = 64 * 1024;
 
@@ -67,6 +69,8 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
 
     // per transaction
     private IcapEngine.Policy policy;
+    /** The class actions after scope resolution (snapshot format 2); never holds a group name. */
+    private EffectiveActions effective;
     private Admission.Ticket ticket;
     private long reservedBody;
     private IcapRequest req;
@@ -245,6 +249,10 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         if (policy == null || engine.refusingNewTransactions()) {
             throw new IcapProtocolException(503, "no policy or draining");
         }
+        // Q-39, OFF2-12: a group claim selects scoped rules only on a mutually authenticated connection; otherwise, and
+        // when the claim is missing or unreadable, the strictest action per class applies. The claim stays in this frame.
+        effective = policy.evaluator().resolve(mutualTls,
+            GroupClaim.parse(req.head(), engine.config().groupClaimEncoding()));
         Admission.Ticket[] admitted = new Admission.Ticket[1];
         Admission.Refusal refusal = engine.admission().tryEnter(req.head().first("X-Authenticated-User"),
             req.head().first("X-Client-IP"), admitted);
@@ -390,25 +398,37 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         }
         try {
             result = engine.inspector().inspect(body, reqHttp);
-            decision = result.nonVerdict() != null
-                ? policy.evaluator().onNonVerdict(result.nonVerdict(), result.reason())
-                : policy.evaluator().onFindings(result.findings(), result.redactable());
+            decision = result.nonVerdict() == null
+                ? policy.evaluator().onFindings(result.findings(), result.redactable(), effective)
+                : stronger(policy.evaluator().onNonVerdict(result.nonVerdict(), result.reason()), result);
         } catch (RuntimeException e) {
             result = null;
             decision = policy.evaluator().onNonVerdict(Verdict.INSPECTION_FAILED, "INTERNAL");
         }
-        emit(decision.verdict(), decision.reason(), result == null ? List.of() : result.findings());
+        emit(decision.verdict(), decision.reason(), result == null ? List.of() : result.findings(), decision);
         Action action = decision.action();
         if (action == Action.REDACT && result != null && result.redactedBody() != null) {
             byte[] redacted = result.redactedBody();
             ctx.writeAndFlush(msg(IcapResponses.modified(isTag(), "req-hdr",
-                withLength(reqHttp, redacted.length), redacted, false)));
+                identityWithLength(reqHttp, redacted.length), redacted, false)));
         } else if (action == Action.BLOCK || action == Action.REDACT) {
             ctx.writeAndFlush(msg(blockResponse(decision.reason())));
         } else if (!answerUnchanged(ctx, true)) {
             return;
         }
         resetTransaction();
+    }
+
+    /**
+     * PR 17 review D-01: a non-verdict reached after findings never weakens them; the stronger action wins, the non-verdict
+     * on a tie.
+     */
+    private Decision stronger(Decision nonVerdict, InspectionResult result) {
+        if (result.findings().isEmpty()) {
+            return nonVerdict;
+        }
+        Decision found = policy.evaluator().onFindings(result.findings(), result.redactable(), effective);
+        return found.action().max(nonVerdict.action()) == nonVerdict.action() ? nonVerdict : found;
     }
 
     /**
@@ -438,6 +458,12 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
 
     private static byte[] withLength(HeaderBlock http, int length) {
         return http.rewrite(List.of("Content-Length", "Transfer-Encoding"),
+            List.of(new HeaderBlock.Field("Content-Length", Integer.toString(length)))).toBytes();
+    }
+
+    /** A rewritten body is identity-encoded: the inspector decoded any gzip or deflate layer before rewriting it. */
+    private static byte[] identityWithLength(HeaderBlock http, int length) {
+        return http.rewrite(List.of("Content-Length", "Transfer-Encoding", "Content-Encoding"),
             List.of(new HeaderBlock.Field("Content-Length", Integer.toString(length)))).toBytes();
     }
 
@@ -477,9 +503,10 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         }
         InspectionResult result = engine.inspector().inspect(body, resHttp);
         if (result.nonVerdict() != null) {
-            if (TERMINATING_REASONS.contains(result.reason())) {
-                // N-01: the limit was reached because of findings (or text that hides them); the response never leaves.
-                terminateWholeResponse(ctx, result.reason(), List.of());
+            if (TERMINATING_REASONS.contains(result.reason()) || !result.findings().isEmpty()) {
+                // N-01, PR 17 D-01: a limit reached because of findings, a blob that may hide them, or findings made
+                // before the non-verdict: the response never leaves.
+                terminateWholeResponse(ctx, result.reason(), result.findings());
                 return;
             }
             // RESPMOD is the visibility path: an uninspectable response is passed and recorded (ADR-010 §2).
@@ -490,25 +517,30 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             answerRespmodUnmodified(ctx, Verdict.ALLOW, null);
             return;
         }
-        Decision decision = policy.evaluator().onFindings(result.findings(), result.redactable());
+        Decision decision = policy.evaluator().onFindings(result.findings(), result.redactable(), effective);
         // D-07: a class whose action is BLOCK (a secret) never leaves partially; only REDACT classes are rewritten.
         if (decision.action() == Action.REDACT && result.redactedBody() != null) {
             byte[] replacement = result.redactedBody();
-            emit(Verdict.REDACT, decision.reason(), result.findings());
+            emit(Verdict.REDACT, decision.reason(), result.findings(), decision);
             ctx.writeAndFlush(msg(IcapResponses.modified(isTag(), "res-hdr",
-                withLength(resHttp, replacement.length), replacement, false)));
+                identityWithLength(resHttp, replacement.length), replacement, false)));
             resetTransaction();
             return;
         }
-        terminateWholeResponse(ctx, decision.reason(), result.findings());
+        terminateWholeResponse(ctx, decision.reason(), result.findings(), decision);
     }
 
     private void terminateWholeResponse(ChannelHandlerContext ctx, String reason, List<Finding> findings) {
+        terminateWholeResponse(ctx, reason, findings, null);
+    }
+
+    private void terminateWholeResponse(ChannelHandlerContext ctx, String reason, List<Finding> findings,
+                                        Decision decision) {
         byte[] replacement = BlockPages.terminatedText(reason, correlation);
         HeaderBlock head = resHttp.rewrite(List.of("Content-Length", "Transfer-Encoding", "Content-Type",
             "Content-Encoding"), List.of(new HeaderBlock.Field("Content-Length", Integer.toString(replacement.length)),
             new HeaderBlock.Field("Content-Type", "text/plain; charset=utf-8")));
-        emit(Verdict.STREAM_ABORTED, reason, findings);
+        emit(Verdict.STREAM_ABORTED, reason, findings, decision);
         ctx.writeAndFlush(msg(
             IcapResponses.modified(isTag(), "res-hdr", head.toBytes(), replacement, false)));
         resetTransaction();
@@ -644,7 +676,10 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
         byte[] notice = resHttp.mediaType().equals("text/event-stream")
             ? BlockPages.sseTermination(reason, correlation) : BlockPages.terminatedText(reason, correlation);
         ctx.write(Unpooled.wrappedBuffer(IcapResponses.chunk(notice, 0, notice.length)));
-        emit(Verdict.STREAM_ABORTED, reason, nonVerdictReason != null ? List.of() : streamFindings);
+        // PR 20 review D-06: the decision behind a finding abort names its scoped rules like any other.
+        Decision decision = nonVerdictReason != null ? null
+            : policy.evaluator().onFindings(streamFindings, false, effective);
+        emit(Verdict.STREAM_ABORTED, reason, nonVerdictReason != null ? List.of() : streamFindings, decision);
         held = null;
         pending = null;
         if (decoder.done()) {
@@ -727,6 +762,11 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void emit(Verdict verdict, String reason, List<Finding> findings) {
+        emit(verdict, reason, findings, null);
+    }
+
+    /** @param decision the policy decision behind the verdict, for its scoped rule ids; null when none took part */
+    private void emit(Verdict verdict, String reason, List<Finding> findings, Decision decision) {
         Map<String, Integer> counts = new HashMap<>();
         for (Finding f : findings) {
             counts.merge(f.dataClass().name(), 1, Integer::sum);
@@ -742,13 +782,16 @@ final class IcapConnectionHandler extends ChannelInboundHandlerAdapter {
             verdict, reason, counts, bytes, (System.nanoTime() - startNanos) / 1000,
             VerdictEvent.bounded(req.head().first("X-Authenticated-User"), 256),
             VerdictEvent.bounded(req.head().first("X-Client-IP"), 64), mutualTls ? "mtls_verified" : "plain_allowlisted",
-            policy == null ? 0 : policy.snapshot().version(), correlation));
+            policy == null ? 0 : policy.snapshot().version(), correlation,
+            decision == null ? List.of() : decision.appliedRuleIds(),
+            decision == null ? List.of() : decision.monitorRuleIds()));
     }
 
     private void resetTransaction() {
         cancelTimer();
         releaseAdmission();
         policy = null;
+        effective = null;
         req = null;
         reqHttp = null;
         resHttp = null;

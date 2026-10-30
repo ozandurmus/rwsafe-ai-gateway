@@ -114,6 +114,52 @@ class ControlPlaneIntegrationTest {
     }
 
     @Test
+    void scopedRuleIdsAreAcceptedStoredAndBounded() throws Exception {
+        ObjectNode scoped = event("claude", "REDACT", null, null);
+        scoped.putArray("appliedRuleIds").add("class.SECRET@4");
+        scoped.putArray("monitorRuleIds").add("class.TCKN@7").add("class.TR_IBAN@2");
+        ObjectNode plain = event("claude", "ALLOW", null, null);
+        ApiClient.Response ok = internalClient().post("/internal/v1/verdict-events", batch(scoped, plain), false);
+        assertEquals(202, ok.status(), String.valueOf(ok.body()));
+        assertEquals(2, ok.body().get("accepted").asInt());
+        JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+        assertEquals("class.SECRET@4", jdbc.queryForObject("SELECT array_to_string(applied_rule_ids, ',') FROM "
+            + "verdict_event WHERE event_id = ?::uuid", String.class, scoped.get("eventId").asText()));
+        assertEquals("class.TCKN@7,class.TR_IBAN@2", jdbc.queryForObject("SELECT array_to_string(monitor_rule_ids, ',') "
+            + "FROM verdict_event WHERE event_id = ?::uuid", String.class, scoped.get("eventId").asText()));
+        assertEquals(0, jdbc.queryForObject("SELECT cardinality(applied_rule_ids) FROM verdict_event WHERE "
+            + "event_id = ?::uuid", Integer.class, plain.get("eventId").asText()), "absent is empty");
+        // PR 21 review D-02: the read path returns them (the masked role too: they are vocabulary).
+        for (String login : new String[] {"synthetic-viewer", "synthetic-aiview"}) {
+            JsonNode detail = signedIn(login).get("/api/v1/traffic/" + scoped.get("eventId").asText()).body();
+            assertEquals("[\"class.SECRET@4\"]", detail.get("appliedRuleIds").toString(), login);
+            assertEquals("[\"class.TCKN@7\",\"class.TR_IBAN@2\"]", detail.get("monitorRuleIds").toString(), login);
+        }
+
+        ObjectNode tooMany = event("claude", "ALLOW", null, null);
+        var many = tooMany.putArray("appliedRuleIds");
+        for (int i = 1; i <= 17; i++) {
+            many.add("class.TCKN@" + i);
+        }
+        ObjectNode tooLong = event("claude", "ALLOW", null, null);
+        tooLong.putArray("monitorRuleIds").add("class." + "X".repeat(130) + "@1");
+        ObjectNode notAnId = event("claude", "ALLOW", null, null);
+        notAnId.putArray("appliedRuleIds").add("192.0.2.10");
+        ObjectNode platformId = event("claude", "ALLOW", null, null);
+        platformId.putArray("appliedRuleIds").add("platform.claude@1");
+        ObjectNode unknownClass = event("claude", "ALLOW", null, null);
+        unknownClass.putArray("monitorRuleIds").add("class.SYNTHETIC_VALUE@1");
+        ObjectNode duplicate = event("claude", "ALLOW", null, null);
+        duplicate.putArray("appliedRuleIds").add("class.TCKN@3").add("class.TCKN@3");
+        for (ObjectNode bad : new ObjectNode[] {tooMany, tooLong, notAnId, platformId, unknownClass, duplicate}) {
+            ApiClient.Response refused = internalClient().post("/internal/v1/verdict-events", batch(bad), false);
+            assertEquals(400, refused.status());
+            assertEquals("INVALID_EVENT", refused.body().get("reason").asText());
+            assertFalse(refused.body().get("message").asText().contains("192.0.2"), "values are never echoed");
+        }
+    }
+
+    @Test
     void theContractIsExact() throws Exception {
         ObjectNode extra = event("claude", "ALLOW", null, null);
         extra.put("prompt", "synthetic");
@@ -294,5 +340,17 @@ class ControlPlaneIntegrationTest {
         assertTrue(IngestionService.canonicalUuid(cardLike));
         ObjectNode uuid = event("claude", "ALLOW", null, null).put("correlationId", cardLike);
         assertEquals(202, internalClient().post("/internal/v1/verdict-events", batch(uuid), false).status());
+    }
+
+    @Test
+    void withoutTheConfiguredNoticeValuesNothingCanBeAcknowledged() throws Exception {
+        // PR 22 review D-03: this context configures no RWSAFE_ENDUSER_ value, so no notice was shown.
+        ApiClient.Response r = internalClient().post("/internal/v1/notice-acknowledgements",
+            "[{\"userClaim\":\"SYNTHETIC\\\\user-x\",\"noticeVersion\":\"tr-2-0a1b2c3d\",\"acknowledgedAt\":\""
+                + java.time.Instant.now() + "\",\"source\":\"directory_attribute\"}]", false);
+        assertEquals(400, r.status());
+        assertEquals("NOTICE_INCOMPLETE", r.body().get("reason").asText());
+        assertEquals(0, new JdbcTemplate(dataSource).queryForObject("SELECT count(*) FROM notice_acknowledgement",
+            Integer.class));
     }
 }

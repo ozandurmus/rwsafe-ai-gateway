@@ -62,6 +62,10 @@ public final class Database {
         return new LoginRecordStore(dsl);
     }
 
+    public NoticeAcknowledgementStore noticeAcknowledgements() {
+        return new NoticeAcknowledgementStore(dsl);
+    }
+
     public PolicyRegistryStore policyRegistry() {
         return new PolicyRegistryStore(dsl);
     }

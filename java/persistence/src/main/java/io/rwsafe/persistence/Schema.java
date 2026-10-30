@@ -34,7 +34,11 @@ final class Schema {
     static final Field<String> TRANSPORT = DSL.field(DSL.name("verdict_event", "transport"), SQLDataType.CLOB);
     static final Field<Long> SNAPSHOT_VERSION = DSL.field(DSL.name("verdict_event", "snapshot_version"), SQLDataType.BIGINT);
     static final Field<String> CORRELATION_ID = DSL.field(DSL.name("verdict_event", "correlation_id"), SQLDataType.CLOB);
-    static final Field<String> PSEUDONYM_KEY_ID = DSL.field(DSL.name("verdict_event", "pseudonym_key_id"), SQLDataType.CLOB);
+    static final Field<String[]> APPLIED_RULE_IDS = DSL.field(DSL.name("verdict_event", "applied_rule_ids"),
+        SQLDataType.CLOB.array());
+    static final Field<String[]> MONITOR_RULE_IDS = DSL.field(DSL.name("verdict_event", "monitor_rule_ids"),
+        SQLDataType.CLOB.array());
+    static final Field<String> PSEUDONYM_KEY_ID =DSL.field(DSL.name("verdict_event", "pseudonym_key_id"), SQLDataType.CLOB);
 
     static final Table<Record> VERDICT_FINDING = DSL.table(DSL.name("verdict_finding"));
     static final Field<UUID> FINDING_EVENT_ID = DSL.field(DSL.name("verdict_finding", "event_id"), SQLDataType.UUID);
@@ -80,6 +84,21 @@ final class Schema {
         SQLDataType.INSTANT);
     static final Field<Instant> RV_SUPERSEDED_AT = DSL.field(DSL.name("policy_rule_version", "superseded_at"),
         SQLDataType.INSTANT);
+    static final Field<String> RV_SCOPE_KIND = DSL.field(DSL.name("policy_rule_version", "scope_kind"), SQLDataType.CLOB);
+    static final Field<String[]> RV_SCOPE_GROUPS = DSL.field(DSL.name("policy_rule_version", "scope_groups"),
+        SQLDataType.CLOB.array());
+    static final Field<String> RV_SCOPE_KEY = DSL.field(DSL.name("policy_rule_version", "scope_key"), SQLDataType.CLOB);
+    static final Field<Instant> RV_RETIRED_AT = DSL.field(DSL.name("policy_rule_version", "retired_at"),
+        SQLDataType.INSTANT);
+    static final Field<String> RV_RETIRED_BY = DSL.field(DSL.name("policy_rule_version", "retired_by"), SQLDataType.CLOB);
+    static final Field<String> RV_RETIRED_REASON = DSL.field(DSL.name("policy_rule_version", "retired_reason"),
+        SQLDataType.CLOB);
+    static final Field<Integer> RV_WITHDRAWS = DSL.field(DSL.name("policy_rule_version", "withdraws_version"),
+        SQLDataType.INTEGER);
+    static final Field<String> RV_WITHDRAWAL_REASON = DSL.field(DSL.name("policy_rule_version", "withdrawal_reason"),
+        SQLDataType.CLOB);
+    static final Field<Instant> RV_WITHDRAWN_AT = DSL.field(DSL.name("policy_rule_version", "withdrawn_at"),
+        SQLDataType.INSTANT);
 
     static final Table<Record> APPROVAL = DSL.table(DSL.name("policy_approval"));
     static final Field<String> AP_RULE_ID = DSL.field(DSL.name("policy_approval", "rule_id"), SQLDataType.CLOB);
@@ -101,6 +120,25 @@ final class Schema {
         SQLDataType.CLOB.array());
     static final Field<String[]> SN_APPROVERS = DSL.field(DSL.name("policy_snapshot", "approvers"),
         SQLDataType.CLOB.array());
+
+    static final Table<Record> NOTICE_VERSION = DSL.table(DSL.name("notice_version"));
+    static final Field<String> NV_VERSION = DSL.field(DSL.name("notice_version", "notice_version"), SQLDataType.CLOB);
+    static final Field<Instant> NV_ISSUED_AT = DSL.field(DSL.name("notice_version", "issued_at"), SQLDataType.INSTANT);
+
+    static final Table<Record> NOTICE_ACK = DSL.table(DSL.name("notice_acknowledgement"));
+    static final Field<Long> NA_ID = DSL.field(DSL.name("notice_acknowledgement", "acknowledgement_id"),
+        SQLDataType.BIGINT);
+    static final Field<String> NA_USER = DSL.field(DSL.name("notice_acknowledgement", "user_pseudonym"),
+        SQLDataType.CLOB);
+    static final Field<String> NA_VERSION = DSL.field(DSL.name("notice_acknowledgement", "notice_version"),
+        SQLDataType.CLOB);
+    static final Field<Instant> NA_ACKNOWLEDGED_AT = DSL.field(DSL.name("notice_acknowledgement", "acknowledged_at"),
+        SQLDataType.INSTANT);
+    static final Field<String> NA_SOURCE = DSL.field(DSL.name("notice_acknowledgement", "source"), SQLDataType.CLOB);
+    static final Field<Instant> NA_RECORDED_AT = DSL.field(DSL.name("notice_acknowledgement", "recorded_at"),
+        SQLDataType.INSTANT);
+    static final Field<String> NA_KEY_ID = DSL.field(DSL.name("notice_acknowledgement", "pseudonym_key_id"),
+        SQLDataType.CLOB);
 
     static final Table<Record> AUDIT_EVENT = DSL.table(DSL.name("audit_event"));
     static final Field<String> AUDIT_ACTOR = DSL.field(DSL.name("audit_event", "actor_fingerprint"), SQLDataType.CLOB);

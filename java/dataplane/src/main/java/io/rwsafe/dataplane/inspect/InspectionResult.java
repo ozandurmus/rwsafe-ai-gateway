@@ -32,11 +32,20 @@ public final class InspectionResult {
         return new InspectionResult(v, reason, List.of(), false, null);
     }
 
+    /**
+     * A non-verdict reached after findings were made (PR 17 review D-01): the findings, and the rewrite where one exists,
+     * are kept so a finding that blocks still blocks and the verdict event keeps the class counts.
+     */
+    static InspectionResult nonVerdict(Verdict v, String reason, List<Finding> findings, boolean redactable,
+                                       byte[] redactedBody) {
+        return new InspectionResult(v, reason, findings, redactable, redactedBody);
+    }
+
     static InspectionResult inspected(List<Finding> findings, boolean redactable, byte[] redactedBody) {
         return new InspectionResult(null, null, findings, redactable, redactedBody);
     }
 
-    /** Null when the body was inspected. */
+    /** Null when the body was inspected; a non-verdict may still carry the findings made before it. */
     public Verdict nonVerdict() {
         return nonVerdict;
     }

@@ -48,7 +48,7 @@ final class SiemFixture {
             ids.add(id);
             batch.add(new VerdictEventPayload(id, Instant.now().minusSeconds(1).toString(), "reqmod", "openai", "web",
                 "chat", "BLOCK", "customer_data", List.of(new VerdictEventPayload.FindingPayload("TCKN", 1)), 512L, 120L,
-                userClaim, clientAddress, "mtls_verified", 3L, id));
+                userClaim, clientAddress, "mtls_verified", 3L, id, List.of(), List.of()));
         }
         ingestion.ingest(batch);
         return ids;

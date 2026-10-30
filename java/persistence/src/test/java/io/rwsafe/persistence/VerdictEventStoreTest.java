@@ -46,6 +46,37 @@ class VerdictEventStoreTest {
         assertEquals(3, db.verdictQueries().classCombinations(base, base.plusSeconds(60), null).combinations().size());
     }
 
+    // PR 21 review D-02 and D-04: the scoped-rule ids are stored, read back on every path, and only in their shape.
+
+    @Test
+    void scopedRuleIdsRoundTripAndKeepTheirShape() {
+        StoredVerdictEvent plain = event(base, "claude", Verdict.REDACT, List.of(new FindingCount("TCKN", 1)));
+        StoredVerdictEvent e = new StoredVerdictEvent(plain.eventId(), plain.receivedAt(), plain.service(),
+            plain.platform(), plain.surface(), plain.step(), plain.verdict(), plain.reason(), plain.findings(),
+            plain.bodyBytes(), plain.decisionMicros(), plain.userPseudonym(), plain.clientSubnet(), plain.transport(),
+            plain.snapshotVersion(), plain.correlationId(), plain.pseudonymKeyId(), List.of("class.TCKN@4"),
+            List.of("class.SECRET@2", "class.TR_IBAN@7"));
+        assertEquals(1, db.verdictEvents().insert(List.of(e)));
+        StoredVerdictEvent stored = db.verdictQueries().event(e.eventId()).orElseThrow();
+        assertEquals(List.of("class.TCKN@4"), stored.appliedRuleIds());
+        assertEquals(List.of("class.SECRET@2", "class.TR_IBAN@7"), stored.monitorRuleIds());
+        StoredVerdictEvent listed = db.verdictQueries().traffic(new VerdictQueries.TrafficFilter(base.minusSeconds(1),
+            base.plusSeconds(1), null, null, null, null, 10, null)).items().get(0);
+        assertEquals(e.appliedRuleIds(), listed.appliedRuleIds());
+        assertEquals(e.monitorRuleIds(), listed.monitorRuleIds());
+
+        for (List<String> bad : List.of(List.of("platform.claude@1"), List.of("class.UNKNOWN@1"),
+            List.of("class.TCKN@1", "class.TCKN@1"), List.of("class.TCKN@0"))) {
+            StoredVerdictEvent b = event(base, "claude", Verdict.REDACT, List.of());
+            StoredVerdictEvent withBad = new StoredVerdictEvent(b.eventId(), b.receivedAt(), b.service(), b.platform(),
+                b.surface(), b.step(), b.verdict(), b.reason(), b.findings(), b.bodyBytes(), b.decisionMicros(),
+                b.userPseudonym(), b.clientSubnet(), b.transport(), b.snapshotVersion(), b.correlationId(),
+                b.pseudonymKeyId(), bad, List.of());
+            assertThrows(org.jooq.exception.DataAccessException.class,
+                () -> db.verdictEvents().insert(List.of(withBad)), bad.toString());
+        }
+    }
+
     @Test
     void ingestionIsIdempotentOnTheEventId() {
         StoredVerdictEvent e = event(base, "claude", Verdict.REDACT, List.of(new FindingCount("TCKN", 2)));

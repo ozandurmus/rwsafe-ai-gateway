@@ -1,5 +1,8 @@
 package io.rwsafe.policy;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -32,7 +35,15 @@ public final class Json {
     }
 
     public static Object parse(byte[] utf8) throws Invalid {
-        Json j = new Json(new String(utf8, StandardCharsets.UTF_8));
+        String text;
+        try {
+            // PR 20 review D-05: malformed UTF-8 is refused, never replaced with U+FFFD.
+            text = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(utf8)).toString();
+        } catch (CharacterCodingException e) {
+            throw new Invalid("not UTF-8");
+        }
+        Json j = new Json(text);
         j.ws();
         Object v = j.value(0);
         j.ws();

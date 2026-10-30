@@ -26,6 +26,7 @@ card numbers are redacted; the AI-category flow is fail-closed). Environment var
 | `RWSAFE_SNAPSHOT_CACHE` | unset | directory for the last good snapshot, verified again at start |
 | `RWSAFE_METRICS_PORT` | `9401` | `GET /metrics` (Prometheus text, fixed labels only), `GET /ready` and the preStop drain `GET`/`POST /admin/drain` (starts the drain, answers after the 15 s serve window) |
 | `RWSAFE_SHARED_ADDRESS_PREFIXES` | unset | client-address prefixes shared by many users (VDI, terminal servers): 256 transactions in flight instead of 32 |
+| `RWSAFE_GROUP_CLAIM_ENCODING` | unset (disabled) | how the proxy encodes `X-Authenticated-Groups`: exactly `plain` or `base64` (below); unset or any other value disables group claims, so every transaction takes the strictest policy |
 
 In a second terminal, replay the synthetic sample traffic:
 
@@ -40,6 +41,39 @@ boundary (still blocked, OFF2-1) and a clean prompt decided inside the preview (
 at runtime and never written to disk.
 
 Any ICAP client works as well, for example `c-icap-client` against `icap://127.0.0.1:1344/reqmod-ai`.
+
+### Scoped rules (snapshot format 2)
+
+A format 2 snapshot adds group-scoped rules on top of the `ANY` class actions (POLICY_SNAPSHOT_CONTRACT.md, PO decision
+Q-39). The engine reads the proxy's `X-Authenticated-Groups` claim only when `RWSAFE_GROUP_CLAIM_ENCODING` says how it
+is encoded, and trusts it only on the Secure ICAP listener; it never guesses the encoding per value (PR 20 review D-01).
+Which encoding the estate proxy uses is UNVERIFIED.
+
+- `plain`: the header value is a comma-separated list of short group names (no commas inside a name, PR 20 review Q-2),
+  its octets read as UTF-8.
+- `base64`: the whole header value is standard base64 (RFC 4648 section 4 alphabet, padding required) of that same
+  UTF-8 list.
+
+Each name is compared in one form shared with the snapshot (`GroupNames`): white space stripped, Unicode NFC, Turkish
+`İ`, `I` and `ı` folded to `i`, lower case (`Locale.ROOT`), a combining dot above after `i` removed, NFC again. A header
+that is repeated, holds a control character, a name over 256 characters, more than 256 comma-separated tokens (empty
+and repeated ones counted), octets that are not UTF-8 or invalid base64 is no claim. On plain ICAP, with group claims
+disabled, or with no readable claim, each class takes the strictest of `ANY` and every enforce scoped rule. The verdict
+event names the rules (`appliedRuleIds`, `monitorRuleIds`), never the groups.
+
+The quickest local check is the synthetic end-to-end suite, which runs one engine with a stricter, a looser and a monitor
+rule over both listeners:
+
+```bash
+./java/gradlew -p java :dataplane:test --tests '*ScopedPolicyEndToEndTest' --tests '*GroupClaimTest'
+```
+
+By hand: the built-in development snapshot has no scoped rules, so point the engine at a control plane that issues
+format 2 (`RWSAFE_SNAPSHOT_URL`, `RWSAFE_SNAPSHOT_PUBLIC_KEYS`), set `RWSAFE_GROUP_CLAIM_ENCODING=plain`, approve a
+group-scoped version there, and send a REQMOD
+with `-x "X-Authenticated-Groups: <synthetic group>"` from `c-icap-client`. On port 1344 a stricter group rule applies to
+every user and a looser one has no effect; group selection needs the Secure ICAP listener (`RWSAFE_TLS_*`) and a client
+that presents a certificate issued by `RWSAFE_TLS_CLIENT_CA`.
 
 ## Control plane and admin UI
 
@@ -90,9 +124,49 @@ and passes the masking funnel.
 The policy registry by hand: sign in as `synthetic-admin`, open Policies, select a class (for example TCKN), submit a new
 version (a fail-closed class is never offered Allow or Warn) and approve it as security administrator; then sign in as
 `synthetic-officer` in another browser profile and give the privacy officer approval. The second approval activates the
-version; with rollout stage `all` and mode `enforce` the next snapshot carries it (format 1 has no group targeting, so a
-staged or monitor version is shown, approved and simulated but not sent). The Simulate button counts how the stored
-events carrying the class would change under a proposed action.
+version. A version with the scope Everyone and mode `enforce` becomes the snapshot's `classActions`; an Everyone version
+in monitor mode is shown, approved and simulated but not sent. The Simulate button counts how the stored events carrying
+the class would change under a proposed action (it re-decides the Everyone baseline only).
+
+A group-scoped version (PO decision Q-39, snapshot format 2): in the new-version form choose "Seçilen dizin grupları"
+(Selected directory groups), type the short directory group name (no commas) and press Enter for each group (1 to 32;
+use synthetic names such as `GRP-ALPHA` locally, never a real directory group in a committed file), then submit and give
+the two approvals as above. Names are stored, compared and sent in one normal form (trimmed, NFC, the Turkish and Latin
+i forms folded to `i`, lower case), so `GRP-ALPHA` is listed as `grp-alpha`; two names that normalise alike are refused.
+The next snapshot lists it in `scopedRules` as `class.<CLASS>@<version>` with its groups and mode (monitor versions are
+sent too); the Everyone version keeps applying beside it, and the Policies table shows both scopes as chips. The same as
+a request:
+
+```bash
+curl -s -b cookies.txt -H "X-XSRF-TOKEN: $XSRF" -H 'Content-Type: application/json' \
+  -d '{"action":"REDACT","mode":"enforce","scope":{"kind":"GROUPS","groups":["GRP-ALPHA"]},"reasonCode":"PILOT_GROUP"}' \
+  http://127.0.0.1:8090/api/v1/policy/rules/class.SECRET/versions
+```
+
+Every class is fail-closed today, so a group may be looser than everyone only as REDACT where everyone is BLOCK; ALLOW
+and WARN are refused in every scope. `rolloutStage` is optional and, when sent, `all` (the percentage stages are retired).
+
+Retiring a platform (PO decision Q-40): signed in as `synthetic-admin`, open Platforms, press "Kullanımdan kaldır" on an
+active row, write the reason, press "Devam et", read the consequences and confirm with "Evet, kullanımdan kaldır". No
+second approval is needed. The row stays listed, greyed, with the time, the administrator's pseudonym and the reason; the
+next snapshot leaves the platform out; the ledger (`audit_event`, action `policy.platform_retire`) names the
+administrator and carries the reason. The last active platform cannot be retired (`RETIRE_WOULD_NOT_COMPILE`). Bringing a
+platform back is a new version under the two approvals. As a request:
+`POST /api/v1/policy/rules/platform.<id>/retirement` with `{"reason":"..."}` (security administrator only; 403 for the
+viewer, the privacy officer and the masked role). A retirement also supersedes the platform's pending drafts, so an
+approval given before it never counts afterwards. A reason (retirement or withdrawal) is refused when it holds an
+identifier: an address, an e-mail address, a phone, card, IBAN or TCKN number, a secret shape or an estate term
+(`REASON_HOLDS_IDENTIFIER`, `ESTATE_NAME_REFUSED`).
+
+Withdrawing a group scope (PR 21 decision Q-41): signed in as `synthetic-admin`, open Policies, select the class, press
+"Geri çek" beside an active group-scoped version, write the reason, press "Devam et" and confirm with "Evet, onaya
+gönder". The request appears as a new pending version ("Sürüm N için geri çekme") with its own approval steps; it takes
+the same two approvals as an activation (security administrator, then `synthetic-officer` as privacy officer). With the
+second approval the scoped version becomes `withdrawn`, the request stays active as the scope's marker, and the next
+snapshot no longer lists the scoped rule, so those groups follow the rule for everyone again. Until then the version
+keeps applying. As a request: `POST /api/v1/policy/rules/class.<CLASS>/versions/<version>/withdrawal` with
+`{"reason":"..."}`, then the usual approvals on the returned version. Drafts for different scopes (or modes) of one rule
+wait side by side; a new draft replaces only the pending version of its own rule, mode and scope.
 
 The signed snapshot, as the data plane pulls it:
 
@@ -199,6 +273,8 @@ egress to the SIEM follow in the deploy lane.
 
 ## What the engine does not do yet
 
-Decompression and base64 layer decoding, the file pipeline, login-step tenant rules, shape fingerprints per flow, and
-group claims selecting policy on Secure ICAP connections. Each is a row of ICAP spec §2 to §5 that a later slice
-implements.
+The file pipeline (multipart, documents, archives, and files found inside a base64 layer, which are
+`UNINSPECTABLE(EMBEDDED_FILE)` for now), hex and other non-base64 layers, gzip inside base64 (BY-ENC-9), decompression on
+the streamed RESPMOD path, login-step tenant rules, shape fingerprints per flow. Each is a row of ICAP spec §2 to §5 that a later slice implements. A single declared gzip or
+deflate `Content-Encoding` and base64 layers to depth 3 are decoded and scanned (a fourth layer is `UNINSPECTABLE(UNDECODABLE_BLOB)`); `br`, stacked codings and undeclared
+compressed bodies stay `UNINSPECTABLE`.

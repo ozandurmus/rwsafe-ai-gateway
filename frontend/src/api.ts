@@ -49,6 +49,9 @@ export interface EventItem {
   snapshotVersion: number;
   correlationId: string;
   pseudonymKeyId: string;
+  /** Snapshot format 2 scoped-rule ids that decided the verdict, and the monitor rules that would have changed it. */
+  appliedRuleIds?: string[];
+  monitorRuleIds?: string[];
 }
 
 export interface TrafficPage {
@@ -69,7 +72,14 @@ export type RuleKind = 'class_action' | 'platform' | 'flow';
 export type PolicyAction = 'ALLOW' | 'WARN' | 'REDACT' | 'BLOCK';
 export type PolicyMode = 'monitor' | 'enforce';
 export type RolloutStage = 'pilot' | 'pct25' | 'pct50' | 'all';
-export type VersionStatus = 'pending' | 'active' | 'superseded';
+export type VersionStatus = 'pending' | 'active' | 'superseded' | 'retired' | 'withdrawn';
+/** PO decision Q-39: a version applies to everyone (ANY) or to the members of named directory groups. */
+export type ScopeKind = 'ANY' | 'GROUPS';
+
+export interface Scope {
+  kind: ScopeKind;
+  groups: string[];
+}
 export type ApproverRole = 'security_admin' | 'privacy_officer';
 
 export interface RuleVersion {
@@ -89,6 +99,14 @@ export interface RuleVersion {
   createdAt: string;
   activatedAt: string | null;
   supersededAt: string | null;
+  scope: Scope;
+  /** PO decision Q-40: how a platform row left service; null for every other version. */
+  retirement: { retiredAt: string; retiredBy: string; reason: string } | null;
+  /**
+   * PR 21 Q-41: on a withdrawal request, the version it withdraws and the reason; on a withdrawn version, when (the
+   * other two fields are null). Null for every other version.
+   */
+  withdrawal: { withdrawsVersion: number | null; reason: string | null; withdrawnAt: string | null } | null;
   approvals: { role: ApproverRole; approver: string; approvedAt: string }[];
   inSnapshot: boolean;
 }
@@ -116,6 +134,8 @@ export interface Registry {
   actions: PolicyAction[];
   modes: PolicyMode[];
   stages: RolloutStage[];
+  scopeKinds: ScopeKind[];
+  maxScopeGroups: number;
 }
 
 export interface DraftRequest {
@@ -125,7 +145,7 @@ export interface DraftRequest {
   apiHosts?: string[];
   loginHosts?: string[];
   mode: PolicyMode;
-  rolloutStage: RolloutStage;
+  scope: Scope;
   reasonCode: string;
 }
 
@@ -255,6 +275,16 @@ export const api = {
       `/api/v1/policy/rules/${encodeURIComponent(ruleId)}/versions/${version}/approvals`,
       { role },
     ),
+  requestWithdrawal: (ruleId: string, version: number, reason: string) =>
+    request<RuleVersion>(
+      'POST',
+      `/api/v1/policy/rules/${encodeURIComponent(ruleId)}/versions/${version}/withdrawal`,
+      { reason },
+    ),
+  retirePlatform: (ruleId: string, reason: string) =>
+    request<{ retired: RuleVersion[] }>('POST', `/api/v1/policy/rules/${encodeURIComponent(ruleId)}/retirement`, {
+      reason,
+    }),
   simulate: (ruleId: string, action: PolicyAction) =>
     request<Simulation>('GET', `/api/v1/policy/simulation${query({ ruleId, action })}`),
 };

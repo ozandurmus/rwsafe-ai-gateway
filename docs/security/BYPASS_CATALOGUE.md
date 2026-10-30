@@ -86,3 +86,19 @@ captured content). Pilot acceptance requires every MVP row green. Columns: Phase
 Per class and per technique: fixtures run, expected vs actual, FN and FP counts against SR-DET targets, the list of
 documented limitations (BY-ENC-7, BY-ENC-8, BY-FILE-3, BY-TEN-6) with the compensating control, and the date. Generated
 by the test suite, committed under `docs/reviews/DETECTION_EVALUATION_<date>.md`.
+
+## 8. Implementation status (record; the rows above are unchanged)
+
+This section records which rows the engine meets and by which test; it amends no expected result.
+
+| Id | Status | Test | Note |
+|---|---|---|---|
+| BY-ENC-1 | met (REQMOD body, JSON leaves and text bodies) | `BodyDecodingTest`, `DecodingEndToEndTest` | a finding inside a decoded layer replaces the whole field with the class token; runs from 12 characters, so a bare base64 TCKN is found; a run that is not whole quanta of clean text is decoded at all four alignments, and each reading is scanned as UTF-8 without NUL and with invalid sequences replaced, as UTF-16LE and as UTF-16BE, so NUL padding, UTF-16 and a glued prefix or suffix do not hide a value; each alignment keeps a final two- or three-character quantum, and a view that blanks every non-text three-byte quantum keeps decoded prefix bytes away from the value (PR 17 review D-02, D-03; recheck D-05, D-07; recheck 2 D-09) |
+| BY-ENC-2 | met for base64 of base64; hex of base64 open | `BodyDecodingTest.doubleBase64IsFound`, `thirdLayerIsAResidualBlob` | runs inside the second decoded layer are decoded once more (alignments, byte views, budget), so a value in a third layer is an ordinary finding (BLOCK or REDACT) and the second layer's own words decode to nothing; the residual is a fourth layer: a run inside a reading of the third layer with the shape of real base64 (16 or more characters with padding, valid length, zero unused bits, upper- and lower-case letters) is `UNINSPECTABLE(UNDECODABLE_BLOB)`, as is a binary third layer above 256 characters with high entropy (PR 17 recheck 2 D-10, Q-1; recheck 3 D-11); hex decoding is a later slice |
+| BY-ENC-8 | met for base64-alphabet blobs | `BodyDecodingTest.randomBlobAbove256BytesIsUndecodable` | residual = a run above 256 characters that does not decode to text and whose entropy, the highest over any 256-character window, is over 4.5 bits per character (padding cannot dilute it); findings made before or beside the blob are kept and still decide (PR 17 review D-01); when a body has several reasons the most severe is kept, so an embedded file never masks a blob (recheck D-06); ROT13 and substitutions of spaced text stay a documented limitation |
+| BY-PROTO-7 | met: declared single gzip or deflate is decoded (8x and body cap); undeclared raw gzip is `UNINSPECTABLE(BINARY)` | `BodyDecodingTest`, `DecodingEndToEndTest`, `IcapEngineEndToEndTest.unreadableBodiesAreUninspectable` | `br`, stacked or nested codings and over-cap output stay `UNINSPECTABLE(ENCODED)`; a redacted rewrite is sent identity-encoded with `Content-Length` recomputed |
+
+ICAP spec §3 reads "gzip/deflate/br ... when declared or detected by magic bytes". The MVP reading, accepted with the
+PR 17 review (Q-1): a declared single gzip or deflate layer is decoded; `br` and an undeclared compressed body are not
+decoded and stay `UNINSPECTABLE` (`ENCODED`, `BINARY`), which blocks on fail-closed flows. Base64 images above 256
+characters (PNG, JPEG, GIF, WebP) are `EMBEDDED_FILE` (Q-2).

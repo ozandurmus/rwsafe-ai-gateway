@@ -2,6 +2,7 @@ package io.rwsafe.control.policy;
 
 import io.rwsafe.control.api.ApiError;
 import io.rwsafe.control.policy.PolicyViews.RegistryView;
+import io.rwsafe.control.policy.PolicyViews.RetiredView;
 import io.rwsafe.control.policy.PolicyViews.SimulationView;
 import io.rwsafe.control.policy.PolicyViews.VersionView;
 import java.time.Instant;
@@ -47,19 +48,48 @@ public class PolicyApiController {
     @PostMapping("/rules/{ruleId}/versions")
     public ResponseEntity<VersionView> draft(@PathVariable("ruleId") String ruleId,
                                              @RequestBody PolicyRegistryService.DraftRequest body, Authentication auth) {
-        VersionView created = VersionView.of(registry.draft(ruleId, body, auth.getName()), Set.of());
+        VersionView created = VersionView.of(registry.draft(ruleId, body, auth.getName(), roles(auth)), Set.of());
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    /**
+     * Requests the withdrawal of an active group-scoped class version (PR 21 Q-41), with a reason; it takes effect with
+     * the two approvals given on the returned version through the approval route.
+     */
+    @PostMapping("/rules/{ruleId}/versions/{version}/withdrawal")
+    public ResponseEntity<VersionView> withdraw(@PathVariable("ruleId") String ruleId,
+                                                @PathVariable("version") int version,
+                                                @RequestBody PolicyRegistryService.RetireRequest body,
+                                                Authentication auth) {
+        VersionView created = VersionView.of(registry.requestWithdrawal(ruleId, version, body, auth.getName(),
+            roles(auth)), Set.of());
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
     @PostMapping("/rules/{ruleId}/versions/{version}/approvals")
     public VersionView approve(@PathVariable("ruleId") String ruleId, @PathVariable("version") int version,
                                @RequestBody ApprovalRequest body, Authentication auth) {
+        return VersionView.of(registry.approve(ruleId, version, body == null ? null : body.role(), auth.getName(),
+            roles(auth)), Set.of());
+    }
+
+    /**
+     * Retires a platform row (PO decision Q-40): {@code security_admin} only (SecurityConfig and the service), with a
+     * reason; the viewer, the privacy officer alone and the masked role get 403.
+     */
+    @PostMapping("/rules/{ruleId}/retirement")
+    public RetiredView retire(@PathVariable("ruleId") String ruleId,
+                              @RequestBody PolicyRegistryService.RetireRequest body, Authentication auth) {
+        return new RetiredView(registry.retirePlatform(ruleId, body, auth.getName(), roles(auth)).stream()
+            .map(v -> VersionView.of(v, Set.of())).toList());
+    }
+
+    private static Set<String> roles(Authentication auth) {
         Set<String> roles = new TreeSet<>();
         for (GrantedAuthority a : auth.getAuthorities()) {
             roles.add(a.getAuthority().substring("ROLE_".length()));
         }
-        return VersionView.of(registry.approve(ruleId, version, body == null ? null : body.role(), auth.getName(), roles),
-            Set.of());
+        return roles;
     }
 
     /** Always refused today: every rule the registry holds is fail-closed or a platform row (ADR-010, PC-5). */

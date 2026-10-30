@@ -38,6 +38,11 @@ public final class CapturedBody {
         return total > cap;
     }
 
+    /** The most bytes this body keeps; also the bound for a decoded body. */
+    public int cap() {
+        return cap;
+    }
+
     public int length() {
         return len;
     }

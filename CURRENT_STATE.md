@@ -147,13 +147,47 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
   (format 1 has no group targeting). The active policy is re-signed under the next version at least every 6 hours with no
   rule change (scheduled), and the compiler refuses a snapshot with a fail-closed class at ALLOW or WARN (contract changes
   of the data-plane review, PR 14). Every issued snapshot is recorded and ledgered.
-- Screens: Policies (registry table with action, mode, rollout bar, version, status; versions, approval steps,
+- Scoped policy control (PO decisions Q-39 and Q-40, branch `feature/scoped-policy-control`): migration V3 gives every
+  rule version a scope (`ANY` or 1 to 32 directory groups; one active version per rule, mode and scope), retires the
+  percentage stages for new versions, adds the platform `retired` status (one `security_admin` with a reason, ledgered,
+  never deleted, back only through a new two-approval version) and stores the scoped-rule ids of verdict events. The
+  compiler emits snapshot format 2 (`scopedRules`, always present); the data-plane side is a separate lane. The masked
+  role sees group names only as `GRP-` pseudonyms. Policies shows a scope column and a scope picker instead of the
+  rollout bar; Platforms has the retire action with a reason and a built-in confirmation step. After the second review
+  (`docs/reviews/PR21_2026_10_30_RESPONSE.md`): group names use the shared `java/policy` `GroupNames` normal form
+  everywhere (API, database check, compiler, masked pseudonyms, UI duplicate check); a retirement supersedes the
+  platform's pending drafts; an active group-scoped version can be withdrawn with a reason and two approvals (Q-41,
+  status `withdrawn`, its groups fall back to `ANY`); drafts for different scopes wait side by side; verdict events
+  carry only `class.<CLASS>@<version>` rule ids and the read paths return them; free-text reasons refuse identifiers.
+- Screens: Policies (registry table with action, mode, scope, version, status; versions, approval steps,
   simulation panel and a new-version form for a selected rule) and Platforms (platform rows). The masked role reads both
   through the funnel and changes nothing.
 - Local run: `docs/operations/LOCAL_RUN.md` "Control plane and admin UI" (dev signing key and its public key for a local
   data plane, the snapshot feed with curl, the two-approval walk-through).
 
-## Done (deploy manifests, branch `feature/deploy-manifests`)
+## Done (scoped rules, data plane: branch `feature/scoped-policy-dataplane`, not yet merged)
+
+- Snapshot format 2 (POLICY_SNAPSHOT_CONTRACT.md, PO decision Q-39) in `java/policy`: `SnapshotCodec` reads formats 1
+  and 2 and refuses a scoped rule outside the contract (`SCOPE_FIELD`, `SCOPE_DUPLICATE_ID`, `SCOPE_GROUPS`,
+  `SCOPE_MODE`, `SCOPE_TOO_MANY`, and `FAIL_CLOSED_WEAKENED` in any scope and mode); `PolicyEvaluator.resolve` applies the
+  four evaluation steps (ANY baseline; trusted claim: matching enforce rules replace ANY, strictest wins; no trusted
+  claim: strictest of ANY and every enforce rule; monitor rules reported, never applied).
+- Data plane: `X-Authenticated-Groups` parsed per transaction (encoding configured as plain or base64, format
+  UNVERIFIED; anything unreadable is no claim) and trusted only on the mutual-TLS listener; verdict events carry
+  `appliedRuleIds` and
+  `monitorRuleIds` (rule ids only, at most 16 each, written only when non-empty). Synthetic end-to-end tests cover plain
+  and Secure ICAP; `docs/operations/LOCAL_RUN.md` "Scoped rules".
+- Second review (Argon, `docs/reviews/PR20_2026_10_30_ARGON_SCOPED_POLICY_DATAPLANE.md`) answered in
+  `docs/reviews/PR20_2026_10_30_RESPONSE.md`: the header encoding is configured, never guessed; one group-name
+  normalisation (`GroupNames`, Turkish I folded) on both sides; exact snapshot field sets and strict UTF-8.
+- ConfigMap contract for the deploy owner (not edited here): the data plane reads `RWSAFE_GROUP_CLAIM_ENCODING`, value
+  `plain` or `base64`; absent or any other value disables group claims (strictest policy for everyone). It belongs in the
+  data plane's uncommitted runtime ConfigMap once the proxy's format is verified with the PO.
+- Open: the control plane's ingestion must accept the two new event fields before a scoped rule takes part in a verdict
+  (it refuses unknown fields today); the control compiler must emit exactly the contract's fields, a non-empty class map
+  per scoped rule, and group names without commas.
+
+## Done (deploy manifests, merged in PR 18)
 
 Container builds `deploy/images/{dataplane,control}.Containerfile` (Gradle `imageDist`, UBI 9 OpenJDK 21, digest-pinned
 bases, UID 185 group 0, read-only root); kustomize base for `rwsafe-icap` (the `rwsafe-dataplane` image), `rwsafe-control` and
@@ -185,16 +219,50 @@ last. Second review: `docs/reviews/PR23_2026_10_31_ARGON_SIEM_EXPORT.md`, answer
 Configuration and residuals: `docs/operations/LOCAL_RUN.md` "SIEM export". The runtime contract holds the ConfigMap
 `rwsafe-siem-destination` and the Secret `rwsafe-siem-credentials`.
 
+## Done (end-user notices, branch `feature/end-user-notices`)
+
+- Turkish end-user catalogue (AGENTS.md section 3, council PRIV-2): first-use notice (aydınlatma metni: what is
+  inspected, why, legal basis art. 5/2-ç and 5/2-f with explicit consent excluded (Q-32), transfers and the art. 9
+  instrument (Q-33), retention, rights, personal accounts (Q-6), acknowledgement), the block page per reason kind
+  (fail-closed class, uninspectable content, inspection unavailable, platform not allowed, personal account, other),
+  the coaching (WARN) page, the stream-termination message and the class and reason labels. Product copy
+  `java/platform-core/src/main/resources/io/rwsafe/platform/enduser/end-user-tr.properties`, review copies under
+  `docs/i18n/tr` (a test fails when they differ). Configured values (controller name, data protection contact, policy
+  link, retention days) come from `RWSAFE_ENDUSER_*` environment values, never committed. Seven wording items carry
+  `LEGAL-REVIEW LR-1..7` for the PO and the data protection officer (`docs/i18n/README.md`).
+- `EndUserPages` (platform-core) renders self-contained UTF-8 pages: every text and value HTML-escaped, a
+  Content-Security-Policy that loads nothing, no script, link or external resource, the reference id only. The notice
+  version is `catalogue.version` plus 8 hex of the rendered notice, so a text or value change is a new version (PC-1);
+  an incomplete notice has no version. The data plane's `BlockPages` renders from it (API JSON and SSE messages too);
+  `IcapConnectionHandler` is unchanged.
+- Notice acknowledgement (C12): Flyway `V5__notice_acknowledgement.sql` (V3 and V4 are reserved by open branches; merge
+  them first or the database must be fresh), pseudonym only, idempotent per user, version and source, ledgered, never
+  updated; `notice_version` records when each version was first issued, and an acknowledgement must name an issued
+  version. Intake `POST /internal/v1/notice-acknowledgements` on the capture sink: refused while the notice is
+  incomplete; the interactive sources (banner, IDE first run, gateway credential issue) record the current version
+  only; the directory HR record (version and date, Q-35) may carry an earlier issued version as history; the date lies
+  between the version's issue time and now (5 minutes of skew each way). `GET /api/v1/notice` and
+  `GET /api/v1/notice/acknowledgements?user=USR-…` for every role, masked through the funnel (the masked notice omits the
+  configured values). `NoticeAcknowledgementService.contentCaptureAllowed` is the SR-PRIV-10 gate for the C3 capture
+  store (fails closed without the current version's record).
+- Second review (Argon, `docs/reviews/PR22_2026_10_31_ARGON_END_USER_NOTICES.md`): D-01 to D-08 fixed and PO-Q1 to
+  PO-Q3 taken as recommended (`PR22_2026_10_31_RESPONSE.md`); catalogue `tr-2`; the LR markers stay for the PO and the
+  data protection officer.
+- Open: the banner and IDE first-run surfaces that show the notice and post the acknowledgement, the directory import
+  job, the `RWSAFE_ENDUSER_*` ConfigMap contract in `deploy/rwsafe/contracts`, a call site for the coaching page, and
+  the data plane reasons `PLATFORM_NOT_ALLOWED`, `VENDOR_INSTRUMENT_MISSING` and `PERSONAL_ACCOUNT` (their pages exist).
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
-fingerprints, group claims on Secure ICAP (`docs/operations/LOCAL_RUN.md` lists them). Slice 2 of the data plane (pull
+fingerprints (`docs/operations/LOCAL_RUN.md` lists them). Slice 2 of the data plane (pull
 request 14) added the signed snapshot pull, Secure ICAP with a required client certificate, per-identity and pod-wide
 admission, the body budget, the drain window, the verdict spool with backpressure and fixed-label metrics.
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
 neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeScript rules for `frontend/`; control plane
-later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules and group targeting of
-staged versions (both need a snapshot format with groups), a server-side user settings store for the UI language, the
+later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules, the PO's
+confirmation of the orchestrator's Q-41 decision (withdrawal of a group scope under two approvals), a server-side user
+settings store for the UI language, the
 ratified decision record that mirrors the seed fixture, C3 capture store, the Incidents, Identities and roles and
 Administration screens, Playwright masked-role leak probe, the cluster PostgreSQL Job); the
 Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with them); Trivy image scanning and SBOM (with
