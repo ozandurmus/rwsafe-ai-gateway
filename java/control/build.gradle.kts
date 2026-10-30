@@ -9,7 +9,12 @@ dependencies {
 
     implementation(platform(libs.spring.boot.bom))
     implementation(platform(libs.jackson.bom))
-    implementation(libs.spring.boot.starter.web)
+    // Spring Boot 4 defaults HTTP JSON to Jackson 3 (tools.jackson). The control plane's payloads, annotations and
+    // ObjectMapper uses are Jackson 2 (as in neXus), so Boot's Jackson 2 module supplies the HTTP converter
+    // (spring.http.converters.preferred-json-mapper=jackson2; HttpJsonMapperTest pins it). The Jackson 3 starter is not
+    // excluded because the Maven-portability smoke build refuses exclusions; it stays unused.
+    implementation(libs.spring.boot.starter.webmvc)
+    implementation(libs.spring.boot.jackson2)
     implementation(libs.spring.boot.starter.security)
     implementation(libs.spring.boot.starter.jdbc)
     implementation(libs.unboundid.ldapsdk)

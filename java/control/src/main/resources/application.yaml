@@ -14,12 +14,22 @@ spring:
     hikari:
       maximum-pool-size: 8
       connection-timeout: 5000
-  jackson:
+  http:
+    converters:
+      # Spring Boot 4 defaults to Jackson 3; every payload, annotation and ObjectMapper use here is Jackson 2 (as in
+      # neXus), so HTTP JSON stays on Jackson 2 (spring-boot-jackson2). HttpJsonMapperTest pins it.
+      preferred-json-mapper: jackson2
+  jackson2:
     deserialization:
       fail-on-unknown-properties: true
       fail-on-null-for-primitives: true
     serialization:
       write-dates-as-timestamps: false
+  # The Jackson 3 mapper Boot also builds is unused by HTTP; it is held to the same strictness all the same.
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+      fail-on-null-for-primitives: true
   mvc:
     throw-exception-if-no-handler-found: true
 

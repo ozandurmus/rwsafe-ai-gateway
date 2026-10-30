@@ -6,7 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import org.apache.catalina.connector.Connector;
-import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
+import org.springframework.boot.tomcat.servlet.TomcatServletWebServerFactory;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -33,7 +33,7 @@ public class InternalConnector {
             connector.setPort(properties.captureSink().port());
             connector.setProperty("address", properties.captureSink().bindAddress());
             connector.setMaxPostSize(0);
-            factory.addAdditionalTomcatConnectors(connector);
+            factory.addAdditionalConnectors(connector);
         };
     }
 

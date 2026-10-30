@@ -46,7 +46,7 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(BodyLimitFilter.BodyTooLargeException.class)
     ResponseEntity<ApiError> tooLarge(BodyLimitFilter.BodyTooLargeException e) {
-        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(ApiError.of("BODY_TOO_LARGE",
+        return ResponseEntity.status(HttpStatus.CONTENT_TOO_LARGE).body(ApiError.of("BODY_TOO_LARGE",
             "The request body is larger than this route accepts."));
     }
 

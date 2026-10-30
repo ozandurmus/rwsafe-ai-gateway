@@ -2,18 +2,18 @@ package io.rwsafe.control;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
-import org.springframework.boot.autoconfigure.jooq.JooqAutoConfiguration;
-import org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration;
+import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
 /**
  * Entry point of the {@code rwsafe-control} image (control-plane role, ARCHITECTURE.md §3.2). Flyway and jOOQ are driven
- * by {@code io.rwsafe.persistence.Database}, the only migration and query path, so Spring Boot's own wiring of both is off;
- * so is the generated in-memory user, since the identity package is the only authentication path.
+ * by {@code io.rwsafe.persistence.Database}, the only migration and query path. Spring Boot 4 keeps their
+ * auto-configurations in modules this application does not use; they stay excluded by name so a later dependency cannot
+ * switch them on. The generated in-memory user is off, since the identity package is the only authentication path.
  */
-@SpringBootApplication(exclude = {FlywayAutoConfiguration.class, JooqAutoConfiguration.class,
-    UserDetailsServiceAutoConfiguration.class})
+@SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class, excludeName = {
+    "org.springframework.boot.jooq.autoconfigure.JooqAutoConfiguration",
+    "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration"})
 @ConfigurationPropertiesScan
 public class ControlApplication {
 
