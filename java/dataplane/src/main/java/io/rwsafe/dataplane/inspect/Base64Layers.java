@@ -20,7 +20,7 @@ import java.util.Map;
  * that is not strict UTF-8 goes through every byte view: UTF-8 with NUL removed and invalid sequences replaced, the same
  * with non-text quanta blanked, UTF-16LE and UTF-16BE (PR 17 recheck D-05, D-07; recheck 2 D-09).
  * Every decode and every view is charged to the per-field budget; views are never decoded further, and nothing inside
- * the second decoded layer is decoded (PR 17 recheck 2 D-10).
+ * the third decoded layer is decoded (PR 17 recheck 2 D-10, recheck 3 D-11).
  *
  * <p>The outcome is the findings inside decoded layers (the caller replaces the whole field) and, when one applies, a
  * non-verdict reason; the findings are always kept with it (D-01):
@@ -29,8 +29,8 @@ import java.util.Map;
  *       image signature in a run above {@link #BLOB_LIMIT} characters; the file pipeline (BY-FILE-*) is not built;</li>
  *   <li>{@code UNDECODABLE_BLOB}: a run above {@link #BLOB_LIMIT} characters that is not text and whose Shannon entropy,
  *       the highest over any {@link #BLOB_LIMIT}-character window, is over {@link #ENTROPY_LIMIT} bits per character; a
- *       genuine base64 run inside the second decoded layer ({@link #thirdLayer}); or the per-field decode budget is
- *       spent;</li>
+ *       base64-shaped run inside a reading of the third layer, a fourth layer ({@link #base64Shaped}); or the per-field
+ *       decode budget is spent;</li>
  *   <li>{@code NORMALISATION} and {@code FINDING_LIMIT} as for the outer text; these and a spent budget stop the scan
  *       ({@link Outcome#stops()}), the others let the caller go on inspecting the rest of the body.</li>
  * </ul>
@@ -42,7 +42,8 @@ final class Base64Layers {
 
     /** A bare base64 TCKN is 15 or 16 characters; a shorter run carries at most 8 bytes. */
     static final int MIN_RUN = 12;
-    static final int MAX_DEPTH = 2;
+    /** Layers decoded: a run inside the third decoded layer is a fourth layer and is classified, never decoded. */
+    static final int MAX_DEPTH = 3;
     static final int MAX_DECODED = 2 * 1024 * 1024;
     static final int BLOB_LIMIT = 256;
     static final double ENTROPY_LIMIT = 4.5;
@@ -128,9 +129,10 @@ final class Base64Layers {
 
     private void examine(String run, int pad, int depth) {
         if (depth >= MAX_DEPTH) {
-            // Recheck 2 D-10: the second decoded layer's own words and values are its content (scanned as text); only a
-            // genuine base64 run in it is a third layer. Nothing is decoded at this depth.
-            if (thirdLayer(run, pad)) {
+            // Recheck 3 D-11: runs inside the second layer are decoded once more (a third layer is read and scanned like
+            // any other); a run inside a reading of the third layer that has a real base64 shape is a fourth layer, the
+            // residual blob. Nothing is decoded at this depth.
+            if (base64Shaped(run, pad)) {
                 flag("UNDECODABLE_BLOB");
             }
             return;
@@ -246,7 +248,9 @@ final class Base64Layers {
             return;
         }
         List<Finding> found = new ArrayList<>(detectors.scan(normalised));
-        if (recurse && depth < MAX_DEPTH && !DetectorSet.overLimit(found)) {
+        // A text reading's runs are decoded one layer deeper; a byte view is never decoded further, but inside a reading
+        // of the third layer every reading's runs are classified for a fourth layer (recheck 3 D-11).
+        if ((recurse || depth + 1 >= MAX_DEPTH) && depth < MAX_DEPTH && !DetectorSet.overLimit(found)) {
             int mark = findings.size();
             scan(normalised, depth + 1);
             List<Finding> inner = findings.subList(mark, findings.size());
@@ -268,11 +272,11 @@ final class Base64Layers {
     }
 
     /**
-     * Recheck 2 D-10, Q-1: a run inside the second decoded layer is a third layer only when it looks like real base64:
-     * at least 16 characters with its padding, a valid length, zero unused bits in the last quantum, and both upper- and
-     * lower-case letters. Words ("configuration", "musteri_numarasi") and detector values (an access key, a TCKN) are not.
+     * Recheck 2 D-10, recheck 3 D-11: a run inside a reading of the third layer is a fourth layer when it looks like real
+     * base64: at least 16 characters with its padding, a valid length, zero unused bits in the last quantum, and both
+     * upper- and lower-case letters. Words ("configuration", "musteri_numarasi") and detector values are not.
      */
-    static boolean thirdLayer(String run, int pad) {
+    static boolean base64Shaped(String run, int pad) {
         int n = run.length();
         if (n + pad < 16 || n % 4 == 1 || (pad > 0 && (n + pad) % 4 != 0)) {
             return false;

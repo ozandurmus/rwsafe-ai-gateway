@@ -230,10 +230,12 @@ class BodyDecodingTest {
         assertEquals("UNDECODABLE_BLOB", inspect("Content-Type: text/plain\n", utf8(wrapped)).reason());
     }
 
+    /** Recheck 3 D-11: a third layer is decoded and read; a fourth layer is the residual blob. */
     @Test
-    void thirdLayerIsAResidualBlob() {
+    void fourthLayerIsAResidualBlob() {
         String text = "synthetic release notes for the quarterly review, nothing sensitive at all. ".repeat(4);
-        InspectionResult r = inspect(JSON, utf8(prompt(b64(b64(b64(text))))));
+        assertNull(inspect(JSON, utf8(prompt(b64(b64(b64(text)))))).nonVerdict());
+        InspectionResult r = inspect(JSON, utf8(prompt(b64(b64(b64(b64(text)))))));
         assertEquals(Verdict.UNINSPECTABLE, r.nonVerdict());
         assertEquals("UNDECODABLE_BLOB", r.reason());
         assertNull(inspect(JSON, utf8(prompt(b64(b64(text))))).nonVerdict());
@@ -321,8 +323,11 @@ class BodyDecodingTest {
 
     /** D-02 (2): a third layer that decodes to text is a residual blob at any length. */
     @Test
-    void aReadableThirdLayerIsABlobAtAnyLength() {
-        String[] values = {b64(b64(b64(Synthetic.awsKey()))), b64(b64(b64(Synthetic.tckn(33))))};
+    void aThirdLayerValueIsAFindingAndAFourthLayerIsABlob() {
+        // Recheck 3 D-11: a value in a third layer is an ordinary finding; one more layer is the residual blob.
+        assertTrue(has(inspect(JSON, utf8(prompt(b64(b64(b64(Synthetic.awsKey())))))), DataClass.SECRET));
+        assertTrue(has(inspect(JSON, utf8(prompt(b64(b64(b64(Synthetic.tckn(33))))))), DataClass.TCKN));
+        String[] values = {b64(b64(b64(b64(Synthetic.awsKey())))), b64(b64(b64(b64(Synthetic.tckn(33)))))};
         for (String v : values) {
             assertTrue(v.length() <= 256);
             InspectionResult r = inspect(JSON, utf8(prompt(v)));
@@ -396,12 +401,14 @@ class BodyDecodingTest {
 
     /** D-05 (2): a third layer is a blob whatever it decodes to, a control or invalid byte included. */
     @Test
-    void aThirdLayerIsABlobWhateverItDecodesTo() {
+    void aThirdLayerIsReadThroughEveryView() {
+        // Recheck 3 D-11: a control byte in a third layer is still a finding; an invalid byte before a base64 run in a
+        // third layer leaves a fourth layer (a blob); random bytes in a third layer above 256 characters are a blob.
         String secret = "synthetic " + Synthetic.awsKey();
+        assertTrue(has(inspect(JSON, utf8(prompt(b64(b64(b64(utf8("\u0001" + secret))))))), DataClass.SECRET));
         String[] values = {
-            b64(b64(b64(utf8("\u0001" + secret)))),
             b64(b64(b64(concat(new byte[] {(byte) 0xff}, utf8(b64(secret)))))),
-            b64(b64(b64(random(12, 51)))),
+            b64(b64(b64(random(300, 51)))),
         };
         for (String v : values) {
             InspectionResult r = inspect(JSON, utf8(prompt(v)));
@@ -419,7 +426,7 @@ class BodyDecodingTest {
             "{\"a\":\"" + pdf + "\",\"b\":\"" + blob + "\"}",
             "{\"a\":\"" + blob + "\",\"b\":\"" + pdf + "\"}",
             prompt(pdf + " " + blob),
-            prompt(pdf + " " + b64(b64(b64("synthetic " + Synthetic.awsKey())))),
+            prompt(pdf + " " + b64(b64(b64(b64("synthetic " + Synthetic.awsKey()))))),
         };
         for (String body : bodies) {
             assertEquals("UNDECODABLE_BLOB", inspect(JSON, utf8(body)).reason(), body.substring(0, 20));
@@ -504,7 +511,52 @@ class BodyDecodingTest {
         assertNull(redact.nonVerdict());
         assertTrue(has(redact, DataClass.TCKN));
         assertTrue(new String(redact.redactedBody(), StandardCharsets.UTF_8).contains("[REDACTED:TCKN]"));
-        assertEquals("UNDECODABLE_BLOB", inspect(JSON, utf8(prompt(b64(b64(b64("synthetic note")))))).reason());
+        assertNull(inspect(JSON, utf8(prompt(b64(b64(b64("synthetic note")))))).nonVerdict());
+        assertEquals("UNDECODABLE_BLOB", inspect(JSON, utf8(prompt(b64(b64(b64(b64("synthetic note"))))))).reason());
+    }
+
+    // ---- PR 17 third confirmation review ----
+
+    /** A synthetic TCKN whose base64 has no lower-case letter (upper case and digits only), found at runtime. */
+    static String upperAndDigitTckn() {
+        for (long seed = 1; seed < 1_000_000; seed++) {
+            String t = Synthetic.tckn(seed);
+            String e = b64(t);
+            if (e.chars().noneMatch(c -> c >= 'a' && c <= 'z')) {
+                return t;
+            }
+        }
+        throw new AssertionError("no such synthetic value");
+    }
+
+    /** Recheck 3 D-11: the reviewer's three third-layer forms are findings, not silent allows. */
+    @Test
+    void thirdLayerFormsThatFailTheShapeTestAreFindings() {
+        String tckn = Synthetic.tckn(71);
+        String key = Synthetic.awsKey();
+        // (1) an unpadded 15-character third-layer TCKN
+        assertTrue(has(inspect(JSON, utf8(prompt(b64(b64(b64(tckn).replace("=", "")))))), DataClass.TCKN));
+        // (2) prefixed or suffixed third layers
+        for (String prefix : new String[] {"-", "/", "v1/", "item-", "token_"}) {
+            assertTrue(has(inspect(JSON, utf8(prompt(b64(b64(prefix + b64(key)))))), DataClass.SECRET), prefix);
+            assertTrue(has(inspect(JSON, utf8(prompt(b64(b64(prefix + b64(tckn)))))), DataClass.TCKN), prefix);
+        }
+        assertTrue(has(inspect(JSON, utf8(prompt(b64(b64(b64(key).replace("=", "") + "-"))))), DataClass.SECRET));
+        // (3) a third layer of upper-case letters and digits only
+        String upper = upperAndDigitTckn();
+        assertTrue(b64(upper).chars().noneMatch(c -> c >= 'a' && c <= 'z'));
+        InspectionResult r = inspect(JSON, utf8(prompt(b64(b64(b64(upper))))));
+        assertTrue(has(r, DataClass.TCKN));
+        assertNull(r.nonVerdict());
+    }
+
+    /** Recheck 3 D-11: ordinary second-layer words decode to junk: no finding and no blob. */
+    @Test
+    void secondLayerWordsDecodeToNothing() {
+        String text = "configuration musteri_numarasi internationalization SYNTHETICIDENTIFIER2026 synthetic_release_notes";
+        InspectionResult r = inspect(JSON, utf8(prompt(b64(b64(text)))));
+        assertNull(r.nonVerdict(), r.reason());
+        assertTrue(r.findings().isEmpty());
     }
 
     /** A PNG-signature byte array of {@code n} bytes (a synthetic image header, no real image). */

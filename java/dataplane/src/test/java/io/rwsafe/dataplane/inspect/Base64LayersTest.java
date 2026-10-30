@@ -10,7 +10,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import org.junit.jupiter.api.Test;
 
-/** PR 17 recheck 2 D-10: the work of the layer scan is bounded and linear on nested input, counted in detector passes. */
+/**
+ * PR 17 recheck 2 D-10, recheck 3 D-11: the work of the layer scan is bounded and linear on nested input, counted in
+ * detector passes.
+ */
 class Base64LayersTest {
 
     private static final DetectorSet DETECTORS = DetectorSet.standard();
@@ -52,20 +55,20 @@ class Base64LayersTest {
     }
 
     @Test
-    void secondLayerRunsAreNeverDecoded() {
-        // A third layer is classified, not decoded: its content adds no scan.
-        String third = b64(b64(b64("synthetic third layer content")));
-        Base64Layers.Outcome outcome = Base64Layers.inspect(Normaliser.normalise(third), DETECTORS);
+    void thirdLayerRunsAreNeverDecoded() {
+        // Recheck 3 D-11: three layers are decoded and read; a fourth is classified, not decoded: it adds no scan.
+        String fourth = b64(b64(b64(b64("synthetic fourth layer content"))));
+        Base64Layers.Outcome outcome = Base64Layers.inspect(Normaliser.normalise(fourth), DETECTORS);
         assertEquals("UNDECODABLE_BLOB", outcome.reason());
-        assertEquals(2, outcome.scans(), "one text scan per decoded layer, none below the second");
+        assertEquals(3, outcome.scans(), "one text scan per decoded layer, none below the third");
     }
 
     @Test
-    void thirdLayerNeedsARealBase64Shape() {
-        assertFalse(Base64Layers.thirdLayer("configuration", 0));
-        assertFalse(Base64Layers.thirdLayer("musteri_numarasi", 0));
-        assertFalse(Base64Layers.thirdLayer("ABCDEFGHIJKLMNOPQRST", 0));
-        assertFalse(Base64Layers.thirdLayer("12345678901234567890", 0));
-        assertTrue(Base64Layers.thirdLayer("c3ludGhldGljIG5vdGU", 1));
+    void aFourthLayerNeedsARealBase64Shape() {
+        assertFalse(Base64Layers.base64Shaped("configuration", 0));
+        assertFalse(Base64Layers.base64Shaped("musteri_numarasi", 0));
+        assertFalse(Base64Layers.base64Shaped("ABCDEFGHIJKLMNOPQRST", 0));
+        assertFalse(Base64Layers.base64Shaped("12345678901234567890", 0));
+        assertTrue(Base64Layers.base64Shaped("c3ludGhldGljIG5vdGU", 1));
     }
 }
