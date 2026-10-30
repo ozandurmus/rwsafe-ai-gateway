@@ -4,6 +4,7 @@ import io.rwsafe.control.config.ControlProperties;
 import io.rwsafe.control.identity.Roles;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
+import io.rwsafe.detect.DetectorSet;
 import io.rwsafe.persistence.AuditContext;
 import io.rwsafe.persistence.Database;
 import io.rwsafe.persistence.PolicyRuleVersion;
@@ -17,6 +18,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -42,6 +44,9 @@ public class PolicyRegistryService {
     public static final String ISSUER = "system:snapshot-issuer";
     static final Duration SCHEDULE_INTERVAL = Duration.ofMinutes(5);
     private static final Logger LOG = LoggerFactory.getLogger(PolicyRegistryService.class);
+    /** The platform the data plane names when no platform row matches (the flow classifier's fallback). */
+    public static final String UNKNOWN_PLATFORM = "unknown";
+    private static final DetectorSet DETECTORS = DetectorSet.standard();
     private static final Set<String> APPROVER_ROLES = Set.of(Roles.SECURITY_ADMIN, Roles.PRIVACY_OFFICER);
 
     private final Database database;
@@ -79,6 +84,21 @@ public class PolicyRegistryService {
 
     public List<PolicyRuleVersion> versions() {
         return database.policyRegistry().versions();
+    }
+
+    /**
+     * The platform ids a verdict event or a traffic filter may name (SR-PRIV-4): every platform rule the registry holds,
+     * in any version, and {@link #UNKNOWN_PLATFORM}. Nothing else is a platform.
+     */
+    public Set<String> platformIds() {
+        Set<String> ids = new HashSet<>();
+        ids.add(UNKNOWN_PLATFORM);
+        for (PolicyRuleVersion v : versions()) {
+            if (RegistryVocabulary.KIND_PLATFORM.equals(v.kind()) && v.platformId() != null) {
+                ids.add(v.platformId());
+            }
+        }
+        return ids;
     }
 
     public Optional<IssuedSnapshot> latestSnapshot() {
@@ -146,6 +166,11 @@ public class PolicyRegistryService {
         if (namesEstate(body.reasonCode()) || (kind.equals(RegistryVocabulary.KIND_PLATFORM)
             && namesEstate(ruleId.substring("platform.".length())))) {
             throw estateRefused();
+        }
+        // A platform id is the one free value that becomes ingestion vocabulary: no identifier shape and no long digit
+        // run (a number glued to letters escapes the detectors' boundary rule).
+        if (kind.equals(RegistryVocabulary.KIND_PLATFORM) && carriesIdentifier(ruleId.substring("platform.".length()))) {
+            throw invalid("A platform id is vendor vocabulary; it may not carry an identifier-shaped value.");
         }
         String author = pseudonym(loginName);
         Draft draft = switch (kind) {
@@ -281,6 +306,20 @@ public class PolicyRegistryService {
         for (String term : keys.estateTerms()) {
             String t = letters(term);
             if (!t.isEmpty() && v.contains(t)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean carriesIdentifier(String value) {
+        if (!DETECTORS.scan(value).isEmpty()) {
+            return true;
+        }
+        int run = 0;
+        for (int i = 0; i < value.length(); i++) {
+            run = Character.isDigit(value.charAt(i)) ? run + 1 : 0;
+            if (run >= 6) {
                 return true;
             }
         }

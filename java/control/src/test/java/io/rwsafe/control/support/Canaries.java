@@ -177,7 +177,7 @@ public final class Canaries {
     }
 
     /** The ASCII form a directory login uses. */
-    static String fold(String name) {
+    public static String fold(String name) {
         StringBuilder b = new StringBuilder();
         for (char c : name.toCharArray()) {
             b.append(switch (c) {

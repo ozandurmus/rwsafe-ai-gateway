@@ -73,6 +73,8 @@ class MaskedRoleLeakProbeTest {
     InternalConnector internal;
     @Autowired
     RequestMappingHandlerMapping mapping;
+    @Autowired
+    javax.sql.DataSource dataSource;
 
     /** One response of the walk, under the endpoint template it exercised; {@code session} once signed in. */
     private record Probed(String endpoint, ApiClient.Response response, boolean session) {
@@ -119,18 +121,66 @@ class MaskedRoleLeakProbeTest {
         assertTrue(hits.isEmpty(), "the masked role saw seeded tokens (location class <- canary class): " + hits);
         assertTrue(masked.size() >= 40, "the walk made " + masked.size() + " requests");
 
-        // Positive control: the same walk unmasked sees what a viewer is meant to see, so the probe can see a leak.
+        // Positive control: the same walk unmasked sees what a viewer is meant to see (its own login and name, the
+        // operator's key id naming an estate host), so the probe can see a leak; and nothing refused at ingestion or
+        // pseudonymised there reaches the viewer either.
         Set<String> seenByViewer = new TreeSet<>();
         for (String hit : hits(probe, walk(canaries.viewer))) {
             seenByViewer.add(hit.substring(hit.lastIndexOf(' ') + 1));
         }
-        for (String cls : List.of(Canaries.TCKN, Canaries.TR_IBAN, Canaries.TR_MOBILE, Canaries.PAYMENT_CARD,
-            Canaries.SECRET_SHAPE, Canaries.HOST_NAME, Canaries.GROUP_NAME, Canaries.DIRECTORY_LOGIN, Canaries.TURKISH_NAME)) {
+        for (String cls : List.of(Canaries.HOST_NAME, Canaries.DIRECTORY_LOGIN, Canaries.TURKISH_NAME)) {
             assertTrue(seenByViewer.contains(cls), "the positive control did not see " + cls + ": " + seenByViewer);
         }
-        for (String cls : List.of(Canaries.CLAIM_USER, Canaries.EMAIL, Canaries.DOMAIN_ACCOUNT, Canaries.IPV4)) {
-            assertTrue(!seenByViewer.contains(cls), cls + " reached a screen although it is pseudonymised at ingestion");
+        for (String cls : List.of(Canaries.TCKN, Canaries.TR_IBAN, Canaries.TR_MOBILE, Canaries.PAYMENT_CARD,
+            Canaries.SECRET_SHAPE, Canaries.GROUP_NAME, Canaries.CLAIM_USER, Canaries.EMAIL, Canaries.DOMAIN_ACCOUNT,
+            Canaries.IPV4)) {
+            assertTrue(!seenByViewer.contains(cls), cls + " reached the viewer although ingestion refuses or "
+                + "pseudonymises it: " + seenByViewer);
         }
+    }
+
+    /**
+     * SR-PRIV-4: every traffic filter of the masked role takes a registry vocabulary value or a pseudonym, never a raw
+     * value it could test guesses with against stored data; the refusal echoes nothing.
+     */
+    @Test
+    void theMaskedRolesTrafficFiltersTakeNoRawValue() throws Exception {
+        ObjectNode e = event("claude", "REDACT", canaries.email(canaries.claimants.get(0)), canaries.addresses.get(0));
+        assertEquals(202, new ApiClient(internal.port()).post("/internal/v1/verdict-events", batch(e), false).status());
+        ApiClient masked = signedIn(canaries.masked);
+        List<String> guesses = new ArrayList<>(canaries.tckns);
+        guesses.add("ref" + canaries.tckns.get(0));
+        guesses.add(canaries.ibans.get(0));
+        guesses.add(canaries.mobiles.get(0));
+        guesses.add(canaries.card);
+        guesses.addAll(canaries.hosts);
+        guesses.addAll(canaries.groups);
+        guesses.add(canaries.claimants.get(0).login());
+        guesses.add(canaries.email(canaries.claimants.get(0)));
+        guesses.add(canaries.domainAccount(canaries.claimants.get(0)));
+        guesses.add(Canaries.fold(canaries.claimants.get(0).given()));
+        guesses.addAll(canaries.addresses);
+        LeakProbe probe = canaries.probe();
+        List<String> accepted = new ArrayList<>();
+        Set<String> echoed = new TreeSet<>();
+        for (String filter : List.of("platform", "user", "verdict", "service")) {
+            for (String guess : guesses) {
+                ApiClient.Response r = masked.get("/api/v1/traffic?" + filter + "=" + enc(guess));
+                if (r.status() != 400) {
+                    accepted.add(filter + " answered " + r.status());
+                }
+                probe.scan("GET /api/v1/traffic?" + filter, r.body()).forEach(h -> echoed.add(h.toString()));
+            }
+        }
+        assertTrue(accepted.isEmpty(), "a raw value was accepted as a filter: " + accepted);
+        assertTrue(echoed.isEmpty(), "a refusal echoed the guess: " + echoed);
+
+        // Vocabulary values and pseudonyms work: the screens' own filters stay usable.
+        JsonNode page = masked.get("/api/v1/traffic?platform=claude").body();
+        assertTrue(page.get("items").size() >= 1);
+        String pseudonym = page.get("items").get(0).get("user").asText();
+        assertEquals(200, masked.get("/api/v1/traffic?user=" + enc(pseudonym)).status());
+        assertEquals(200, masked.get("/api/v1/traffic?platform=unknown&verdict=REDACT&service=reqmod").status());
     }
 
     /** Verdict events and a registry change through the real paths, carrying the canaries. */
@@ -141,31 +191,70 @@ class MaskedRoleLeakProbeTest {
             claims.add(canaries.domainAccount(p));
             claims.add(p.displayName());
         }
-        // Every value the ingestion vocabulary accepts in platform, surface and step: identifiers and estate names.
-        List<String> platforms = new ArrayList<>(canaries.tckns);
-        platforms.add(canaries.ibans.get(0).toLowerCase(java.util.Locale.ROOT));
-        platforms.add("tel-" + canaries.mobiles.get(0));
-        platforms.add(canaries.card);
-        platforms.add(canaries.secret);
-        platforms.addAll(canaries.hosts);
-        List<String> surfaces = new ArrayList<>(canaries.groups);
-        surfaces.add(canaries.mobiles.get(1));
-        List<String> steps = List.of(canaries.hosts.get(0), "iban-" + canaries.ibans.get(1).toLowerCase(java.util.Locale.ROOT));
+        // Accepted events: registry platforms and the fixed surface and step enumerations, canary identities.
+        List<String> platforms = List.of("claude", "openai", "copilot", "gemini", "unknown");
+        List<String> surfaces = List.of("web", "api", "ide", "cli", "unknown");
+        List<String> steps = List.of("chat", "upload", "tool_call", "login", "other");
         String[] verdicts = {"ALLOW", "REDACT", "BLOCK"};
         List<ObjectNode> events = new ArrayList<>();
-        for (int i = 0; i < platforms.size() * 2; i++) {
+        for (int i = 0; i < 12; i++) {
             ObjectNode e = event(platforms.get(i % platforms.size()), verdicts[i % verdicts.length],
                 claims.get(i % claims.size()), canaries.addresses.get(i % canaries.addresses.size()));
             e.put("surface", surfaces.get(i % surfaces.size()));
             e.put("step", steps.get(i % steps.size()));
             events.add(e);
         }
-        ApiClient.Response ingested = new ApiClient(internal.port()).post("/internal/v1/verdict-events",
-            batch(events.toArray(ObjectNode[]::new)), false);
+        ApiClient sink = new ApiClient(internal.port());
+        ApiClient.Response ingested = sink.post("/internal/v1/verdict-events", batch(events.toArray(ObjectNode[]::new)),
+            false);
         assertEquals(202, ingested.status(), String.valueOf(ingested.body()));
         assertEquals(events.size(), ingested.body().get("accepted").asInt());
 
+        // Refused events: identifier-shaped values, estate names, a Turkish name and a letter-glued TCKN in platform,
+        // surface or step. Each batch is refused whole and stores nothing; the walk then proves no role sees them.
+        String glued = "ref" + canaries.tckns.get(0);
+        String name = Canaries.fold(canaries.claimants.get(0).given()) + "-"
+            + Canaries.fold(canaries.claimants.get(0).family());
+        List<String> refusedValues = new ArrayList<>(canaries.tckns);
+        refusedValues.add(glued);
+        refusedValues.add(name);
+        refusedValues.add(canaries.ibans.get(0).toLowerCase(java.util.Locale.ROOT));
+        refusedValues.add("tel-" + canaries.mobiles.get(0));
+        refusedValues.add(canaries.mobiles.get(1));
+        refusedValues.add(canaries.card);
+        refusedValues.add(canaries.secret);
+        refusedValues.addAll(canaries.hosts);
+        refusedValues.addAll(canaries.groups);
+        org.springframework.jdbc.core.JdbcTemplate jdbc = new org.springframework.jdbc.core.JdbcTemplate(dataSource);
+        Integer stored = jdbc.queryForObject("SELECT count(*) FROM verdict_event", Integer.class);
+        int refused = 0;
+        for (String field : List.of("platform", "surface", "step")) {
+            for (String value : refusedValues) {
+                ObjectNode e = event("claude", "ALLOW", claims.get(0), canaries.addresses.get(0));
+                e.put(field, value);
+                ApiClient.Response r = sink.post("/internal/v1/verdict-events", batch(e), false);
+                assertEquals(400, r.status(), field);
+                assertEquals("INVALID_EVENT", r.body().get("reason").asText());
+                assertTrue(canaries.probe().scan("ingestion refusal", r.body()).isEmpty(), "the refusal echoed " + field);
+                refused++;
+            }
+        }
+        assertEquals(3 * refusedValues.size(), refused);
+        assertEquals(stored, jdbc.queryForObject("SELECT count(*) FROM verdict_event", Integer.class),
+            "a refused batch stored nothing");
+
         ApiClient admin = signedIn(canaries.admin);
+        // The registry's platform id is the one free value that becomes ingestion vocabulary: an identifier-shaped or
+        // estate-naming id is refused at the draft.
+        String platformDraft = JSON.createObjectNode().put("mode", "monitor").put("rolloutStage", "pilot")
+            .put("reasonCode", "SYNTHETIC_CHANGE").set("hostSuffixes", JSON.createArrayNode().add("vendor.example"))
+            .toString();
+        for (String id : List.of(glued, canaries.tckns.get(1), canaries.hosts.get(0), canaries.card)) {
+            ApiClient.Response r = admin.post("/api/v1/policy/rules/platform." + enc(id) + "/versions", platformDraft,
+                true);
+            assertTrue(r.status() >= 400 && r.status() < 500, "platform draft " + r.status());
+            assertTrue(canaries.probe().scan("draft refusal", r.body()).isEmpty(), "the draft refusal echoed the id");
+        }
         ApiClient officer = signedIn(canaries.officer);
         String draft = JSON.createObjectNode().put("action", "BLOCK").put("mode", "enforce").put("rolloutStage", "all")
             .put("reasonCode", "SYNTHETIC_CHANGE").toString();
@@ -173,6 +262,8 @@ class MaskedRoleLeakProbeTest {
         String approvals = "/api/v1/policy/rules/class.TCKN/versions/2/approvals";
         assertEquals(200, admin.post(approvals, role("security_admin"), true).status());
         assertEquals(200, officer.post(approvals, role("privacy_officer"), true).status());
+        // The data plane's pull issues a snapshot, so the operator's key id (naming an estate host) reaches the screens.
+        assertEquals(200, new ApiClient(internal.snapshotPort()).get("/internal/v1/policy/snapshot").status());
     }
 
     /** Every endpoint of the inventory, with the parameters the screens send, as {@code who}. */

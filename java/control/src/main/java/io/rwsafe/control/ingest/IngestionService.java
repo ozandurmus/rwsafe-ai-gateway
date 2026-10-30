@@ -1,6 +1,6 @@
 package io.rwsafe.control.ingest;
 
-import io.rwsafe.control.api.ReadApiController;
+import io.rwsafe.control.policy.PolicyRegistryService;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
 import io.rwsafe.detect.DetectorSet;
@@ -8,13 +8,16 @@ import io.rwsafe.persistence.Database;
 import io.rwsafe.persistence.FindingCount;
 import io.rwsafe.persistence.StoredVerdictEvent;
 import io.rwsafe.platform.verdict.Verdict;
+import io.rwsafe.policy.Flow;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,21 +36,30 @@ public class IngestionService {
     static final Duration MAX_SKEW = Duration.ofMinutes(5);
     private static final Set<String> TRANSPORTS = Set.of("plain_allowlisted", "mtls_verified");
     private static final DetectorSet DETECTORS = DetectorSet.standard();
+    /** The flow classifier's fixed enumerations (ICAP spec §4.3): nothing else is a surface or a step. */
+    static final Set<String> SURFACES = Set.copyOf(Arrays.stream(Flow.Surface.values())
+        .map(v -> v.name().toLowerCase(Locale.ROOT)).toList());
+    static final Set<String> STEPS = Set.copyOf(Arrays.stream(Flow.Step.values())
+        .map(v -> v.name().toLowerCase(Locale.ROOT)).toList());
 
     private final Database database;
     private final PrivacyKeys keys;
     private final Pseudonymiser pseudonymiser;
+    private final PolicyRegistryService registry;
     private final Clock clock;
 
     @Autowired
-    public IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser) {
-        this(database, keys, pseudonymiser, Clock.systemUTC());
+    public IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser,
+                            PolicyRegistryService registry) {
+        this(database, keys, pseudonymiser, registry, Clock.systemUTC());
     }
 
-    IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser, Clock clock) {
+    IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser, PolicyRegistryService registry,
+                     Clock clock) {
         this.database = database;
         this.keys = keys;
         this.pseudonymiser = pseudonymiser;
+        this.registry = registry;
         this.clock = clock;
     }
 
@@ -62,11 +74,12 @@ public class IngestionService {
             throw new InvalidEventException("a batch holds at most " + MAX_BATCH + " events");
         }
         String keyId = keys.keyId();
+        Set<String> platforms = registry.platformIds();
         Instant now = clock.instant();
         List<StoredVerdictEvent> rows = new ArrayList<>(batch.size());
         Set<UUID> ids = new HashSet<>();
         for (int i = 0; i < batch.size(); i++) {
-            StoredVerdictEvent row = validate(i, batch.get(i), now, keyId);
+            StoredVerdictEvent row = validate(i, batch.get(i), now, keyId, platforms);
             if (ids.add(row.eventId())) {
                 rows.add(row);
             }
@@ -75,7 +88,7 @@ public class IngestionService {
         return new Result(inserted, batch.size() - inserted);
     }
 
-    private StoredVerdictEvent validate(int i, VerdictEventPayload e, Instant now, String keyId) {
+    private StoredVerdictEvent validate(int i, VerdictEventPayload e, Instant now, String keyId, Set<String> platforms) {
         if (e == null) {
             throw new InvalidEventException(i, "event");
         }
@@ -88,9 +101,10 @@ public class IngestionService {
         if (!service.equals("reqmod") && !service.equals("respmod")) {
             throw new InvalidEventException(i, "service");
         }
-        String platform = vocabulary(i, "platform", e.platform(), 64);
-        String surface = vocabulary(i, "surface", e.surface(), 32);
-        String step = vocabulary(i, "step", e.step(), 32);
+        // Registry vocabulary only (SR-PRIV-4): a value outside it could carry an identifier into every screen.
+        String platform = member(i, "platform", e.platform(), platforms);
+        String surface = member(i, "surface", e.surface(), SURFACES);
+        String step = member(i, "step", e.step(), STEPS);
         Verdict verdict;
         try {
             verdict = Verdict.valueOf(require(i, "verdict", e.verdict()));
@@ -147,8 +161,8 @@ public class IngestionService {
         return value;
     }
 
-    private static String vocabulary(int i, String field, String value, int max) {
-        if (value == null || !ReadApiController.vocabulary(value, max)) {
+    private static String member(int i, String field, String value, Set<String> vocabulary) {
+        if (value == null || !vocabulary.contains(value)) {
             throw new InvalidEventException(i, field);
         }
         return value;

@@ -189,9 +189,18 @@ Both run in `:control:test`, so in `unitTest` and the CI `java-tests` job; no wo
   console, the Prometheus text, block and error pages, control-plane answers and every stored row hold no marker, body
   fragment, identity claim or client address (the spool is checked for bodies only: its wire format carries the claim by
   design). The data plane runs on its own Netty line there (strict test constraint in `control/build.gradle.kts`).
+- Closed gaps the probe exposed: ingestion refuses an event whose `platform` is not a platform id of the registry (any
+  version, or `unknown`) or whose `surface` or `step` is not one of the flow classifier's fixed enumerations; the
+  registry refuses a platform id that a Tier-1 detector recognises or that holds a run of six or more digits (a number
+  glued to letters escapes the detectors), on top of the estate check. The traffic platform filter takes only a registry
+  platform id (SR-PRIV-4; the user filter already took only a pseudonym). The probe seeds identifier-shaped values,
+  estate names, a Turkish name and a letter-glued TCKN into those fields and asserts each batch is refused, nothing is
+  stored and no role sees them; `theMaskedRolesTrafficFiltersTakeNoRawValue` asserts every raw guess is refused as a
+  filter without being echoed.
 - Not covered: a browser-level (Playwright) walk of the screens (needs a browser download; the UI reads only the API
   client the probe enumerates); the layer 4 name dictionary and customer numbers (not implemented, so names are seeded
-  only where pseudonymisation applies); third-party loggers below their production levels.
+  only where pseudonymisation applies or where ingestion refuses them); third-party loggers below their production
+  levels.
 
 ## Not done
 
