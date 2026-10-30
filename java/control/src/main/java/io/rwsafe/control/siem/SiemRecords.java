@@ -121,12 +121,15 @@ public final class SiemRecords {
     }
 
     /** The exact key shape of each audited table whose key may leave as written; null: never as written. */
-    enum KeyShape { ACCOUNT, NUMBER, RULE_VERSION, RULE_APPROVAL, DESTINATION }
+    enum KeyShape { ACCOUNT, NUMBER, RULE_VERSION, RULE_APPROVAL, DESTINATION, EVENT_ID }
 
     static KeyShape rowKeyShape(String table) {
         return switch (table == null ? "" : table) {
             case "local_account" -> KeyShape.ACCOUNT;
-            case "login_record", "policy_snapshot" -> KeyShape.NUMBER;
+            case "login_record", "policy_snapshot", "capture_read", "capture_deletion_receipt", "capture_key_event" ->
+                KeyShape.NUMBER;
+            // ADR-009 §4: a deleted capture's event id leaves as written, so the SIEM can purge the same event.
+            case "capture_record", "capture_chunk" -> KeyShape.EVENT_ID;
             case "policy_rule_version" -> KeyShape.RULE_VERSION;
             case "policy_approval" -> KeyShape.RULE_APPROVAL;
             case "siem_watermark" -> KeyShape.DESTINATION;
@@ -142,12 +145,17 @@ public final class SiemRecords {
         if (shape == KeyShape.ACCOUNT) {
             return pseudonym(accountPseudonym, key, true);
         }
+        if (shape == KeyShape.EVENT_ID) {
+            // A random canonical UUID carries no value (its hex groups can look like a card number by chance).
+            return io.rwsafe.control.ingest.IngestionService.canonicalUuid(key) ? key
+                : pseudonym(keyPseudonym, key, false);
+        }
         boolean asWritten = shape != null && !estate(key) && DETECTORS.scan(key).isEmpty() && switch (shape) {
             case NUMBER -> number(key);
             case RULE_VERSION -> ruleVersion(key);
             case RULE_APPROVAL -> ruleApproval(key);
             case DESTINATION -> key.equals("syslog") || key.equals("hec");
-            case ACCOUNT -> false;
+            case ACCOUNT, EVENT_ID -> false;
         };
         return asWritten ? key : pseudonym(keyPseudonym, key, false);
     }

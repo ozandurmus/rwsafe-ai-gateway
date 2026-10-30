@@ -47,7 +47,9 @@ public final class MetricsEndpoint implements AutoCloseable {
                 engine.admission().inflight(), engine.admission().bodyBytesHeld(), engine.admission().identityCapped(),
                 engine.admission().engineFull(), engine.admission().bodyBudgetRejections(), queue.size(),
                 queue.dropped(), shipper.spoolBytes(), p == null ? 0 : p.snapshot().version(), engine.available(),
-                poller == null ? Map.of() : poller.refusals()));
+                poller == null ? Map.of() : poller.refusals()))
+                + PrometheusText.capture(shipper.captureShipped(), shipper.captureStripped(),
+                    shipper.spoolAllowsRedacted());
             byte[] body = text.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
             exchange.sendResponseHeaders(200, body.length);

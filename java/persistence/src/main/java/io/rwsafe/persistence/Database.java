@@ -54,6 +54,11 @@ public final class Database {
         return new VerdictQueries(dsl);
     }
 
+    /** The C3 capture store: sealed records, the read ledger and deletion receipts (V8). */
+    public CaptureStore captures() {
+        return new CaptureStore(dsl);
+    }
+
     public LocalAccountStore localAccounts() {
         return new LocalAccountStore(dsl);
     }

@@ -1,5 +1,7 @@
 package io.rwsafe.control.ingest;
 
+import io.rwsafe.control.capture.CaptureSink;
+import io.rwsafe.control.capture.CapturedContent;
 import io.rwsafe.control.policy.PolicyRegistryService;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
@@ -26,7 +28,8 @@ import org.springframework.stereotype.Service;
 
 /**
  * Validates a batch against the ingestion contract, pseudonymises the identity claim and masks the client address with
- * rwsafe's own key, then stores metadata only (ADR-009 C1/C2/C6). The whole batch is refused when one element is invalid
+ * rwsafe's own key, then stores metadata (ADR-009 C1/C2/C6); an event's optional redacted text goes to the
+ * {@link CaptureSink}, which stores it sealed or drops it (C3). The whole batch is refused when one element is invalid
  * (the data plane's batches are all-or-nothing) and when the key is missing: nothing raw is ever stored.
  */
 @Service
@@ -47,23 +50,34 @@ public class IngestionService {
     private final Pseudonymiser pseudonymiser;
     /** The registry's platform ids, read once per batch. */
     private final Supplier<Set<String>> platformIds;
+    /** Null where no capture sink exists (a test fixture): captured content is then dropped. */
+    private final CaptureSink captureSink;
     private final Clock clock;
 
     @Autowired
     public IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser,
-                            PolicyRegistryService registry) {
-        this(database, keys, pseudonymiser, registry::platformIds, Clock.systemUTC());
+                            PolicyRegistryService registry, CaptureSink captureSink) {
+        this(database, keys, pseudonymiser, registry::platformIds, captureSink, Clock.systemUTC());
     }
 
     /** @param platformIds the platform ids an event may name (the registry's, in the application) */
     public IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser,
                             Supplier<Set<String>> platformIds, Clock clock) {
+        this(database, keys, pseudonymiser, platformIds, null, clock);
+    }
+
+    public IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser,
+                            Supplier<Set<String>> platformIds, CaptureSink captureSink, Clock clock) {
         this.database = database;
         this.keys = keys;
         this.pseudonymiser = pseudonymiser;
         this.platformIds = platformIds;
+        this.captureSink = captureSink;
         this.clock = clock;
     }
+
+    /** The most UTF-8 bytes of one event's captured text (the data plane's ceiling, EngineConfig.MAX_CAPTURE_BYTES). */
+    static final int MAX_CAPTURE_BYTES = 64 * 1024;
 
     public record Result(int accepted, int duplicates) {
     }
@@ -80,13 +94,22 @@ public class IngestionService {
         Instant now = clock.instant();
         List<StoredVerdictEvent> rows = new ArrayList<>(batch.size());
         Set<UUID> ids = new HashSet<>();
+        List<CapturedContent> captures = new ArrayList<>(batch.size());
         for (int i = 0; i < batch.size(); i++) {
             StoredVerdictEvent row = validate(i, batch.get(i), now, keyId, platforms);
+            CapturedContent capture = capture(i, batch.get(i).capture());
             if (ids.add(row.eventId())) {
                 rows.add(row);
+                captures.add(capture);
             }
         }
         int inserted = database.verdictEvents().insert(rows);
+        // Metadata and verdicts are stored first and whatever happens to the content (Q-3: they keep flowing).
+        for (int i = 0; i < rows.size(); i++) {
+            if (captureSink != null && captures.get(i) != null) {
+                captureSink.accept(rows.get(i), captures.get(i));
+            }
+        }
         return new Result(inserted, batch.size() - inserted);
     }
 
@@ -143,6 +166,23 @@ public class IngestionService {
         return new StoredVerdictEvent(eventId, receivedAt, service, platform, surface, step, verdict, reason, findings,
             bodyBytes, decisionMicros, pseudonymiser.user(e.userClaim()), pseudonymiser.subnet(e.clientAddress()),
             transport, snapshotVersion, correlationId, keyId, applied, monitor);
+    }
+
+    /**
+     * The optional {@code capture} object (Q-4 b): text, truncated and redactedBytes all present, the text at most
+     * {@link #MAX_CAPTURE_BYTES} UTF-8 bytes, the size not negative; anything else refuses the batch (the field name only).
+     */
+    private static CapturedContent capture(int i, CapturedContent c) {
+        if (c == null) {
+            return null;
+        }
+        String text = c.text();
+        if (text == null || c.truncated() == null || c.redactedBytes() == null || c.redactedBytes() < 0
+            || text.length() > MAX_CAPTURE_BYTES
+            || text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > MAX_CAPTURE_BYTES) {
+            throw new InvalidEventException(i, "capture");
+        }
+        return c;
     }
 
     static final int MAX_RULE_IDS = 16;

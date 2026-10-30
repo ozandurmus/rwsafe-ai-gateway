@@ -2,6 +2,7 @@ package io.rwsafe.control.config;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -11,9 +12,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties(prefix = "rwsafe")
 public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFeed, Privacy privacy, Identity identity,
-                                Policy policy, Sample sample, Siem siem) {
+                                Policy policy, Sample sample, Siem siem, Capture capture) {
 
     public ControlProperties {
+        capture = capture == null ? new Capture(null, null, null, null, null, null) : capture;
         captureSink = captureSink == null ? new CaptureSink(8092, "127.0.0.1") : captureSink;
         snapshotFeed = snapshotFeed == null ? new SnapshotFeed(8091, "127.0.0.1") : snapshotFeed;
         privacy = privacy == null ? new Privacy(null, null) : privacy;
@@ -92,6 +94,57 @@ public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFe
 
         public boolean configured() {
             return url != null && !url.isBlank();
+        }
+    }
+
+    /**
+     * Redacted capture (PO decisions Q-3, Q-4 b, Q-5; ADR-009 C3, §2-§3).
+     *
+     * @param mode           {@code redacted} stores the redacted text of REDACT verdicts for users with a current notice
+     *                       acknowledgement; anything else (the default {@code off}) stores metadata and verdicts only
+     * @param keyDir         the mounted capture-key Secret: one {@code <key id>.key} file per key (base64 of 32 bytes), an
+     *                       {@code active} file naming the key new material is wrapped under, an optional
+     *                       {@code shredded} list; never the privacy key
+     * @param storeDir       the capture store's own volume (ADR-009: content lives outside PostgreSQL)
+     * @param maxStoreBytes  ADR-009 §3 MAX_STORE_BYTES (80 GiB): above it the oldest records are evicted
+     * @param retention      how long a record lives from the event's time, at most 90 days (Q-5)
+     * @param watermarkPaths further paths the breaker watches besides {@code storeDir} (the database volume's
+     *                       filesystem; on k3s local-path any path of the node's root filesystem)
+     */
+    public record Capture(String mode, Path keyDir, Path storeDir, Long maxStoreBytes, Duration retention,
+                          List<Path> watermarkPaths) {
+
+        public static final Duration MAX_RETENTION = Duration.ofDays(90);
+        public static final long DEFAULT_MAX_STORE_BYTES = 80L * 1024 * 1024 * 1024;
+
+        public Capture {
+            mode = mode == null ? "off" : mode;
+            storeDir = storeDir == null ? Path.of("/var/lib/rwsafe/capture") : storeDir;
+            maxStoreBytes = maxStoreBytes == null ? DEFAULT_MAX_STORE_BYTES : maxStoreBytes;
+            retention = retention == null ? MAX_RETENTION : retention;
+            watermarkPaths = watermarkPaths == null ? List.of() : List.copyOf(watermarkPaths);
+            if (retention.isNegative() || retention.isZero() || retention.compareTo(MAX_RETENTION) > 0) {
+                throw new IllegalArgumentException("rwsafe.capture.retention is between 1 s and 90 days (Q-5)");
+            }
+            if (maxStoreBytes < 1) {
+                throw new IllegalArgumentException("rwsafe.capture.max-store-bytes is positive");
+            }
+        }
+
+        public boolean redacted() {
+            return "redacted".equals(mode);
+        }
+
+        /** The paths the watermark breaker reads: the store's volume first, then the configured ones. */
+        public List<Path> watchedPaths() {
+            List<Path> out = new java.util.ArrayList<>();
+            out.add(storeDir);
+            for (Path p : watermarkPaths) {
+                if (!out.contains(p)) {
+                    out.add(p);
+                }
+            }
+            return List.copyOf(out);
         }
     }
 

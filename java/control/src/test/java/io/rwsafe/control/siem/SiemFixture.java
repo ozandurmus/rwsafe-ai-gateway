@@ -29,7 +29,7 @@ final class SiemFixture {
         db = Database.migrateAndOpen(dataSource);
         ControlProperties props = new ControlProperties(null, null, new ControlProperties.Privacy(
             ControlTestEnvironment.dir().resolve("key"), ControlTestEnvironment.dir().resolve("dictionary.txt")), null,
-            null, null, null);
+            null, null, null, null);
         keys = new PrivacyKeys(props);
         pseudonymiser = new Pseudonymiser(keys);
         // This database is migrated but not seeded, so the registry holds no platform row: the fixture names the one
@@ -57,7 +57,7 @@ final class SiemFixture {
             ids.add(id);
             batch.add(new VerdictEventPayload(id, Instant.now().minusSeconds(1).toString(), "reqmod", "openai", "web",
                 "chat", "BLOCK", "customer_data", List.of(new VerdictEventPayload.FindingPayload("TCKN", 1)), 512L, 120L,
-                userClaim, clientAddress, "mtls_verified", 3L, id, List.of(), List.of()));
+                userClaim, clientAddress, "mtls_verified", 3L, id, List.of(), List.of(), null));
         }
         ingestion.ingest(batch);
         return ids;

@@ -54,6 +54,23 @@ class MaskedRoleLeakProbeTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static Canaries canaries;
+    /** The capture store's volume reads as nearly empty, whatever the build machine's disk holds. */
+    @org.springframework.boot.test.context.TestConfiguration
+    static class Disk {
+        @org.springframework.context.annotation.Bean
+        @org.springframework.context.annotation.Primary
+        io.rwsafe.control.capture.DiskUsageProbe lowUsage() {
+            return new io.rwsafe.control.capture.DiskUsageProbe() {
+                @Override
+                public double usedFraction(Path path) {
+                    return 0.10;
+                }
+            };
+        }
+    }
+
+    /** The events seeded with redacted capture (PR 25). */
+    private final List<String> capturedIds = new ArrayList<>();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry r) throws Exception {
@@ -62,6 +79,15 @@ class MaskedRoleLeakProbeTest {
         Path dictionary = Files.createTempFile(ControlTestEnvironment.dir(), "probe-estate", ".txt");
         Files.writeString(dictionary, canaries.estateDictionary());
         ControlTestEnvironment.register(r, true, dictionary, canaries.signingKeyId);
+        // Redacted capture on (PR 25), with a capture key generated at runtime and a store of its own.
+        Path captureKeys = Files.createTempDirectory(ControlTestEnvironment.dir(), "probe-capture-keys");
+        byte[] captureKey = new byte[32];
+        new java.security.SecureRandom().nextBytes(captureKey);
+        Files.writeString(captureKeys.resolve("cap-probe.key"), java.util.Base64.getEncoder().encodeToString(captureKey));
+        Path captureStore = Files.createTempDirectory(ControlTestEnvironment.dir(), "probe-capture-store");
+        r.add("rwsafe.capture.mode", () -> "redacted");
+        r.add("rwsafe.capture.key-dir", captureKeys::toString);
+        r.add("rwsafe.capture.store-dir", captureStore::toString);
         // The end-user notice's runtime values (PR 22): complete, so the notice renders with them.
         r.add("RWSAFE_ENDUSER_CONTROLLER_NAME", () -> canaries.noticeController);
         r.add("RWSAFE_ENDUSER_DPO_CONTACT", () -> canaries.noticeContact);
@@ -145,6 +171,21 @@ class MaskedRoleLeakProbeTest {
         assertTrue(acknowledged > 0, "the masked walk read no acknowledgement records");
         assertTrue(hits.isEmpty(), "the masked role saw seeded tokens (location class <- canary class): " + hits);
         assertTrue(masked.size() >= 40, "the walk made " + masked.size() + " requests");
+
+        // Captured content (PR 25): refused to the masked role on the read route, and nowhere else on its walk; the
+        // positive control is a security_admin read with a reason, which does show the seeded name.
+        for (Probed p : masked) {
+            if (p.endpoint().equals("POST /api/v1/captures/{}/read")) {
+                assertEquals(403, p.response().status());
+                assertEquals("FORBIDDEN", p.response().body().path("reason").asText(), "refused by the security chain");
+            }
+        }
+        ApiClient.Response read = signedIn(canaries.admin).post("/api/v1/captures/" + capturedIds.get(0) + "/read",
+            JSON.createObjectNode().put("reasonCode", "INCIDENT_INVESTIGATION").put("caseId", "CASE-PROBE").toString(),
+            true);
+        assertEquals(200, read.status(), String.valueOf(read.body()));
+        assertTrue(probe.scan("capture read", read.body()).stream()
+            .anyMatch(h -> h.canaryClass().equals(Canaries.TURKISH_NAME)), "the stored capture holds the seeded name");
 
         // Positive control (PR 24 review D-03): the same walk unmasked must see every canary class, so the masked
         // walk's zero hits mean the masking held, not that the probe was blind. Classes no real viewer surface holds
@@ -351,6 +392,24 @@ class MaskedRoleLeakProbeTest {
         assertEquals(404, new ApiClient(internal.snapshotPort()).post(intake, acks.toString(), false).status(),
             "not on the snapshot feed");
 
+        // Redacted capture (PR 25): REDACT events of acknowledged claimants carry text with a claimant's Turkish name
+        // (no Tier-1 detector and no slice-1 masking layer touches a name, so it is stored as it is); the walk then
+        // proves the masked role and the viewer never reach it, and the admin's read proves it is there.
+        List<ObjectNode> captured = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            ObjectNode e = event("claude", "REDACT", claims.get(i), canaries.addresses.get(0));
+            String text = "{\"prompt\":\"" + canaries.claimants.get(i % canaries.claimants.size()).displayName()
+                + " asks about [REDACTED:TCKN]\"}";
+            e.putObject("capture").put("text", text).put("truncated", false).put("redactedBytes", text.length());
+            captured.add(e);
+            capturedIds.add(e.get("eventId").asText());
+        }
+        ApiClient.Response withCapture = sink.post("/internal/v1/verdict-events",
+            batch(captured.toArray(ObjectNode[]::new)), false);
+        assertEquals(202, withCapture.status(), String.valueOf(withCapture.body()));
+        assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM capture_record", Integer.class),
+            "the probe's captures are stored");
+
         // The registry's platform id is the one free value that becomes ingestion vocabulary: an identifier-shaped or
         // estate-naming id is refused at the draft.
         String platformDraft = JSON.createObjectNode().put("mode", "monitor").put("rolloutStage", "pilot")
@@ -502,6 +561,16 @@ class MaskedRoleLeakProbeTest {
             out.add(get(c, "GET /api/v1/traffic/{}", "/api/v1/traffic/" + id));
         }
         out.add(get(c, "GET /api/v1/traffic/{}", "/api/v1/traffic/" + java.util.UUID.randomUUID()));
+        // The capture read (PR 25): every seeded capture and every event, with a reason and a case id; the masked role
+        // and the viewer are refused by the security chain, which ledgers the refusal.
+        String readBody = JSON.createObjectNode().put("reasonCode", "INCIDENT_INVESTIGATION").put("caseId", "CASE-PROBE")
+            .toString();
+        Set<String> readIds = new LinkedHashSet<>(capturedIds);
+        readIds.addAll(eventIds);
+        for (String id : readIds) {
+            out.add(new Probed("POST /api/v1/captures/{}/read", c.post("/api/v1/captures/" + id + "/read", readBody,
+                true)));
+        }
 
         out.add(get(c, "GET /api/v1/health", "/api/v1/health"));
         out.add(get(c, "GET /api/v1/notice", "/api/v1/notice"));

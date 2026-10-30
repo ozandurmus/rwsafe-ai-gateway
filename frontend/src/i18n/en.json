@@ -142,6 +142,8 @@
   "health.component.ingestion": "Ingestion",
   "health.component.dataplane": "Data plane",
   "health.component.snapshot-feed": "Policy snapshot feed",
+  "health.component.capture": "Redacted capture",
+  "health.component.capture-watermark": "Disk watermark",
   "health.component.siem": "SIEM export",
   "policies.title": "Policies",
   "policies.snapshot": "Active snapshot v{version} · {id} · issued {time} · signing key {keyId}",

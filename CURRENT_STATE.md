@@ -325,6 +325,53 @@ Configuration and residuals: `docs/operations/LOCAL_RUN.md` "SIEM export". The r
   job, the `RWSAFE_ENDUSER_*` ConfigMap contract in `deploy/rwsafe/contracts`, a call site for the coaching page, and
   the data plane reasons `PLATFORM_NOT_ALLOWED`, `VENDOR_INSTRUMENT_MISSING` and `PERSONAL_ACCOUNT` (their pages exist).
 
+## Done (redacted capture, branch `feature/redacted-capture`)
+
+ROADMAP "Capture in redacted mode (Q-4 b)", acceptance SR-PRIV-10, SR-PRIV-11, SR-HOST-2. Off by default on both sides
+(`RWSAFE_CAPTURE_MODE=redacted` turns it on); `docs/operations/LOCAL_RUN.md` "Redacted capture".
+
+- Data plane: a REDACT verdict event (REQMOD and whole-body RESPMOD) carries the body the engine already rewrote
+  (`CapturedText`: the redaction's array wrapped on the request thread, decoded and bounded to 32 KiB by default, at
+  most 64 KiB, on the shipper thread); BLOCK, ALLOW, non-verdicts and stream aborts carry none. Same queue and spool;
+  posted arrays are cut to 512 Ki characters (under the 2 MiB ingestion cap); the spool keeps the text only below the
+  Q-3 redacted watermark of its filesystem, otherwise it spools metadata only and counts it (Prometheus
+  `icap_capture_*`). The `capture` object is written only when present, so other events keep the earlier field set.
+- Shared breaker `platform.capacity.WatermarkBreaker`: raw off at 75 %, redacted off at 85 %, resume 5 points lower
+  (hysteresis is this lane's choice), no reading for 5 minutes trips it.
+- Control plane `control.capture`: the sink stores content only for a REDACT verdict of a user with an acknowledgement
+  of the current notice (`NoticeAcknowledgementService.contentCaptureAllowed`, PR 22), below the store volume's
+  watermark (read every 30 s), when no Tier-1 detector hits the text (raw and normalised), after the masking layers ran
+  at persistence; everything else is dropped with a counted reason while metadata and verdicts are stored.
+- Storage per ADR-009 §2-§3 (PO decision on the PR 25 review, Q-1): content lives outside PostgreSQL in the capture
+  store on its own volume (`RWSAFE_CAPTURE_STORE_DIR`), as content-defined chunks (8-64 KiB, Gear hash) addressed by a
+  keyed HMAC and stored once (reference-counted); each chunk is AES-256-GCM under its own data key (per chunk, not per
+  record, because a deduplicated chunk is shared); a per-record key's HMAC binds event id, user, capture and expiry
+  times, truncation, rule set, size and the ordered chunk list. MAX_STORE_BYTES (80 GiB) evicts the oldest records
+  without a hold, receipted. Expiry counts from the event's own time, at most 90 days.
+- Keys (Q-3): the capture key is its own Secret (`<id>.key`, `active`, optional `shredded` list). A planned rotation
+  re-wraps every live or held record key and chunk key under the active key (`REWRAP` key events, content never
+  decrypted); emergency crypto-shredding is a listed key: its records are deleted with a `KEY_SHREDDED` receipt and an
+  `EMERGENCY_SHRED` key event. Maintenance (retention, cap, re-wrap, shred, orphan-file sweep) runs in the protected
+  windows. Health shows `capture` (bytes against the cap, records under older keys) and `capture-watermark`.
+- Migration V8: `capture_record`, `capture_manifest`, `capture_chunk`, `capture_store_usage` (metadata, wrapped keys and
+  references only; immutable except hold and wrapping; deletes and re-wraps ledgered), `capture_read`,
+  `capture_deletion_receipt` and `capture_key_event` (append-only, ledgered; the SIEM export reads the ledger).
+- Read route `POST /api/v1/captures/{eventId}/read`: MVP reader roles `security_admin` and `privacy_officer` (PO
+  decision Q-2 on the PR 25 review), `DSAR` for `privacy_officer` only, reason code and case id; every request
+  ledgered, refusals included, `SERVED` only after the record opened; expired records are never served; the text is
+  framed inert (C0/C1, the full Bidi_Control set, U+2028/2029); the masked projection withholds it. The API-level
+  leak probe (PR 24) walks the route with seeded captures as the masked role and the viewer (refused by the security chain and ledgered, nothing seen;
+  an admin read is its positive control); a capture test proves no log line carries content. Deletions reach the SIEM
+  as exported ledger rows (PR 23) keyed by the event id.
+- Second review (Argon, `docs/reviews/PR25_2026_10_31_ARGON_REDACTED_CAPTURE.md`), answered by id in
+  `docs/reviews/PR25_2026_10_31_RESPONSE.md`; the confirmation review (`PR25_2026_10_31_ARGON_REDACTED_CAPTURE_RECHECK.md`)
+  closed everything and its D-08 (dedup decided again inside the insert) and D-09 (re-wrap from mounted keys only)
+  are fixed. The migration is V8 (after V7).
+- Open: ADR-009 gaps listed in the response (C5 special-category flag, masking layers 4 and 5 at persistence, legal
+  hold and DSAR APIs, restore-time receipt replay, the worker module); deploy wiring (the capture PVC, the capture-key
+  Secret, `RWSAFE_CAPTURE_*` in the ConfigMaps and contracts); the screen that opens a record; persisted skip
+  counters.
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
@@ -336,13 +383,13 @@ neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeSc
 later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules, the PO's
 confirmation of the orchestrator's Q-41 decision (withdrawal of a group scope under two approvals), a server-side user
 settings store for the UI language, the
-ratified decision record that mirrors the seed fixture, C3 capture store, the Incidents, Identities and roles and
-Administration screens, a browser-level (Playwright) masked-role leak probe on top of the API-level one, the cluster PostgreSQL Job); the
-Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with them); Trivy image scanning and SBOM (with
-the first image, ship pipeline). SIEM export, later: the Deployment's environment and volume wiring with the NetworkPolicy
-egress to the SIEM (deploy lane), the 9400 metrics listener, a client certificate towards the SIEM, deletion events
-(ADR-009 §4, with the retention job), the raw-access SIEM copy (with raw access), and one QRadar test event per format to
-clear the LEEF UNVERIFIED marks.
+ratified decision record that mirrors the seed fixture, the C4 raw capture and its grants, the Incidents, Identities
+and roles and Administration screens, a browser-level (Playwright) masked-role leak probe on top of the API-level one,
+the cluster PostgreSQL Job); the Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with
+them); Trivy image scanning and SBOM (with the first image, ship pipeline). SIEM export, later: the Deployment's
+environment and volume wiring with the NetworkPolicy egress to the SIEM (deploy lane), the 9400 metrics listener, a
+client certificate towards the SIEM, the raw-access SIEM copy (with raw access), and one QRadar test event per format to
+clear the LEEF UNVERIFIED marks (capture deletions reach the SIEM as exported ledger rows: "Done (redacted capture)").
 
 ## Next (ROADMAP phase 0, in this order)
 

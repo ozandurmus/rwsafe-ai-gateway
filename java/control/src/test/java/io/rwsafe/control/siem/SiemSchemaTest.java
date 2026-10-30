@@ -110,6 +110,11 @@ class SiemSchemaTest {
         assertEquals("platform.openai@v3", rowKey(records, "policy_rule_version", "platform.openai@v3"));
         assertEquals("42", rowKey(records, "login_record", "42"));
         assertEquals("hec", rowKey(records, "siem_watermark", "hec"));
+        // PR 25, ADR-009 §4: a capture deletion reaches the SIEM with the event id it can purge, and its receipt number.
+        String eventId = java.util.UUID.randomUUID().toString();
+        assertEquals(eventId, rowKey(records, "capture_record", eventId));
+        assertEquals("7", rowKey(records, "capture_deletion_receipt", "7"));
+        assertEquals("KEY-cdcd", rowKey(records, "capture_record", EMAIL), "anything but a UUID is pseudonymised");
         String[] identities = {EMAIL, "host-01.example.test", "192.0.2.10", "2001:db8::10",
             "synthetic.account", "someaccount", "first last", io.rwsafe.control.support.Synthetic.tckn(4)};
         for (String table : new String[] {"some_future_table", "login_record", "policy_snapshot"}) {
