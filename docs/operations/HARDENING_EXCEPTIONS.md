@@ -11,8 +11,8 @@ its findings are folded in below.
 | ID | Exception | Reason | Source | Destination | Duration | If refused |
 |---|---|---|---|---|---|---|
 | H-1 | Inbound TCP **1344** (ICAP) and **11344** (Secure ICAP) on the node's host firewall | ProxySG must reach rwsafe's ICAP Service (ServiceLB on the node address) | **only the ProxySG appliances' addresses** (the proxy team supplies them; they live in the uncommitted `rwsafe-estate` ConfigMap and in the nftables set, never in the repository) | HOST-A node address | permanent while the product is in service; reviewed yearly | no inline inspection: the product cannot do jobs 1–3 |
-| H-2 | Pilot only: plain ICAP on 1344 without TLS | Secure ICAP needs the ProxySG client certificate and SGOS support (UNVERIFIED for the installed version). **Recommendation after the freeze council (Q-E, Q-28): Secure ICAP from day one**; this exception is kept only for the case that the certificate cannot be issued before the pilot, and it never coexists with REQMOD fail-open | ProxySG addresses | node 1344 | **maximum 30 days**, then 1344 closed | pilot delayed until mTLS is in place |
-| H-3 | Inbound UDP **1161** (SNMP agent), or a host firewall redirect 161→1161 | the corporate NMS polls rwsafe health by SNMP (brief 5F) | the NMS addresses | node | permanent | SNMP polling unavailable; health is still exposed over HTTPS and syslog |
+| H-2 | Pilot only: plain ICAP on 1344 without TLS | Secure ICAP needs the ProxySG client certificate and SGOS support (UNVERIFIED for the installed version). **Approved by the PO (Q-28, `PO_DECISION_RECORD_2026_10_30_REMAINING_OPEN_QUESTIONS.md`)**: the pilot may start on plain ICAP for at most 30 days while the certificate is issued; during that time REQMOD runs **fail-closed**, and the fail-open measurement window starts only after Secure ICAP is on (council Q-E kept) | ProxySG addresses | node 1344 | **maximum 30 days**, then 1344 closed | pilot delayed until mTLS is in place |
+| H-3 | Host firewall redirect **161→1161** (PO decision Q-27, `PO_DECISION_RECORD_2026_10_30_REMAINING_OPEN_QUESTIONS.md`): the NMS polls the standard port 161, nftables NAT redirects it to the unprivileged 1161 the pod binds | the corporate NMS polls rwsafe health by SNMP (brief 5F) | the NMS addresses | node | permanent | SNMP polling unavailable; health is still exposed over HTTPS and syslog |
 | H-4 | Outbound TCP **6514** (syslog over TLS) or UDP/TCP 514 from rwsafe pods to the SIEM | SIEM export (brief 5B, 10.4) | rwsafe worker pods | the SIEM collector | permanent | no SIEM export; the audit stays local |
 | H-5 | Outbound TCP 389/636 (LDAP/LDAPS) from the control plane to the directory | LDAP/AD login and group-to-role binding | rwsafe control pod | the directory servers (through the same path neXus already uses) | permanent | local break-glass accounts only |
 | H-6 | Outbound HTTPS from the **gateway** pods to the AI platforms' API endpoints **through the corporate proxy** | the LLM API gateway forwards governed requests upstream | rwsafe gateway pods | the corporate proxy (which applies its own egress policy) | permanent | no LLM API gateway (job 4) |
@@ -77,7 +77,8 @@ In `deploy/hosta/nexus-host-firewall.nft` (template; real addresses only in `/et
     }
     ...
         tcp dport { 1344, 11344 } ip saddr @icap_clients accept
-        udp dport 1161 ip saddr @nms_pollers accept        # only if H-3 is approved
+        udp dport 1161 ip saddr @nms_pollers accept        # H-3 approved (Q-27)
+    # nat prerouting: udp dport 161 ip saddr @nms_pollers redirect to :1161   (H-3, Q-27)
 ```
 
 Applied with the same 5-minute automatic-rollback discipline the neXus hardening record used.

@@ -35,8 +35,9 @@ decided by the **flow's policy**, not by a class the engine could not detect.
 | uncategorised domains and selected broad categories (OFF2-5, Q-30) | **fail open**, REQMOD in **header-only metadata mode** (no body capture, 30-day retention) to detect relays and new AI hosts by request shape | discovery, not enforcement |
 | any other category | not sent to rwsafe | the privacy seat's scope concern |
 
-The pilot order is **Secure ICAP first, then the fail-open measurement window** (Q-E, Q-28 recommendation changed to
-Secure ICAP from day one); a plain-ICAP pilot and REQMOD fail-open never run at the same time. The switch to fail closed
+The pilot order is **Secure ICAP first, then the fail-open measurement window** (Q-E). The PO allowed a plain-ICAP start
+for at most 30 days under exception H-2, with REQMOD fail-closed throughout (Q-28, `PO_DECISION_RECORD_2026_10_30_REMAINING_OPEN_QUESTIONS.md`); a plain-ICAP pilot and
+REQMOD fail-open never run at the same time. The switch to fail closed
 is a recorded ProxySG change (ROADMAP phase 1 acceptance).
 
 ### 3. rwsafe side
