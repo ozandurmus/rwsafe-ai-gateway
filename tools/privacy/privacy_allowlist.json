@@ -7,6 +7,13 @@
       "reason": "Unaltered external review (AGENTS.md 11) names the RFC 1918 private network ranges in prose (finding D-01); no host address",
       "owner": "orchestrating ENGINEER session",
       "review_date": "2027-01-31"
+    },
+    {
+      "rule": "GITLEAKS_BYPASS",
+      "path": "docs/reviews/PR6_2026_10_30_ARGON_PRIVACY_GATE.md",
+      "reason": "Unaltered external review (AGENTS.md 11) names the gitleaks inline-allow marker in prose (finding D-04); no secret",
+      "owner": "orchestrating ENGINEER session",
+      "review_date": "2027-01-31"
     }
   ]
 }
