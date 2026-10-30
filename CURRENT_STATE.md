@@ -75,8 +75,9 @@ Public GitHub repository with branch protection; pull requests 1, 2 (decisions a
 Mark the five `validation` jobs (`privacy-gate`, `gitleaks`, `java-tests`, `maven-portability`, `security-scans`) as
 required status checks on `main` (none is required today). Every open question is decided except the information
 requests Q-17, Q-23, Q-25 (`docs/design/PO_DECISION_RECORD_2026_10_30_*`). The PO is the proxy administrator and runs the
-ProxySG and Broadcom steps from `docs/operations/PROXYSG_PHASE0_GUIDE.md` (Q-20, Q-21); the session records the returned
-answers. Lab tenant
+ProxySG and Broadcom steps from `docs/operations/PROXYSG_PHASE0_GUIDE.md` (Q-20, Q-21); the session asks the PO and records the answers
+in `docs/operations/PHASE0_PROXYSG_RECORD.md` (first pass 2026-10-30: appliances, identity format, interception, QUIC,
+tenant restrictions). Lab tenant
 procurement (Q-34). Approvers and DPO identity (Q-5). Governance is settled: pull request 2 merged;
 `.claude/settings.json` committed; AGENTS.md section 1 (reviews as evidence) and section 9 (standing push/PR/merge
 authorisation) amended; the Git-authority decision record RATIFIED; `main` requires a pull request and zero approving
