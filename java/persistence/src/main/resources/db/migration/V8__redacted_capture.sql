@@ -1,4 +1,4 @@
--- V6: redacted capture (ADR-009 C3 and §2-§5; PO decisions Q-3, Q-4 b, Q-5; SR-PRIV-10, SR-PRIV-11, SR-HOST-2;
+-- V8: redacted capture (ADR-009 C3 and §2-§5; PO decisions Q-3, Q-4 b, Q-5; SR-PRIV-10, SR-PRIV-11, SR-HOST-2;
 -- AGENTS.md 4.13). ADR-009 rejects bodies in PostgreSQL: the redacted text lives in the capture store, a directory on
 -- its own volume (RWSAFE_CAPTURE_STORE_DIR), as content-defined chunks (8-64 KiB), each encrypted with AES-256-GCM under
 -- a data key of its own. PostgreSQL holds only metadata: the record, its manifest (record -> ordered chunk list), each

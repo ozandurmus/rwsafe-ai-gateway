@@ -353,7 +353,7 @@ ROADMAP "Capture in redacted mode (Q-4 b)", acceptance SR-PRIV-10, SR-PRIV-11, S
   decrypted); emergency crypto-shredding is a listed key: its records are deleted with a `KEY_SHREDDED` receipt and an
   `EMERGENCY_SHRED` key event. Maintenance (retention, cap, re-wrap, shred, orphan-file sweep) runs in the protected
   windows. Health shows `capture` (bytes against the cap, records under older keys) and `capture-watermark`.
-- Migration V6: `capture_record`, `capture_manifest`, `capture_chunk`, `capture_store_usage` (metadata, wrapped keys and
+- Migration V8: `capture_record`, `capture_manifest`, `capture_chunk`, `capture_store_usage` (metadata, wrapped keys and
   references only; immutable except hold and wrapping; deletes and re-wraps ledgered), `capture_read`,
   `capture_deletion_receipt` and `capture_key_event` (append-only, ledgered; the SIEM export reads the ledger).
 - Read route `POST /api/v1/captures/{eventId}/read`: MVP reader roles `security_admin` and `privacy_officer` (PO

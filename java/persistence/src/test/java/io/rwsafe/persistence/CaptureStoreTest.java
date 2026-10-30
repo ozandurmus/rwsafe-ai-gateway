@@ -22,7 +22,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * V6 (ADR-009 C3, §2-§4; AGENTS.md 4.13): metadata only, chunks content-addressed and stored once with exact reference
+ * V8 (ADR-009 C3, §2-§4; AGENTS.md 4.13): metadata only, chunks content-addressed and stored once with exact reference
  * counts and a byte counter, records immutable except hold and wrapping, every deletion receipted and ledgered, expired
  * records never found, retention at most 90 days, the byte cap evicts oldest first, re-wrap and emergency shredding are
  * key events.

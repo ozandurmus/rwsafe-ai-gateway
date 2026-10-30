@@ -52,7 +52,7 @@ class SchemaMatchesMigrationsTest {
     }
 
     /**
-     * V6, ADR-009 "bodies in PostgreSQL: rejected": the capture tables hold no content column at all; their only text
+     * V8, ADR-009 "bodies in PostgreSQL: rejected": the capture tables hold no content column at all; their only text
      * columns are a pseudonym, key ids, a keyed address and a rule-set version, their only binary columns fixed-size
      * wrapped keys and a MAC. The chunk bytes live on the capture volume.
      */

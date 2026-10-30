@@ -35,7 +35,7 @@ import org.springframework.stereotype.Component;
 @Component
 public final class CaptureVault {
 
-    /** At most this many bytes of redacted text per record after masking (V6). */
+    /** At most this many bytes of redacted text per record after masking (V8). */
     static final int MAX_PLAIN_BYTES = 262_144;
 
     private final CaptureKeyring keys;

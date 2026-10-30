@@ -19,7 +19,7 @@ import org.jooq.Record;
 import org.jooq.impl.DSL;
 
 /**
- * The C3 capture store's metadata (ADR-009 §2-§4; V6): records, their manifests (record -> ordered chunks), the chunks'
+ * The C3 capture store's metadata (ADR-009 §2-§4; V8): records, their manifests (record -> ordered chunks), the chunks'
  * keyed content addresses, wrapped data keys and reference counts, the byte counter, the read ledger, deletion receipts
  * and key events. The chunk bytes are files on the capture volume, written and read by the control plane; this module
  * holds no plaintext, no ciphertext and no key. Retention, the byte cap and emergency shredding share one deletion path
@@ -27,7 +27,7 @@ import org.jooq.impl.DSL;
  */
 public final class CaptureStore {
 
-    /** The most records one deletion pass removes (one receipt each, V6 bound). */
+    /** The most records one deletion pass removes (one receipt each, V8 bound). */
     public static final int MAX_DELETE = 1000;
     static final String RETENTION_ACTOR = "system:capture-retention";
     static final String KEYS_ACTOR = "system:capture-keys";
@@ -181,8 +181,8 @@ public final class CaptureStore {
      * Ledgers one read request (AGENTS.md 4.13) under the reader's pseudonym, in its own transaction; when this fails
      * nothing is served.
      *
-     * @param reasonCode one of the V6 reason codes, {@code NONE} for a request without one
-     * @param outcome    one of the V6 outcomes; {@code SERVED} only after the record opened
+     * @param reasonCode one of the V8 reason codes, {@code NONE} for a request without one
+     * @param outcome    one of the V8 outcomes; {@code SERVED} only after the record opened
      */
     public long recordRead(UUID eventId, String actorFingerprint, String reasonCode, String caseId, String outcome) {
         AuditContext audit = new AuditContext(actorFingerprint, "capture.read", reasonCode,
