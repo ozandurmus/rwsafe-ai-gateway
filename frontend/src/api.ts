@@ -163,6 +163,71 @@ export interface Simulation {
   transitions: { from: Verdict; to: Verdict; events: number }[];
 }
 
+/**
+ * The reason codes a captured-content read takes (RAW_CONTENT_ACCESS §3, the server's `CaptureReadController.REASONS`;
+ * `CaptureReasonCodesUiTest` fails when this list and the server's differ). `DSAR` is the privacy officer's alone.
+ */
+export const CAPTURE_REASON_CODES = [
+  'INCIDENT_INVESTIGATION',
+  'FALSE_POSITIVE_REVIEW',
+  'LEGAL_HOLD_REVIEW',
+  'REGULATOR_REQUEST',
+  'DSAR',
+] as const;
+export type CaptureReasonCode = (typeof CAPTURE_REASON_CODES)[number];
+
+/** A case id as the server takes it: 3 to 64 letters, digits, `_` or `-` (a reference, never a value). */
+export const CASE_ID_PATTERN = /^[A-Za-z0-9_-]{3,64}$/;
+
+export interface CaptureReadRequest {
+  reasonCode: CaptureReasonCode;
+  caseId: string;
+}
+
+/**
+ * One opened capture record (ADR-009 §5). `text` is the redacted content, already made inert by the server (control and
+ * bidirectional characters replaced); it is untrusted and is only ever rendered as text. Null when withheld.
+ */
+export interface CaptureView {
+  eventId: string;
+  text: string | null;
+  withheld: boolean;
+  truncated: boolean;
+  maskRuleSet: string;
+  capturedAt: string;
+  expiresAt: string;
+  readId: number;
+}
+
+/** The end-user notice (aydınlatma metni). The masked projection carries no sections (they hold configured values). */
+export interface NoticeView {
+  title: string;
+  catalogueVersion: string;
+  currentVersion: string | null;
+  complete: boolean;
+  missingParameters: string[];
+  rejectedParameters: string[];
+  usersAcknowledged: number;
+  sections: { heading: string; paragraphs: string[] }[] | null;
+}
+
+/** A USR- pseudonym as the server takes it: `USR-` and 10 lower-case hex digits. */
+export const USER_PSEUDONYM_PATTERN = /^USR-[0-9a-f]{10}$/;
+
+export interface UserAcknowledgements {
+  user: string;
+  currentVersion: string | null;
+  /** The SR-PRIV-10 gate: content is captured for this user only when true. */
+  currentAcknowledged: boolean;
+  records: {
+    noticeVersion: string;
+    acknowledgedAt: string;
+    source: string;
+    recordedAt: string;
+    pseudonymKeyId: string;
+  }[];
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -287,4 +352,10 @@ export const api = {
     }),
   simulate: (ruleId: string, action: PolicyAction) =>
     request<Simulation>('GET', `/api/v1/policy/simulation${query({ ruleId, action })}`),
+  /** A C3 read: the server ledgers every request, a refused one included. */
+  readCapture: (eventId: string, body: CaptureReadRequest) =>
+    request<CaptureView>('POST', `/api/v1/captures/${encodeURIComponent(eventId)}/read`, body),
+  notice: () => request<NoticeView>('GET', '/api/v1/notice'),
+  noticeAcknowledgements: (user: string) =>
+    request<UserAcknowledgements>('GET', `/api/v1/notice/acknowledgements${query({ user })}`),
 };

@@ -411,6 +411,31 @@ Product Owner inputs, before the first release or the feature named:
 6. HOST-A's disk (80 % used): reclaim space or confirm the 32 GiB capture cap; raising it, the 40Gi claim or the
    138Gi budget needs a new measurement and the PO's decision.
 
+## Done (admin UI slice 3, branch `feature/admin-ui-slice3`)
+
+Screens for the control-plane features merged on 2026-10-31; every new string in both catalogues (Turkish in plain words).
+
+- Captured content reader (event screen, REDACT events only, since nothing else is captured): offered to
+  `security_admin` and `privacy_officer` only, never to a masked session, a viewer or a session that also holds
+  `replay_viewer`. A reason code from the server's list (`DSAR` for the privacy officer only; `CaptureReasonCodesUiTest`
+  in `:control:test` fails when `CAPTURE_REASON_CODES` in `frontend/src/api.ts` and `CaptureReadController.REASONS`
+  differ) and a case id checked in the browser against the server's shape; an in-page confirmation that the read is
+  recorded; the text rendered as a text node only (never HTML) with the recorded-read notice and its ledger id, the
+  truncation and expiry; refusals show the server's reason (labels for the six capture reason codes).
+- Health: the SIEM export, capture and capture-watermark cards say in plain words what each state means and what to do,
+  and show their counts by name per destination (backlog, rows held behind an open transaction, stall, reader and sender
+  failure classes, possibly lost batches, latest-start skips; key in use, records to re-wrap, under shredded or missing
+  keys, skip counts by reason; disk usage and skipped captures). The counts are read from the server's fixed-vocabulary
+  detail (`frontend/src/healthFacts.ts`, pinned by tests to the server sentences); an unrecognised sentence yields no
+  count, and the server's detail is always shown beside them.
+- Notice (new tab "Aydınlatma metni"): version, catalogue version, completeness, missing and refused settings, the
+  acknowledged count, the sections as text for unmasked roles and the masked projection as served (no sections); an
+  acknowledgement lookup that sends only a well-formed `USR-` pseudonym.
+- `frontend/src/api.ts` gained `readCapture`, `notice` and `noticeAcknowledgements`; the leak probe already walked those
+  routes, so its inventory check passes unchanged. Vitest 57 tests (22 new), `tsc` clean, `:control:test` green.
+- Open: a structured counts field on the health components would remove the UI's dependence on the detail wording (a
+  server change, not made here); the event list does not say which events hold captured content.
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
