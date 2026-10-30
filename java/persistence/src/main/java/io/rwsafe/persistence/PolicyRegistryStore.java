@@ -99,8 +99,9 @@ public final class PolicyRegistryStore {
 
     /**
      * Records one approval of a pending version; with the second (the other role, another person) the version becomes
-     * active and supersedes what it replaces: an {@code all} version every active version of its rule and mode, a staged
-     * version only the staged one (the {@code all} baseline keeps applying until a version reaches {@code all}).
+     * active and supersedes what it replaces: every active version of its rule, mode and scope (a new version is stage
+     * {@code all}; a legacy staged row of the same scope is replaced with the baseline). Versions of other scopes keep
+     * applying: an {@code ANY} version and a group-scoped version of one rule are active side by side.
      *
      * @param approverFingerprint the approver's {@code USR-} pseudonym
      * @param activation          the ledger context of the activation, applied after the approval's
@@ -116,7 +117,7 @@ public final class PolicyRegistryStore {
         return refusalsAsConflicts(() -> dsl.transactionResult(cfg -> {
             DSLContext tx = DSL.using(cfg);
             lockRule(tx, ruleId);
-            Record row = tx.select(RV_STATUS, RV_MODE, RV_STAGE).from(RULE_VERSION)
+            Record row = tx.select(RV_STATUS, RV_MODE, RV_STAGE, RV_SCOPE_KEY).from(RULE_VERSION)
                 .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).forUpdate().fetchOne();
             if (row == null) {
                 throw new RegistryConflict("POLICY_VERSION_NOT_FOUND", "No such rule version.");
@@ -125,8 +126,9 @@ public final class PolicyRegistryStore {
                 throw new RegistryConflict("POLICY_NOT_PENDING", "Only a pending version takes approvals.");
             }
             String mode = row.get(RV_MODE);
-            if (tx.fetchExists(RULE_VERSION, RV_RULE_ID.eq(ruleId).and(RV_MODE.eq(mode)).and(RV_STATUS.eq("active"))
-                .and(RV_VERSION.gt(version)))) {
+            String scopeKey = row.get(RV_SCOPE_KEY);
+            if (tx.fetchExists(RULE_VERSION, RV_RULE_ID.eq(ruleId).and(RV_MODE.eq(mode)).and(RV_SCOPE_KEY.eq(scopeKey))
+                .and(RV_STATUS.eq("active")).and(RV_VERSION.gt(version)))) {
                 throw new RegistryConflict("NEWER_VERSION_ACTIVE",
                     "A newer version of this rule is active; draft again from it.");
             }
@@ -152,8 +154,8 @@ public final class PolicyRegistryStore {
                 // newer active one exists (the one-active constraints are checked at commit).
                 tx.update(RULE_VERSION).set(RV_STATUS, "active").set(RV_ACTIVATED_AT, now)
                     .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).execute();
-                Condition replaced = RV_RULE_ID.eq(ruleId).and(RV_MODE.eq(mode)).and(RV_STATUS.eq("active"))
-                    .and(RV_VERSION.lt(version));
+                Condition replaced = RV_RULE_ID.eq(ruleId).and(RV_MODE.eq(mode)).and(RV_SCOPE_KEY.eq(scopeKey))
+                    .and(RV_STATUS.eq("active")).and(RV_VERSION.lt(version));
                 if (!"all".equals(row.get(RV_STAGE))) {
                     replaced = replaced.and(RV_STAGE.ne("all"));
                 }
@@ -161,6 +163,37 @@ public final class PolicyRegistryStore {
                 activationCheck.accept(activeIn(tx));
             }
             return read(tx, RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).get(0);
+        }));
+    }
+
+    /**
+     * Retires every active version of a platform rule (PO decision Q-40): one {@code security_admin}'s action with a
+     * reason, no second approval. The rows stay (status {@code retired}, with the time, the administrator's pseudonym
+     * and the reason); the next snapshot no longer carries the platform. A retired version never becomes active again: a
+     * platform comes back only as a new version under the two approvals. The ledger records the update with
+     * {@code audit}, whose actor must be {@code administratorFingerprint} (the trigger checks it).
+     *
+     * @param retireCheck runs on the would-be active versions inside the same transaction; an exception it throws rolls
+     *                    the retirement back (a retirement that would leave no compilable snapshot is refused)
+     * @throws RegistryConflict {@code POLICY_VERSION_NOT_FOUND} when the rule has no active version
+     */
+    public List<PolicyRuleVersion> retirePlatform(String ruleId, String administratorFingerprint, String reason,
+                                                  AuditContext audit, Consumer<List<PolicyRuleVersion>> retireCheck) {
+        return refusalsAsConflicts(() -> dsl.transactionResult(cfg -> {
+            DSLContext tx = DSL.using(cfg);
+            lockRule(tx, ruleId);
+            Condition activeRows = RV_RULE_ID.eq(ruleId).and(RV_KIND.eq("platform")).and(RV_STATUS.eq("active"));
+            if (!tx.fetchExists(RULE_VERSION, activeRows)) {
+                throw new RegistryConflict("POLICY_VERSION_NOT_FOUND", "The platform has no active version to retire.");
+            }
+            audit.apply(tx);
+            List<Integer> versions = tx.select(RV_VERSION).from(RULE_VERSION).where(activeRows).forUpdate()
+                .fetch(RV_VERSION);
+            tx.update(RULE_VERSION).set(RV_STATUS, "retired").set(RV_RETIRED_AT, Instant.now())
+                .set(RV_RETIRED_BY, administratorFingerprint).set(RV_RETIRED_REASON, reason)
+                .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.in(versions))).execute();
+            retireCheck.accept(activeIn(tx));
+            return read(tx, RV_RULE_ID.eq(ruleId).and(RV_VERSION.in(versions)));
         }));
     }
 
@@ -182,6 +215,8 @@ public final class PolicyRegistryStore {
             .set(RV_ENFORCE_FAIL_CLOSED, d.enforceFailClosed())
             .set(RV_MODE, d.mode())
             .set(RV_STAGE, d.rolloutStage())
+            .set(RV_SCOPE_KIND, d.scopeKind())
+            .set(RV_SCOPE_GROUPS, d.scopeGroups().toArray(String[]::new))
             .set(RV_STATUS, status)
             .set(RV_SOURCE, source)
             .set(RV_AUTHOR, d.authorFingerprint())
@@ -201,7 +236,8 @@ public final class PolicyRegistryStore {
     private static List<PolicyRuleVersion> read(DSLContext ctx, Condition where) {
         List<Field<?>> fields = List.of(RV_RULE_ID, RV_VERSION, RV_KIND, RV_DATA_CLASS, RV_ACTION, RV_PLATFORM,
             RV_HOST_SUFFIXES, RV_API_HOSTS, RV_LOGIN_HOSTS, RV_ENFORCE_FAIL_CLOSED, RV_MODE, RV_STAGE, RV_STATUS,
-            RV_SOURCE, RV_AUTHOR, RV_REASON, RV_CREATED_AT, RV_ACTIVATED_AT, RV_SUPERSEDED_AT);
+            RV_SOURCE, RV_AUTHOR, RV_REASON, RV_CREATED_AT, RV_ACTIVATED_AT, RV_SUPERSEDED_AT, RV_SCOPE_KIND,
+            RV_SCOPE_GROUPS, RV_RETIRED_AT, RV_RETIRED_BY, RV_RETIRED_REASON);
         List<Record> rows = ctx.select(fields).from(RULE_VERSION).where(where)
             .orderBy(RV_RULE_ID, RV_VERSION.desc()).fetch();
         Map<String, List<PolicyApproval>> approvals = new LinkedHashMap<>();
@@ -221,7 +257,10 @@ public final class PolicyRegistryStore {
                 list(r.get(RV_LOGIN_HOSTS)), r.get(RV_ENFORCE_FAIL_CLOSED), r.get(RV_MODE), r.get(RV_STAGE),
                 r.get(RV_STATUS), r.get(RV_SOURCE), r.get(RV_AUTHOR), r.get(RV_REASON), r.get(RV_CREATED_AT),
                 r.get(RV_ACTIVATED_AT), r.get(RV_SUPERSEDED_AT),
-                approvals.getOrDefault(r.get(RV_RULE_ID) + "@v" + r.get(RV_VERSION), List.of())));
+                approvals.getOrDefault(r.get(RV_RULE_ID) + "@v" + r.get(RV_VERSION), List.of()), r.get(RV_SCOPE_KIND),
+                list(r.get(RV_SCOPE_GROUPS)), r.get(RV_RETIRED_AT) == null ? null
+                    : new PolicyRuleVersion.Retirement(r.get(RV_RETIRED_AT), r.get(RV_RETIRED_BY),
+                        r.get(RV_RETIRED_REASON))));
         }
         return out;
     }

@@ -29,11 +29,12 @@ public final class VerdictEventStore {
             DSLContext tx = DSL.using(cfg);
             var insert = tx.insertInto(VERDICT_EVENT, EVENT_ID, RECEIVED_AT, SERVICE, PLATFORM, SURFACE, STEP, VERDICT,
                 REASON, BODY_BYTES, DECISION_MICROS, USER_PSEUDONYM, CLIENT_SUBNET, TRANSPORT, SNAPSHOT_VERSION,
-                CORRELATION_ID, PSEUDONYM_KEY_ID);
+                CORRELATION_ID, PSEUDONYM_KEY_ID, APPLIED_RULE_IDS, MONITOR_RULE_IDS);
             for (StoredVerdictEvent e : events) {
                 insert = insert.values(DSL.row(e.eventId(), e.receivedAt(), e.service(), e.platform(), e.surface(),
                     e.step(), e.verdict().name(), e.reason(), e.bodyBytes(), e.decisionMicros(), e.userPseudonym(),
-                    e.clientSubnet(), e.transport(), e.snapshotVersion(), e.correlationId(), e.pseudonymKeyId()));
+                    e.clientSubnet(), e.transport(), e.snapshotVersion(), e.correlationId(), e.pseudonymKeyId(),
+                    e.appliedRuleIds().toArray(String[]::new), e.monitorRuleIds().toArray(String[]::new)));
             }
             Set<UUID> inserted = new HashSet<>(insert.onConflict(EVENT_ID).doNothing().returning(EVENT_ID).fetch(EVENT_ID));
             InsertValuesStep4<Record, UUID, String, Integer, String> findings = null;

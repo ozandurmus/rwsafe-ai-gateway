@@ -65,6 +65,18 @@ public class Pseudonymiser {
         return first + "." + (h[1] & 0xFF) + "." + (h[2] & 0xFF) + ".0/24";
     }
 
+    /**
+     * A directory group name as the masked role sees it (PO decision Q-39): {@code GRP-<10 hex>}, keyed, stable per
+     * estate, the same for every spelling that differs only in case or surrounding space (the contract compares group
+     * names that way).
+     */
+    public String group(String name) {
+        if (name == null || name.isBlank()) {
+            return name;
+        }
+        return "GRP-" + HexFormat.of().formatHex(keys.hmac("group", name.strip().toLowerCase(Locale.ROOT)), 0, 5);
+    }
+
     /** A class-visible token such as {@code TCKN-1a2b}: the same value reads the same across screens (layer 4). */
     public String token(String label, String value) {
         return label + "-" + HexFormat.of().formatHex(keys.hmac("token:" + label, value), 0, 2);

@@ -62,11 +62,25 @@ public class PolicyRegistryService {
         this.clock = Clock.systemUTC();
     }
 
-    /** The body of a draft: the fields of the rule's kind, its mode, rollout stage and reason code. */
+    /**
+     * The body of a draft: the fields of the rule's kind, its mode, its scope and reason code. {@code rolloutStage} is
+     * optional and, when present, {@code all} (PO decision Q-39 retired the percentage stages); a missing {@code scope}
+     * is {@code ANY}.
+     */
     public record DraftRequest(String action, Boolean enforceFailClosed, List<String> hostSuffixes,
                                List<String> apiHosts, List<String> loginHosts, String mode, String rolloutStage,
-                               String reasonCode) {
+                               ScopeRequest scope, String reasonCode) {
     }
+
+    /** {@code ANY} with no groups, or {@code GROUPS} with 1 to 32 directory group names (trimmed, distinct by case). */
+    public record ScopeRequest(String kind, List<String> groups) {
+    }
+
+    /** The body of a platform retirement: the administrator's reason, 1 to 500 characters (Q-40). */
+    public record RetireRequest(String reason) {
+    }
+
+    static final int MAX_RETIRE_REASON = 500;
 
     /** How the stored events of the window would change under a proposed action for one class (counts only). */
     public record Simulation(String ruleId, String dataClass, String currentAction, String proposedAction, Instant from,
@@ -137,28 +151,65 @@ public class PolicyRegistryService {
                 "Class and flow rules come from the seed fixture; this one is not in the registry.");
         }
         if (body == null || !RegistryVocabulary.MODES.contains(body.mode())
-            || !RegistryVocabulary.STAGES.contains(body.rolloutStage())
             || !RegistryVocabulary.reasonCode(body.reasonCode())) {
-            throw invalid("A draft needs mode (monitor, enforce), rolloutStage (pilot, pct25, pct50, all) and an "
-                + "upper-case reasonCode.");
+            throw invalid("A draft needs mode (monitor, enforce) and an upper-case reasonCode.");
         }
+        if (body.rolloutStage() != null && !RegistryVocabulary.STAGE_ALL.equals(body.rolloutStage())) {
+            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "ROLLOUT_STAGE_RETIRED",
+                "Percentage rollout stages are retired; choose a scope (everyone or directory groups) instead.");
+        }
+        Scope scope = scope(kind, body.scope());
         // PR 16 review D-05: the reason code and a platform id are free values too; neither may name the estate.
         if (namesEstate(body.reasonCode()) || (kind.equals(RegistryVocabulary.KIND_PLATFORM)
             && namesEstate(ruleId.substring("platform.".length())))) {
             throw estateRefused();
         }
         String author = pseudonym(loginName);
-        Draft draft = switch (kind) {
+        Draft shape = switch (kind) {
             case RegistryVocabulary.KIND_CLASS -> classDraft(ruleId, body, author);
             case RegistryVocabulary.KIND_FLOW -> flowDraft(ruleId, body, author);
             default -> platformDraft(ruleId, body, author, all);
         };
+        Draft draft = new Draft(shape.ruleId(), shape.kind(), shape.dataClass(), shape.action(), shape.platformId(),
+            shape.hostSuffixes(), shape.apiHosts(), shape.loginHosts(), shape.enforceFailClosed(), shape.mode(),
+            RegistryVocabulary.STAGE_ALL, shape.authorFingerprint(), shape.reasonCode(), scope.kind(), scope.groups());
         try {
             return database.policyRegistry().draft(draft, new AuditContext(author, "policy.draft", body.reasonCode(),
                 UUID.randomUUID().toString()));
         } catch (RegistryConflict e) {
             throw conflict(e);
         }
+    }
+
+    /** A validated scope: {@code ANY}, or {@code GROUPS} with the trimmed names ordered as the snapshot carries them. */
+    record Scope(String kind, List<String> groups) {
+    }
+
+    /**
+     * Validates the requested scope. Only a DLP class rule takes a group scope (a format 2 scoped rule carries class
+     * actions only). Group names are the operator's runtime data: they are never logged, never refused against the
+     * estate dictionary (a directory group is an estate name by nature) and reach the masked role only as pseudonyms.
+     */
+    static Scope scope(String kind, ScopeRequest requested) {
+        if (requested == null || ("ANY".equals(requested.kind())
+            && (requested.groups() == null || requested.groups().isEmpty()))) {
+            return new Scope(PolicyRuleVersion.SCOPE_ANY, List.of());
+        }
+        if (!PolicyRuleVersion.SCOPE_GROUPS.equals(requested.kind())) {
+            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "INVALID_SCOPE",
+                "The scope is ANY (everyone, no groups) or GROUPS with 1 to 32 group names.");
+        }
+        if (!RegistryVocabulary.KIND_CLASS.equals(kind)) {
+            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "INVALID_SCOPE",
+                "Only a DLP class rule takes a group scope; platform rows and the flow apply to everyone.");
+        }
+        List<String> groups = GroupNames.normaliseAll(requested.groups());
+        if (groups == null) {
+            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "INVALID_SCOPE",
+                "A group scope takes 1 to 32 short directory group names of 1 to 256 characters, without commas or "
+                    + "control characters, each named once (compared after normalisation: case, Turkish i forms).");
+        }
+        return new Scope(PolicyRuleVersion.SCOPE_GROUPS, groups);
     }
 
     private Draft classDraft(String ruleId, DraftRequest b, String author) {
@@ -169,7 +220,7 @@ public class PolicyRegistryService {
         String dataClass = RegistryVocabulary.dataClassOf(ruleId);
         if (RegistryVocabulary.failClosedClass(dataClass) && RegistryVocabulary.RELAXING_ACTIONS.contains(b.action())) {
             throw new RegistryRefusal(HttpStatus.CONFLICT, "FAIL_CLOSED_CLASS_NOT_RELAXABLE",
-                "A fail-closed class is never ALLOW or WARN, in monitor or enforce mode.");
+                "A fail-closed class is never ALLOW or WARN, in monitor or enforce mode, for everyone or for a group.");
         }
         return new Draft(ruleId, RegistryVocabulary.KIND_CLASS, dataClass, b.action(), null, null, null, null, null,
             b.mode(), b.rolloutStage(), author, b.reasonCode());
@@ -260,6 +311,52 @@ public class PolicyRegistryService {
         }
     }
 
+    /**
+     * Retires a platform row (PO decision Q-40): one {@code security_admin}'s action with a reason, no second approval.
+     * The row is kept as {@code retired}, the ledger names the administrator and the reason, and the next snapshot no
+     * longer carries the platform. A retirement that would leave no compilable snapshot (the last platform row) is
+     * refused and rolled back.
+     */
+    public List<PolicyRuleVersion> retirePlatform(String ruleId, RetireRequest body, String loginName,
+                                                  Set<String> sessionRoles) {
+        if (!sessionRoles.contains(Roles.SECURITY_ADMIN) || sessionRoles.contains(Roles.REPLAY_VIEWER)) {
+            throw new RegistryRefusal(HttpStatus.FORBIDDEN, "RETIRE_ROLE_MISSING",
+                "Only a security administrator retires a platform row.");
+        }
+        if (!RegistryVocabulary.KIND_PLATFORM.equals(RegistryVocabulary.kindOf(ruleId))) {
+            throw new RegistryRefusal(HttpStatus.NOT_FOUND, "UNKNOWN_PLATFORM",
+                "Only a platform row is retired; the registry knows no such platform.");
+        }
+        String reason = body == null || body.reason() == null ? "" : body.reason().strip();
+        if (reason.isEmpty() || reason.length() > MAX_RETIRE_REASON
+            || reason.chars().anyMatch(Character::isISOControl)) {
+            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "INVALID_RETIREMENT",
+                "A retirement needs a reason of 1 to 500 characters on one line.");
+        }
+        // PR 16 review D-05: a free value written to the registry never names the estate.
+        if (namesEstate(reason)) {
+            throw estateRefused();
+        }
+        String admin = pseudonym(loginName);
+        try {
+            return database.policyRegistry().retirePlatform(ruleId, admin, reason,
+                new AuditContext(admin, "policy.platform_retire", reason, UUID.randomUUID().toString()),
+                this::checkRetirement);
+        } catch (RegistryConflict e) {
+            throw conflict(e);
+        }
+    }
+
+    /** The registry left by a retirement must still compile (every class, the flow, at least one platform row). */
+    void checkRetirement(List<PolicyRuleVersion> active) {
+        try {
+            compiler.compile(active);
+        } catch (RegistryRefusal e) {
+            throw new RegistryRefusal(HttpStatus.CONFLICT, "RETIRE_WOULD_NOT_COMPILE",
+                "This retirement would leave a registry that does not compile (" + e.reason() + "); nothing changed.");
+        }
+    }
+
     private boolean rowNamesEstate(PlatformRow row) {
         for (List<String> hosts : List.of(row.hostSuffixes(), row.apiHosts(), row.loginHosts())) {
             if (hosts.stream().anyMatch(this::namesEstate)) {
@@ -332,7 +429,7 @@ public class PolicyRegistryService {
         Map<String, String> current = new LinkedHashMap<>();
         for (PolicyRuleVersion v : database.policyRegistry().active()) {
             if (RegistryVocabulary.KIND_CLASS.equals(v.kind()) && "enforce".equals(v.mode())
-                && "all".equals(v.rolloutStage())) {
+                && "all".equals(v.rolloutStage()) && !v.scopedToGroups()) {
                 current.put(v.dataClass(), v.action());
             }
         }

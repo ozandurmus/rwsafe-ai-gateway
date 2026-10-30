@@ -46,6 +46,11 @@ class PolicyRegistryStoreTest {
             stage, author, author.startsWith("system:") ? "SEED_FIXTURE" : "SYNTHETIC_CHANGE");
     }
 
+    private static Draft groupRule(String dataClass, String action, String mode, List<String> groups) {
+        return new Draft("class." + dataClass, "class_action", dataClass, action, null, null, null, null, null, mode,
+            "all", ADMIN, "SYNTHETIC_CHANGE", "GROUPS", groups);
+    }
+
     private static AuditContext audit(String actor, String action) {
         return new AuditContext(actor, action, "SYNTHETIC_CHANGE", null);
     }
@@ -134,27 +139,162 @@ class PolicyRegistryStoreTest {
     }
 
     @Test
-    void aStagedVersionKeepsTheBaselineUntilAVersionReachesAll() {
-        registry.draft(classRule("TCKN", "BLOCK", "enforce", "pilot", ADMIN), audit(ADMIN, "policy.draft"));
+    void aGroupScopedVersionRunsBesideTheAnyBaselineAndReplacesOnlyItsOwnScope() {
+        registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("GRP-ALPHA", "GRP-BETA")),
+            audit(ADMIN, "policy.draft"));
         approve("class.TCKN", 2, "security_admin", ADMIN);
         approve("class.TCKN", 2, "privacy_officer", OFFICER);
-        assertEquals("active", status("class.TCKN", 1));
+        assertEquals("active", status("class.TCKN", 1), "the ANY baseline keeps applying");
         assertEquals("active", status("class.TCKN", 2));
+        assertEquals(List.of("GRP-ALPHA", "GRP-BETA"), registry.version("class.TCKN", 2).orElseThrow().scopeGroups());
 
-        registry.draft(classRule("TCKN", "BLOCK", "enforce", "pct50", ADMIN), audit(ADMIN, "policy.draft"));
+        registry.draft(groupRule("TCKN", "REDACT", "enforce", List.of("GRP-GAMMA")), audit(ADMIN, "policy.draft"));
         approve("class.TCKN", 3, "security_admin", ADMIN);
         approve("class.TCKN", 3, "privacy_officer", OFFICER);
-        assertEquals("active", status("class.TCKN", 1));
-        assertEquals("superseded", status("class.TCKN", 2));
+        assertEquals("active", status("class.TCKN", 2), "another group list is another scope");
 
-        registry.draft(classRule("TCKN", "BLOCK", "enforce", "all", ADMIN), audit(ADMIN, "policy.draft"));
-        registry.draft(classRule("TCKN", "REDACT", "enforce", "all", ADMIN), audit(ADMIN, "policy.draft"));
+        // The scope key is the trimmed, lower-cased, sorted list: the same groups in another case and order.
+        registry.draft(groupRule("TCKN", "REDACT", "enforce", List.of("grp-beta", "Grp-Alpha")),
+            audit(ADMIN, "policy.draft"));
+        approve("class.TCKN", 4, "security_admin", ADMIN);
+        approve("class.TCKN", 4, "privacy_officer", OFFICER);
+        assertEquals("superseded", status("class.TCKN", 2));
+        assertEquals("active", status("class.TCKN", 3));
+        assertEquals("active", status("class.TCKN", 1));
+
+        registry.draft(groupRule("TCKN", "BLOCK", "monitor", List.of("GRP-GAMMA")), audit(ADMIN, "policy.draft"));
         approve("class.TCKN", 5, "security_admin", ADMIN);
         approve("class.TCKN", 5, "privacy_officer", OFFICER);
-        assertEquals(List.of(5), registry.active().stream().filter(v -> v.ruleId().equals("class.TCKN"))
-            .map(PolicyRuleVersion::version).toList());
-        assertEquals("POLICY_NOT_PENDING", assertThrows(RegistryConflict.class,
-            () -> approve("class.TCKN", 4, "security_admin", ADMIN)).reason(), "v5's draft superseded v4");
+        assertEquals("active", status("class.TCKN", 3), "a monitor version is another mode");
+        assertEquals(List.of(1, 3, 4, 5), registry.active().stream().filter(v -> v.ruleId().equals("class.TCKN"))
+            .map(PolicyRuleVersion::version).sorted().toList());
+
+        registry.draft(classRule("TCKN", "BLOCK", "enforce", "all", ADMIN), audit(ADMIN, "policy.draft"));
+        approve("class.TCKN", 6, "security_admin", ADMIN);
+        approve("class.TCKN", 6, "privacy_officer", OFFICER);
+        assertEquals("superseded", status("class.TCKN", 1));
+        assertEquals("active", status("class.TCKN", 4), "a new ANY version leaves the group scopes alone");
+    }
+
+    @Test
+    void theScopeShapeIsCheckedByTheDatabase() {
+        String insert = "INSERT INTO policy_rule_version (rule_id, version, kind, data_class, action, mode, "
+            + "rollout_stage, status, source, author_fingerprint, reason_code, scope_kind, scope_groups) VALUES "
+            + "('class.TR_IBAN', 7, 'class_action', 'TR_IBAN', 'BLOCK', 'enforce', 'all', 'pending', 'registry', "
+            + "'USR-00000000a1', 'SYNTHETIC_CHANGE', %s)";
+        String many = java.util.stream.IntStream.rangeClosed(1, 33).mapToObj(i -> "'GRP-" + i + "'")
+            .collect(Collectors.joining(","));
+        for (String values : new String[] {
+            "'GROUPS', ARRAY[]::text[]",
+            "'GROUPS', ARRAY[" + many + "]",
+            "'GROUPS', ARRAY['" + "G".repeat(257) + "']",
+            "'GROUPS', ARRAY[' GRP-ALPHA']",
+            "'GROUPS', ARRAY['']",
+            "'GROUPS', ARRAY['grp-alpha', 'grp-alpha']",
+            "'GROUPS', ARRAY['grp-alpha,grp-beta']",
+            "'GROUPS', ARRAY['GRP-DELTA-I']",
+            "'GROUPS', ARRAY[U&'grp-\\0130stanbul']",
+            "'GROUPS', ARRAY[U&'grp-\\0131zmir']",
+            "'GROUPS', ARRAY[U&'grp-i\\0307']",
+            "'GROUPS', ARRAY[U&'grp-e\\0301']",
+            "'GROUPS', ARRAY[U&'grp-\\0007']",
+            "'ANY', ARRAY['GRP-ALPHA']",
+            "'SOME', ARRAY[]::text[]"}) {
+            assertThrows(DataAccessException.class, () -> mutate(String.format(insert, values)), values);
+        }
+        assertThrows(RegistryConflict.class, () -> registry.draft(new Draft("platform.claude", "platform", null, null,
+            "claude", List.of("claude.ai"), List.of(), List.of(), null, "enforce", "all", ADMIN, "SYNTHETIC_CHANGE",
+            "GROUPS", List.of("GRP-ALPHA")), audit(ADMIN, "policy.draft")), "a platform row is never group-scoped");
+        assertEquals(32, registry.draft(groupRule("TR_IBAN", "BLOCK", "enforce",
+            java.util.stream.IntStream.rangeClosed(1, 32).mapToObj(i -> "GRP-" + i).toList()),
+            audit(ADMIN, "policy.draft")).scopeGroups().size());
+    }
+
+    @Test
+    void aNewVersionIsAlwaysStageAll() {
+        for (String stage : new String[] {"pilot", "pct25", "pct50"}) {
+            RegistryConflict refused = assertThrows(RegistryConflict.class, () -> registry.draft(
+                classRule("TCKN", "BLOCK", "enforce", stage, ADMIN), audit(ADMIN, "policy.draft")));
+            assertEquals("POLICY_STAGE_RETIRED", refused.reason(), stage);
+        }
+    }
+
+    @Test
+    void noGroupScopeAllowsOrWarnsAFailClosedClass() {
+        for (String mode : new String[] {"enforce", "monitor"}) {
+            for (String action : new String[] {"ALLOW", "WARN"}) {
+                assertThrows(RegistryConflict.class, () -> registry.draft(
+                    groupRule("SECRET", action, mode, List.of("GRP-ALPHA")), audit(ADMIN, "policy.draft")),
+                    mode + " " + action);
+            }
+        }
+    }
+
+    // PO decision Q-40: one administrator retires a platform row with a reason; the row stays, ledgered.
+
+    @Test
+    void oneAdministratorRetiresAPlatformRowWhichNeverComesBackButANewVersionCan() {
+        List<PolicyRuleVersion> retired = registry.retirePlatform("platform.claude", ADMIN, "Synthetic retirement",
+            new AuditContext(ADMIN, "policy.platform_retire", "Synthetic retirement", null), active -> { });
+        assertEquals(1, retired.size());
+        PolicyRuleVersion row = registry.version("platform.claude", 1).orElseThrow();
+        assertEquals("retired", row.status());
+        assertEquals(ADMIN, row.retirement().retiredBy());
+        assertEquals("Synthetic retirement", row.retirement().reason());
+        assertTrue(registry.active().stream().noneMatch(v -> v.ruleId().equals("platform.claude")));
+        assertEquals(1, db.dsl().fetchCount(Schema.AUDIT_EVENT, Schema.AUDIT_TABLE.eq("policy_rule_version")
+            .and(Schema.AUDIT_OPERATION.eq("UPDATE")).and(Schema.AUDIT_ACTION.eq("policy.platform_retire"))
+            .and(Schema.AUDIT_ACTOR.eq(ADMIN)).and(Schema.AUDIT_REASON.eq("Synthetic retirement"))));
+
+        assertEquals("POLICY_VERSION_NOT_FOUND", assertThrows(RegistryConflict.class, () -> registry.retirePlatform(
+            "platform.claude", ADMIN, "again", new AuditContext(ADMIN, "policy.platform_retire", "again", null),
+            active -> { })).reason(), "nothing active is left to retire");
+        for (String sql : new String[] {
+            "UPDATE policy_rule_version SET status = 'active', retired_at = NULL, retired_by = NULL, "
+                + "retired_reason = NULL WHERE rule_id = 'platform.claude' AND version = 1",
+            "UPDATE policy_rule_version SET retired_reason = 'rewritten' WHERE rule_id = 'platform.claude'",
+            "DELETE FROM policy_rule_version WHERE rule_id = 'platform.claude'"}) {
+            assertThrows(DataAccessException.class, () -> mutate(sql), sql);
+        }
+
+        registry.draft(new Draft("platform.claude", "platform", null, null, "claude", List.of("claude.ai"), List.of(),
+            List.of(), null, "enforce", "all", ADMIN, "SYNTHETIC_CHANGE"), audit(ADMIN, "policy.draft"));
+        approve("platform.claude", 2, "security_admin", ADMIN);
+        assertEquals("pending", status("platform.claude", 2), "one approval brings nothing back");
+        approve("platform.claude", 2, "privacy_officer", OFFICER);
+        assertEquals("active", status("platform.claude", 2));
+        assertEquals("retired", status("platform.claude", 1), "the retired row keeps its history");
+    }
+
+    @Test
+    void onlyAnActivePlatformRowIsRetiredAndTheLedgerNamesTheAdministratorAndTheReason() {
+        String retire = "UPDATE policy_rule_version SET status = 'retired', retired_at = now(), retired_by = '%s', "
+            + "retired_reason = '%s' WHERE rule_id = '%s' AND version = 1";
+        assertThrows(DataAccessException.class, () -> mutateAs(ADMIN, "Synthetic",
+            String.format(retire, ADMIN, "Synthetic", "class.SECRET")), "a class rule is never retired");
+        DataAccessException otherActor = assertThrows(DataAccessException.class, () -> mutateAs(OTHER_ADMIN,
+            "Synthetic", String.format(retire, ADMIN, "Synthetic", "platform.claude")));
+        assertTrue(otherActor.getMessage().contains("POLICY_RETIRE_REFUSED"));
+        DataAccessException otherReason = assertThrows(DataAccessException.class, () -> mutateAs(ADMIN,
+            "PLATFORM_RETIRED", String.format(retire, ADMIN, "Synthetic", "platform.claude")));
+        assertTrue(otherReason.getMessage().contains("POLICY_RETIRE_REFUSED"));
+        assertThrows(DataAccessException.class, () -> mutateAs(ADMIN, "x", String.format(retire, ADMIN, " x",
+            "platform.claude")), "an untrimmed reason");
+        assertThrows(DataAccessException.class, () -> mutateAs(ADMIN, "Synthetic", "UPDATE policy_rule_version SET "
+            + "status = 'retired', retired_at = now(), retired_by = '" + ADMIN + "' WHERE rule_id = 'platform.claude'"),
+            "no reason");
+        assertEquals("active", status("platform.claude", 1));
+    }
+
+    @Test
+    void aRefusedRetireCheckRollsTheRetirementBack() {
+        assertThrows(IllegalStateException.class, () -> registry.retirePlatform("platform.claude", ADMIN, "Synthetic",
+            new AuditContext(ADMIN, "policy.platform_retire", "Synthetic", null), active -> {
+                assertTrue(active.stream().noneMatch(v -> v.ruleId().equals("platform.claude")));
+                throw new IllegalStateException("synthetic refusal");
+            }));
+        assertEquals("active", status("platform.claude", 1));
+        assertEquals(0, db.dsl().fetchCount(Schema.AUDIT_EVENT, Schema.AUDIT_ACTION.eq("policy.platform_retire")));
     }
 
     // PR 16 review D-01: the seed path and the supersede path cannot activate or remove a rule without two approvals.
@@ -187,13 +327,14 @@ class PolicyRegistryStoreTest {
                     + "' AND version = 1"));
             assertTrue(e.getMessage().contains("POLICY_NO_REPLACEMENT"), rule);
         }
-        registry.draft(classRule("TCKN", "BLOCK", "enforce", "pilot", ADMIN), audit(ADMIN, "policy.draft"));
+        registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("GRP-ALPHA")), audit(ADMIN, "policy.draft"));
         approve("class.TCKN", 2, "security_admin", ADMIN);
         approve("class.TCKN", 2, "privacy_officer", OFFICER);
-        DataAccessException byStaged = assertThrows(DataAccessException.class, () -> mutate(
+        DataAccessException byScoped = assertThrows(DataAccessException.class, () -> mutate(
             "UPDATE policy_rule_version SET status = 'superseded', superseded_at = now() WHERE rule_id = 'class.TCKN' "
                 + "AND version = 1"));
-        assertTrue(byStaged.getMessage().contains("POLICY_NO_REPLACEMENT"), "a staged version never replaces the baseline");
+        assertTrue(byScoped.getMessage().contains("POLICY_NO_REPLACEMENT"),
+            "a group-scoped version never replaces the ANY baseline");
         DataAccessException retime = assertThrows(DataAccessException.class, () -> mutate(
             "UPDATE policy_rule_version SET activated_at = now() - interval '1 day' WHERE rule_id = 'class.SECRET'"));
         assertTrue(retime.getMessage().contains("POLICY_LIFECYCLE"));
@@ -205,7 +346,7 @@ class PolicyRegistryStoreTest {
     void aNewDraftSupersedesTheOlderPendingOneWithItsApproval() {
         registry.draft(classRule("TCKN", "BLOCK", "enforce", "all", ADMIN), audit(ADMIN, "policy.draft"));
         approve("class.TCKN", 2, "security_admin", ADMIN);
-        registry.draft(classRule("TCKN", "BLOCK", "enforce", "pct50", ADMIN), audit(ADMIN, "policy.draft"));
+        registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("GRP-ALPHA")), audit(ADMIN, "policy.draft"));
         assertEquals("superseded", status("class.TCKN", 2));
         assertEquals("pending", status("class.TCKN", 3));
         assertEquals("POLICY_NOT_PENDING", assertThrows(RegistryConflict.class,
@@ -338,6 +479,14 @@ class PolicyRegistryStoreTest {
         db.dsl().transaction(cfg -> {
             var tx = DSL.using(cfg);
             audit("system:synthetic-test", "synthetic.mutation").apply(tx);
+            tx.execute(sql);
+        });
+    }
+
+    private void mutateAs(String actor, String reason, String sql) {
+        db.dsl().transaction(cfg -> {
+            var tx = DSL.using(cfg);
+            new AuditContext(actor, "synthetic.mutation", reason, null).apply(tx);
             tx.execute(sql);
         });
     }

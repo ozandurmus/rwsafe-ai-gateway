@@ -119,9 +119,36 @@ public class IngestionService {
         if (!canonicalUuid(correlationId) && !token(correlationId, 64)) {
             throw new InvalidEventException(i, "correlationId");
         }
+        List<String> applied = ruleIds(i, "appliedRuleIds", e.appliedRuleIds());
+        List<String> monitor = ruleIds(i, "monitorRuleIds", e.monitorRuleIds());
         return new StoredVerdictEvent(eventId, receivedAt, service, platform, surface, step, verdict, reason, findings,
             bodyBytes, decisionMicros, pseudonymiser.user(e.userClaim()), pseudonymiser.subnet(e.clientAddress()),
-            transport, snapshotVersion, correlationId, keyId);
+            transport, snapshotVersion, correlationId, keyId, applied, monitor);
+    }
+
+    static final int MAX_RULE_IDS = 16;
+    static final int MAX_RULE_ID_LENGTH = 128;
+    private static final com.google.re2j.Pattern RULE_ID =
+        com.google.re2j.Pattern.compile("(class|platform|flow)\\.[A-Za-z0-9_-]{1,64}@[1-9][0-9]{0,9}");
+
+    /**
+     * The optional scoped-rule ids of snapshot format 2 ({@code <rule id>@<version>}): absent is empty; at most 16, each
+     * at most 128 characters in the registry's rule-id shape (so no value can ride along); anything else refuses the
+     * batch.
+     */
+    private static List<String> ruleIds(int i, String field, List<String> ids) {
+        if (ids == null) {
+            return List.of();
+        }
+        if (ids.size() > MAX_RULE_IDS) {
+            throw new InvalidEventException(i, field);
+        }
+        for (String id : ids) {
+            if (id == null || id.length() > MAX_RULE_ID_LENGTH || !RULE_ID.matcher(id).matches()) {
+                throw new InvalidEventException(i, field);
+            }
+        }
+        return ids;
     }
 
     private static List<FindingCount> findings(int i, List<VerdictEventPayload.FindingPayload> findings) {

@@ -25,27 +25,56 @@ public final class PolicyViews {
     public record ApprovalView(String role, String approver, Instant approvedAt) {
     }
 
+    /**
+     * The source scope of a version (PO decision Q-39): {@code ANY} (everyone) or {@code GROUPS} with the directory group
+     * names. The masked role sees every group name as its keyed {@code GRP-} pseudonym, never the name.
+     */
+    public record ScopeView(String kind, List<String> groups) {
+
+        ScopeView masked(TextMasker m) {
+            return new ScopeView(kind, groups.stream().map(m::group).toList());
+        }
+    }
+
+    /** How a platform row left service (Q-40): when, the administrator's pseudonym, and the reason given. */
+    public record RetirementView(Instant retiredAt, String retiredBy, String reason) {
+    }
+
     /** One rule version; {@code inSnapshot} is true when the latest issued snapshot compiled it. */
     public record VersionView(String ruleId, int version, String action, Boolean enforceFailClosed,
                               List<String> hostSuffixes, List<String> apiHosts, List<String> loginHosts, String mode,
-                              String rolloutStage, String status, String source, String author, String reasonCode,
-                              Instant createdAt, Instant activatedAt, Instant supersededAt,
-                              List<ApprovalView> approvals, boolean inSnapshot) implements MaskedView {
+                              String rolloutStage, ScopeView scope, String status, String source, String author,
+                              String reasonCode, Instant createdAt, Instant activatedAt, Instant supersededAt,
+                              RetirementView retirement, List<ApprovalView> approvals, boolean inSnapshot)
+        implements MaskedView {
 
         static VersionView of(PolicyRuleVersion v, Set<String> inSnapshot) {
+            PolicyRuleVersion.Retirement r = v.retirement();
             return new VersionView(v.ruleId(), v.version(), v.action(), v.enforceFailClosed(), v.hostSuffixes(),
-                v.apiHosts(), v.loginHosts(), v.mode(), v.rolloutStage(), v.status(), v.source(), v.authorFingerprint(),
-                v.reasonCode(), v.createdAt(), v.activatedAt(), v.supersededAt(), v.approvals().stream()
-                    .map(a -> new ApprovalView(a.role(), a.approverFingerprint(), a.approvedAt())).toList(),
+                v.apiHosts(), v.loginHosts(), v.mode(), v.rolloutStage(), new ScopeView(v.scopeKind(), v.scopeGroups()),
+                v.status(), v.source(), v.authorFingerprint(), v.reasonCode(), v.createdAt(), v.activatedAt(),
+                v.supersededAt(), r == null ? null : new RetirementView(r.retiredAt(), r.retiredBy(), r.reason()),
+                v.approvals().stream().map(a -> new ApprovalView(a.role(), a.approverFingerprint(), a.approvedAt()))
+                    .toList(),
                 inSnapshot.contains(v.key()));
         }
 
         @Override
         public VersionView masked(TextMasker m) {
             return new VersionView(m.mask(ruleId), version, action, enforceFailClosed, mask(m, hostSuffixes),
-                mask(m, apiHosts), mask(m, loginHosts), mode, rolloutStage, status, source, author, m.mask(reasonCode),
-                createdAt,
-                activatedAt, supersededAt, approvals, inSnapshot);
+                mask(m, apiHosts), mask(m, loginHosts), mode, rolloutStage, scope.masked(m), status, source, author,
+                m.mask(reasonCode), createdAt, activatedAt, supersededAt, retirement == null ? null
+                    : new RetirementView(retirement.retiredAt(), retirement.retiredBy(), m.mask(retirement.reason())),
+                approvals, inSnapshot);
+        }
+    }
+
+    /** The versions one retirement took out of service. */
+    public record RetiredView(List<VersionView> retired) implements MaskedView {
+
+        @Override
+        public RetiredView masked(TextMasker m) {
+            return new RetiredView(retired.stream().map(v -> v.masked(m)).toList());
         }
     }
 
@@ -77,8 +106,13 @@ public final class PolicyViews {
         }
     }
 
+    /**
+     * {@code stages} names the retired percentage stages that old rows may still carry (history only); a new version is
+     * stage {@code all} and is scoped by {@code scopeKinds} instead, with at most {@code maxScopeGroups} groups.
+     */
     public record RegistryView(List<RuleView> rules, SnapshotView snapshot, List<String> failClosedClasses,
-                               List<String> actions, List<String> modes, List<String> stages) implements MaskedView {
+                               List<String> actions, List<String> modes, List<String> stages, List<String> scopeKinds,
+                               int maxScopeGroups) implements MaskedView {
 
         static RegistryView of(List<PolicyRuleVersion> versions, IssuedSnapshot latest, String keyId) {
             Set<String> compiled = latest == null ? Set.of() : Set.copyOf(latest.ruleVersions());
@@ -99,13 +133,14 @@ public final class PolicyViews {
             }
             return new RegistryView(rules, latest == null ? null : SnapshotView.of(latest, keyId),
                 RegistryVocabulary.failClosedClasses(), RegistryVocabulary.ACTIONS, RegistryVocabulary.MODES,
-                RegistryVocabulary.STAGES);
+                RegistryVocabulary.STAGES, RegistryVocabulary.SCOPE_KINDS, SnapshotCompiler.MAX_SCOPE_GROUPS);
         }
 
         @Override
         public RegistryView masked(TextMasker m) {
             return new RegistryView(rules.stream().map(r -> r.masked(m)).toList(),
-                snapshot == null ? null : snapshot.masked(m), failClosedClasses, actions, modes, stages);
+                snapshot == null ? null : snapshot.masked(m), failClosedClasses, actions, modes, stages, scopeKinds,
+                maxScopeGroups);
         }
     }
 

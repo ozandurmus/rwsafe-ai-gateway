@@ -147,7 +147,14 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
   (format 1 has no group targeting). The active policy is re-signed under the next version at least every 6 hours with no
   rule change (scheduled), and the compiler refuses a snapshot with a fail-closed class at ALLOW or WARN (contract changes
   of the data-plane review, PR 14). Every issued snapshot is recorded and ledgered.
-- Screens: Policies (registry table with action, mode, rollout bar, version, status; versions, approval steps,
+- Scoped policy control (PO decisions Q-39 and Q-40, branch `feature/scoped-policy-control`): migration V3 gives every
+  rule version a scope (`ANY` or 1 to 32 directory groups; one active version per rule, mode and scope), retires the
+  percentage stages for new versions, adds the platform `retired` status (one `security_admin` with a reason, ledgered,
+  never deleted, back only through a new two-approval version) and stores the scoped-rule ids of verdict events. The
+  compiler emits snapshot format 2 (`scopedRules`, always present); the data-plane side is a separate lane. The masked
+  role sees group names only as `GRP-` pseudonyms. Policies shows a scope column and a scope picker instead of the
+  rollout bar; Platforms has the retire action with a reason and a built-in confirmation step.
+- Screens: Policies (registry table with action, mode, scope, version, status; versions, approval steps,
   simulation panel and a new-version form for a selected rule) and Platforms (platform rows). The masked role reads both
   through the funnel and changes nothing.
 - Local run: `docs/operations/LOCAL_RUN.md` "Control plane and admin UI" (dev signing key and its public key for a local
@@ -161,8 +168,8 @@ request 14) added the signed snapshot pull, Secure ICAP with a required client c
 admission, the body budget, the drain window, the verdict spool with backpressure and fixed-label metrics.
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
 neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeScript rules for `frontend/`; control plane
-later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules and group targeting of
-staged versions (both need a snapshot format with groups), a server-side user settings store for the UI language, the
+later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules, a way to withdraw an
+active group-scoped version other than replacing it, a server-side user settings store for the UI language, the
 ratified decision record that mirrors the seed fixture, C3 capture store, the Incidents, Identities and roles and
 Administration screens, Playwright masked-role leak probe, the cluster PostgreSQL Job); the
 Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with them); Trivy image scanning and SBOM (with

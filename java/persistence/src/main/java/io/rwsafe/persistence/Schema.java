@@ -34,7 +34,11 @@ final class Schema {
     static final Field<String> TRANSPORT = DSL.field(DSL.name("verdict_event", "transport"), SQLDataType.CLOB);
     static final Field<Long> SNAPSHOT_VERSION = DSL.field(DSL.name("verdict_event", "snapshot_version"), SQLDataType.BIGINT);
     static final Field<String> CORRELATION_ID = DSL.field(DSL.name("verdict_event", "correlation_id"), SQLDataType.CLOB);
-    static final Field<String> PSEUDONYM_KEY_ID = DSL.field(DSL.name("verdict_event", "pseudonym_key_id"), SQLDataType.CLOB);
+    static final Field<String[]> APPLIED_RULE_IDS = DSL.field(DSL.name("verdict_event", "applied_rule_ids"),
+        SQLDataType.CLOB.array());
+    static final Field<String[]> MONITOR_RULE_IDS = DSL.field(DSL.name("verdict_event", "monitor_rule_ids"),
+        SQLDataType.CLOB.array());
+    static final Field<String> PSEUDONYM_KEY_ID =DSL.field(DSL.name("verdict_event", "pseudonym_key_id"), SQLDataType.CLOB);
 
     static final Table<Record> VERDICT_FINDING = DSL.table(DSL.name("verdict_finding"));
     static final Field<UUID> FINDING_EVENT_ID = DSL.field(DSL.name("verdict_finding", "event_id"), SQLDataType.UUID);
@@ -80,6 +84,15 @@ final class Schema {
         SQLDataType.INSTANT);
     static final Field<Instant> RV_SUPERSEDED_AT = DSL.field(DSL.name("policy_rule_version", "superseded_at"),
         SQLDataType.INSTANT);
+    static final Field<String> RV_SCOPE_KIND = DSL.field(DSL.name("policy_rule_version", "scope_kind"), SQLDataType.CLOB);
+    static final Field<String[]> RV_SCOPE_GROUPS = DSL.field(DSL.name("policy_rule_version", "scope_groups"),
+        SQLDataType.CLOB.array());
+    static final Field<String> RV_SCOPE_KEY = DSL.field(DSL.name("policy_rule_version", "scope_key"), SQLDataType.CLOB);
+    static final Field<Instant> RV_RETIRED_AT = DSL.field(DSL.name("policy_rule_version", "retired_at"),
+        SQLDataType.INSTANT);
+    static final Field<String> RV_RETIRED_BY = DSL.field(DSL.name("policy_rule_version", "retired_by"), SQLDataType.CLOB);
+    static final Field<String> RV_RETIRED_REASON = DSL.field(DSL.name("policy_rule_version", "retired_reason"),
+        SQLDataType.CLOB);
 
     static final Table<Record> APPROVAL = DSL.table(DSL.name("policy_approval"));
     static final Field<String> AP_RULE_ID = DSL.field(DSL.name("policy_approval", "rule_id"), SQLDataType.CLOB);

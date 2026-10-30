@@ -42,6 +42,7 @@ import org.springframework.test.context.DynamicPropertySource;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
+@org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
 class PolicyRegistryIntegrationTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -108,8 +109,9 @@ class PolicyRegistryIntegrationTest {
         for (Iterator<String> it = doc.fieldNames(); it.hasNext(); ) {
             fields.add(it.next());
         }
-        assertEquals(List.of("format", "version", "id", "issuedAt", "enforceFailClosed", "classActions", "platforms"),
-            fields);
+        assertEquals(List.of("format", "version", "id", "issuedAt", "enforceFailClosed", "classActions", "platforms",
+            "scopedRules"), fields);
+        assertEquals(2, doc.get("format").asInt());
         assertEquals(1, doc.get("version").asLong());
         assertEquals("\"1\"", first.headers().firstValue("ETag").orElseThrow());
         assertTrue(first.headers().firstValue("Content-Type").orElseThrow().startsWith("application/json"));
@@ -359,6 +361,180 @@ class PolicyRegistryIntegrationTest {
         assertNotNull(new JdbcTemplate(dataSource).queryForObject(
             "SELECT reason_code FROM audit_event WHERE table_name = 'policy_snapshot' AND row_key = ?", String.class,
             String.valueOf(reissued.version())));
+    }
+
+    // PO decision Q-39: a version is scoped to everyone or to directory groups; stages are retired.
+
+    private static final String GROUP_ONE = "GRP-ALPHA-SYNTHETIC";
+    private static final String GROUP_TWO = "GRP-BETA-SYNTHETIC";
+    /** The stored, compared and sent form (GroupNames: trimmed, lower case, the i forms folded). */
+    private static final String ONE = "grp-alpha-synthetic";
+    private static final String TWO = "grp-beta-synthetic";
+
+    private static String scopedBody(String action, String mode, String... groups) {
+        var body = JSON.createObjectNode().put("action", action).put("mode", mode).put("reasonCode", "SYNTHETIC_CHANGE");
+        var scope = body.putObject("scope").put("kind", "GROUPS");
+        var list = scope.putArray("groups");
+        for (String g : groups) {
+            list.add(g);
+        }
+        return body.toString();
+    }
+
+    @Test
+    void aGroupScopedVersionReachesTheSnapshotAsAScopedRuleAndTheMaskedRoleSeesPseudonyms(
+        org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        ApiClient admin = signedIn("synthetic-admin");
+        ApiClient officer = signedIn("synthetic-officer");
+        ApiClient viewer = signedIn("synthetic-viewer");
+        ApiClient masked = signedIn("synthetic-aiview");
+        String versions = "/api/v1/policy/rules/class.TR_IBAN/versions";
+
+        ApiClient.Response draft = admin.post(versions, scopedBody("BLOCK", "enforce", " " + GROUP_TWO + " ", GROUP_ONE),
+            true);
+        assertEquals(201, draft.status(), String.valueOf(draft.body()));
+        assertEquals("GROUPS", draft.body().get("scope").get("kind").asText());
+        assertEquals("[\"" + ONE + "\",\"" + TWO + "\"]", draft.body().get("scope").get("groups").toString(),
+            "normalised and ordered");
+        assertEquals("all", draft.body().get("rolloutStage").asText());
+        assertEquals(200, admin.post(versions + "/2/approvals", role("security_admin"), true).status());
+        assertEquals(200, officer.post(versions + "/2/approvals", role("privacy_officer"), true).status());
+
+        JsonNode doc = verified(snapshot(internal.snapshotPort(), null));
+        assertEquals("REDACT", doc.get("classActions").get("TR_IBAN").asText(), "the ANY baseline is unchanged");
+        assertEquals("[{\"id\":\"class.TR_IBAN@2\",\"groups\":[\"" + ONE + "\",\"" + TWO + "\"],"
+            + "\"mode\":\"enforce\",\"classActions\":{\"TR_IBAN\":\"BLOCK\"}}]", doc.get("scopedRules").toString());
+
+        JsonNode plain = find(viewer.get("/api/v1/policy/rules").body().get("rules"), "class.TR_IBAN");
+        assertEquals(ONE, plain.get("versions").get(0).get("scope").get("groups").get(0).asText(),
+            "operators see the group names");
+        assertEquals("active", plain.get("versions").get(1).get("status").asText(), "the ANY version stays active");
+        ApiClient.Response maskedRules = masked.get("/api/v1/policy/rules");
+        assertEquals(200, maskedRules.status());
+        String maskedText = maskedRules.body().toString().toLowerCase(java.util.Locale.ROOT);
+        assertFalse(maskedText.contains("alpha-synthetic") || maskedText.contains("beta-synthetic"), maskedText);
+        JsonNode maskedGroups = find(maskedRules.body().get("rules"), "class.TR_IBAN").get("versions").get(0)
+            .get("scope").get("groups");
+        assertEquals(2, maskedGroups.size());
+        for (JsonNode g : maskedGroups) {
+            assertTrue(g.asText().matches("GRP-[0-9a-f]{10}"), g.asText());
+        }
+        String logs = output.getAll().toLowerCase(java.util.Locale.ROOT);
+        assertFalse(logs.contains("alpha-synthetic") || logs.contains("beta-synthetic"), "a group name is never logged");
+    }
+
+    @Test
+    void aScopeIsValidatedAndStagesAreRetired() throws Exception {
+        ApiClient admin = signedIn("synthetic-admin");
+        String versions = "/api/v1/policy/rules/class.TCKN/versions";
+        ApiClient.Response staged = admin.post(versions, draftBody("BLOCK", "enforce", "pilot"), true);
+        assertEquals(400, staged.status());
+        assertEquals("ROLLOUT_STAGE_RETIRED", staged.body().get("reason").asText());
+        for (String body : new String[] {
+            scopedBody("BLOCK", "enforce"),
+            scopedBody("BLOCK", "enforce", GROUP_ONE, GROUP_ONE.toLowerCase(java.util.Locale.ROOT)),
+            scopedBody("BLOCK", "enforce", GROUP_ONE + "," + GROUP_TWO),
+            scopedBody("BLOCK", "enforce", "G".repeat(257)),
+            scopedBody("BLOCK", "enforce", java.util.stream.IntStream.rangeClosed(1, 33).mapToObj(i -> "GRP-" + i)
+                .toArray(String[]::new))}) {
+            ApiClient.Response r = admin.post(versions, body, true);
+            assertEquals(400, r.status());
+            assertEquals("INVALID_SCOPE", r.body().get("reason").asText());
+            assertFalse(r.body().toString().contains("GRP-"), "a refusal never echoes a group");
+        }
+        ApiClient.Response platform = admin.post("/api/v1/policy/rules/platform.vendor-x/versions",
+            "{\"hostSuffixes\":[\"vendor.example\"],\"apiHosts\":[],\"loginHosts\":[],\"mode\":\"enforce\","
+                + "\"scope\":{\"kind\":\"GROUPS\",\"groups\":[\"" + GROUP_ONE + "\"]},\"reasonCode\":\"SYNTHETIC_CHANGE\"}",
+            true);
+        assertEquals("INVALID_SCOPE", platform.body().get("reason").asText());
+        for (String action : new String[] {"ALLOW", "WARN"}) {
+            ApiClient.Response relaxed = admin.post("/api/v1/policy/rules/class.SECRET/versions",
+                scopedBody(action, "monitor", GROUP_ONE), true);
+            assertEquals(409, relaxed.status());
+            assertEquals("FAIL_CLOSED_CLASS_NOT_RELAXABLE", relaxed.body().get("reason").asText());
+        }
+        ApiClient.Response noStage = admin.post(versions, "{\"action\":\"BLOCK\",\"mode\":\"enforce\","
+            + "\"scope\":{\"kind\":\"ANY\",\"groups\":[]},\"reasonCode\":\"SYNTHETIC_CHANGE\"}", true);
+        assertEquals(201, noStage.status(), String.valueOf(noStage.body()));
+        assertEquals("ANY", noStage.body().get("scope").get("kind").asText());
+        assertEquals(1, ledger("policy_rule_version", "INSERT", "policy.draft"));
+    }
+
+    // PO decision Q-40: one security administrator retires a platform row with a reason.
+
+    @Test
+    void onlyASecurityAdministratorRetiresAPlatformWithAReasonAndItLeavesTheSnapshot() throws Exception {
+        String retire = "/api/v1/policy/rules/platform.github/retirement";
+        String reason = JSON.createObjectNode().put("reason", "Synthetic vendor retired").toString();
+        for (String login : new String[] {"synthetic-viewer", "synthetic-officer", "synthetic-aiview",
+            "synthetic-dual"}) {
+            assertEquals(403, signedIn(login).post(retire, reason, true).status(), login);
+        }
+        ApiClient admin = signedIn("synthetic-admin");
+        ApiClient.Response blank = admin.post(retire, JSON.createObjectNode().put("reason", "  ").toString(), true);
+        assertEquals(400, blank.status());
+        assertEquals("INVALID_RETIREMENT", blank.body().get("reason").asText());
+        assertEquals("ESTATE_NAME_REFUSED", admin.post(retire, JSON.createObjectNode()
+            .put("reason", "moved to synthetic-estate").toString(), true).body().get("reason").asText());
+        assertEquals("UNKNOWN_PLATFORM", admin.post("/api/v1/policy/rules/class.TCKN/retirement", reason, true).body()
+            .get("reason").asText());
+        assertEquals(1, verified(snapshot(internal.snapshotPort(), null)).get("version").asLong());
+
+        ApiClient.Response done = admin.post(retire, reason, true);
+        assertEquals(200, done.status(), String.valueOf(done.body()));
+        JsonNode row = done.body().get("retired").get(0);
+        assertEquals("retired", row.get("status").asText());
+        assertEquals("Synthetic vendor retired", row.get("retirement").get("reason").asText());
+        assertTrue(row.get("retirement").get("retiredBy").asText().matches("USR-[0-9a-f]{10}"));
+
+        JsonNode doc = verified(snapshot(internal.snapshotPort(), "\"1\""));
+        assertEquals(2, doc.get("version").asLong());
+        assertEquals(8, doc.get("platforms").size());
+        for (JsonNode p : doc.get("platforms")) {
+            assertFalse("github".equals(p.get("platform").asText()), "the retired platform left the snapshot");
+        }
+        JsonNode listed = find(signedIn("synthetic-viewer").get("/api/v1/policy/rules").body().get("rules"),
+            "platform.github").get("versions").get(0);
+        assertEquals("retired", listed.get("status").asText(), "the row is kept, never deleted");
+        assertEquals(1, new JdbcTemplate(dataSource).queryForObject("SELECT count(*) FROM audit_event WHERE "
+            + "table_name = 'policy_rule_version' AND operation = 'UPDATE' AND action_id = 'policy.platform_retire' "
+            + "AND reason_code = 'Synthetic vendor retired' AND actor_fingerprint = ?", Integer.class,
+            row.get("retirement").get("retiredBy").asText()));
+        ApiClient.Response again = admin.post(retire, reason, true);
+        assertEquals(404, again.status());
+        assertEquals("POLICY_VERSION_NOT_FOUND", again.body().get("reason").asText());
+    }
+
+    @Test
+    void theLastPlatformIsNeverRetired() throws Exception {
+        ApiClient admin = signedIn("synthetic-admin");
+        String reason = JSON.createObjectNode().put("reason", "Synthetic clean-up").toString();
+        JsonNode rules = admin.get("/api/v1/policy/rules").body().get("rules");
+        List<String> platforms = new ArrayList<>();
+        for (JsonNode r : rules) {
+            if ("platform".equals(r.get("kind").asText())) {
+                platforms.add(r.get("ruleId").asText());
+            }
+        }
+        for (String id : platforms.subList(0, platforms.size() - 1)) {
+            assertEquals(200, admin.post("/api/v1/policy/rules/" + id + "/retirement", reason, true).status(), id);
+        }
+        ApiClient.Response last = admin.post("/api/v1/policy/rules/" + platforms.get(platforms.size() - 1)
+            + "/retirement", reason, true);
+        assertEquals(409, last.status());
+        assertEquals("RETIRE_WOULD_NOT_COMPILE", last.body().get("reason").asText());
+        assertEquals(1, verified(snapshot(internal.snapshotPort(), null)).get("platforms").size());
+    }
+
+    @Test
+    void theMaskedRetirementReasonPassesTheMasker() throws Exception {
+        PolicyRuleVersion v = new PolicyRuleVersion("platform.vendor-x", 1, "platform", null, null, "vendor-x",
+            List.of("vendor.example"), List.of(), List.of(), null, "enforce", "all", "retired", "registry",
+            "USR-00000000a1", "SYNTHETIC_CHANGE", Instant.EPOCH, Instant.EPOCH, null, List.of(), "ANY", List.of(),
+            new PolicyRuleVersion.Retirement(Instant.EPOCH, "USR-00000000a1", "see 192.0.2.10 and synthetic-estate"));
+        String masked = springJson.writeValueAsString(PolicyViews.VersionView.of(v, java.util.Set.of())
+            .masked(masking.masker()));
+        assertFalse(masked.contains("192.0.2.10") || masked.contains("synthetic-estate"), masked);
     }
 
     private int ledger(String table) {

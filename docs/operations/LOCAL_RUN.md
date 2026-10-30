@@ -90,9 +90,36 @@ and passes the masking funnel.
 The policy registry by hand: sign in as `synthetic-admin`, open Policies, select a class (for example TCKN), submit a new
 version (a fail-closed class is never offered Allow or Warn) and approve it as security administrator; then sign in as
 `synthetic-officer` in another browser profile and give the privacy officer approval. The second approval activates the
-version; with rollout stage `all` and mode `enforce` the next snapshot carries it (format 1 has no group targeting, so a
-staged or monitor version is shown, approved and simulated but not sent). The Simulate button counts how the stored
-events carrying the class would change under a proposed action.
+version. A version with the scope Everyone and mode `enforce` becomes the snapshot's `classActions`; an Everyone version
+in monitor mode is shown, approved and simulated but not sent. The Simulate button counts how the stored events carrying
+the class would change under a proposed action (it re-decides the Everyone baseline only).
+
+A group-scoped version (PO decision Q-39, snapshot format 2): in the new-version form choose "Seçilen dizin grupları"
+(Selected directory groups), type the short directory group name (no commas) and press Enter for each group (1 to 32;
+use synthetic names such as `GRP-ALPHA` locally, never a real directory group in a committed file), then submit and give
+the two approvals as above. Names are stored, compared and sent in one normal form (trimmed, NFC, the Turkish and Latin
+i forms folded to `i`, lower case), so `GRP-ALPHA` is listed as `grp-alpha`; two names that normalise alike are refused.
+The next snapshot lists it in `scopedRules` as `class.<CLASS>@<version>` with its groups and mode (monitor versions are
+sent too); the Everyone version keeps applying beside it, and the Policies table shows both scopes as chips. The same as
+a request:
+
+```bash
+curl -s -b cookies.txt -H "X-XSRF-TOKEN: $XSRF" -H 'Content-Type: application/json' \
+  -d '{"action":"REDACT","mode":"enforce","scope":{"kind":"GROUPS","groups":["GRP-ALPHA"]},"reasonCode":"PILOT_GROUP"}' \
+  http://127.0.0.1:8090/api/v1/policy/rules/class.SECRET/versions
+```
+
+Every class is fail-closed today, so a group may be looser than everyone only as REDACT where everyone is BLOCK; ALLOW
+and WARN are refused in every scope. `rolloutStage` is optional and, when sent, `all` (the percentage stages are retired).
+
+Retiring a platform (PO decision Q-40): signed in as `synthetic-admin`, open Platforms, press "Kullanımdan kaldır" on an
+active row, write the reason, press "Devam et", read the consequences and confirm with "Evet, kullanımdan kaldır". No
+second approval is needed. The row stays listed, greyed, with the time, the administrator's pseudonym and the reason; the
+next snapshot leaves the platform out; the ledger (`audit_event`, action `policy.platform_retire`) names the
+administrator and carries the reason. The last active platform cannot be retired (`RETIRE_WOULD_NOT_COMPILE`). Bringing a
+platform back is a new version under the two approvals. As a request:
+`POST /api/v1/policy/rules/platform.<id>/retirement` with `{"reason":"..."}` (security administrator only; 403 for the
+viewer, the privacy officer and the masked role).
 
 The signed snapshot, as the data plane pulls it:
 

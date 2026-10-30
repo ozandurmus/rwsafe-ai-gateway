@@ -6,9 +6,13 @@ import {
   CardContent,
   Chip,
   FormControl,
+  FormControlLabel,
+  FormLabel,
   Grid,
   InputLabel,
   MenuItem,
+  Radio,
+  RadioGroup,
   Select,
   Step,
   StepContent,
@@ -31,13 +35,13 @@ import {
   type PolicyAction,
   type PolicyMode,
   type Registry,
-  type RolloutStage,
   type Rule,
   type RuleVersion,
+  type Scope,
+  type ScopeKind,
   type Simulation,
 } from '../api';
 import { useAuth } from '../auth';
-import { RolloutBar } from '../components/RolloutBar';
 import { Empty, ErrorPanel, Loading } from '../components/StatePanel';
 import { type I18n, useI18n } from '../i18n';
 import {
@@ -55,17 +59,35 @@ import { useApi } from '../useApi';
 const APPROVER_ROLES: ApproverRole[] = ['security_admin', 'privacy_officer'];
 const RELAXING: PolicyAction[] = ['ALLOW', 'WARN'];
 
-/** The version the data plane enforces: active, enforce, rollout stage all (snapshot format 1). */
+/** The version the data plane enforces for everyone: active, enforce, stage all, scope ANY (snapshot classActions). */
 export function baseline(rule: Rule): RuleVersion | undefined {
-  return rule.versions.find((v) => v.status === 'active' && v.mode === 'enforce' && v.rolloutStage === 'all');
+  return rule.versions.find(
+    (v) => v.status === 'active' && v.mode === 'enforce' && v.rolloutStage === 'all' && v.scope.kind === 'ANY',
+  );
 }
 
-/** The version whose rollout is in progress: the newest pending one, else an active staged one, else the baseline. */
-export function rollingVersion(rule: Rule): RuleVersion | undefined {
+/** The active group-scoped versions (snapshot scopedRules, enforce and monitor), oldest first. */
+export function scopedVersions(rule: Rule): RuleVersion[] {
+  return rule.versions.filter((v) => v.status === 'active' && v.scope.kind === 'GROUPS').reverse();
+}
+
+/** "Herkes" / "Everyone", or the group names (as the server sends them: real names, or pseudonyms when masked). */
+export function scopeText(i18n: I18n, scope: Scope): string {
+  return scope.kind === 'ANY' ? i18n.t('scope.everyone') : scope.groups.join(', ');
+}
+
+/** The scope as chips: one "Everyone" chip, or one chip per group. */
+export function ScopeChips({ scope }: { scope: Scope }) {
+  const { t } = useI18n();
+  if (scope.kind === 'ANY') {
+    return <Chip size="small" variant="outlined" label={t('scope.everyone')} />;
+  }
   return (
-    rule.versions.find((v) => v.status === 'pending') ??
-    rule.versions.find((v) => v.status === 'active' && v.rolloutStage !== 'all') ??
-    baseline(rule)
+    <Box component="span" display="inline-flex" gap={0.5} flexWrap="wrap" aria-label={t('scope.groupsAria')}>
+      {scope.groups.map((g) => (
+        <Chip key={g} size="small" color="info" variant="outlined" label={g} />
+      ))}
+    </Box>
   );
 }
 
@@ -129,7 +151,7 @@ export function PoliciesPage() {
                       <TableCell>{t('policies.col.rule')}</TableCell>
                       <TableCell>{t('policies.col.action')}</TableCell>
                       <TableCell>{t('policies.col.mode')}</TableCell>
-                      <TableCell>{t('policies.col.rollout')}</TableCell>
+                      <TableCell>{t('policies.col.scope')}</TableCell>
                       <TableCell>{t('policies.col.version')}</TableCell>
                       <TableCell>{t('policies.col.status')}</TableCell>
                     </TableRow>
@@ -137,7 +159,7 @@ export function PoliciesPage() {
                   <TableBody>
                     {rules.map((r) => {
                       const base = baseline(r);
-                      const rolling = rollingVersion(r);
+                      const scoped = scopedVersions(r);
                       const pending = r.versions.filter((v) => v.status === 'pending').length;
                       return (
                         <TableRow
@@ -157,7 +179,19 @@ export function PoliciesPage() {
                           </TableCell>
                           <TableCell>{valueOf(i18n, base)}</TableCell>
                           <TableCell>{base ? modeLabel(i18n, base.mode) : '—'}</TableCell>
-                          <TableCell>{rolling && <RolloutBar stage={rolling.rolloutStage} />}</TableCell>
+                          <TableCell>
+                            <Box display="grid" gap={0.5} justifyItems="start">
+                              {base && <ScopeChips scope={base.scope} />}
+                              {scoped.map((v) => (
+                                <Box key={v.version} display="flex" alignItems="center" gap={0.5} flexWrap="wrap">
+                                  <ScopeChips scope={v.scope} />
+                                  <Typography variant="caption" color="text.secondary">
+                                    {`${valueOf(i18n, v)} · ${modeLabel(i18n, v.mode)}`}
+                                  </Typography>
+                                </Box>
+                              ))}
+                            </Box>
+                          </TableCell>
                           <TableCell sx={{ whiteSpace: 'nowrap' }}>
                             {base ? t('policies.version', { version: base.version }) : '—'}
                             {pending > 0 && (
@@ -227,10 +261,18 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
                   {t('policies.versionLine', {
                     action: valueOf(i18n, v),
                     mode: modeLabel(i18n, v.mode),
-                    stage: stageLabel(i18n, v.rolloutStage),
+                    scope: scopeText(i18n, v.scope),
                     status: statusLabel(i18n, v.status),
                     reason: v.source === 'seed' ? t('policies.seedSource') : v.reasonCode,
                   })}
+                  {v.rolloutStage !== 'all' && (
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      sx={{ ml: 1 }}
+                      label={t('policies.legacyStage', { stage: stageLabel(i18n, v.rolloutStage) })}
+                    />
+                  )}
                   {v.inSnapshot && <Chip size="small" sx={{ ml: 1 }} label={t('policies.inSnapshot')} />}
                 </Typography>
               </li>
@@ -294,7 +336,7 @@ function ApprovalSteps({ version, onChanged }: { version: RuleVersion | undefine
             version: version.version,
             action: valueOf(i18n, version),
             mode: modeLabel(i18n, version.mode),
-            stage: stageLabel(i18n, version.rolloutStage),
+            scope: scopeText(i18n, version.scope),
           })}
         </Typography>
         {error !== null && <ErrorPanel error={error} />}
@@ -445,19 +487,20 @@ function DraftForm({ rule, registry, onChanged }: { rule: Rule; registry: Regist
   const actions = registry.actions.filter((a) => !(rule.failClosed && RELAXING.includes(a)));
   const [action, setAction] = useState<PolicyAction>(baseline(rule)?.action ?? actions[actions.length - 1] ?? 'BLOCK');
   const [mode, setMode] = useState<PolicyMode>('enforce');
-  const [stage, setStage] = useState<RolloutStage>('pilot');
+  const [scope, setScope] = useState<Scope>({ kind: 'ANY', groups: [] });
   const [reasonCode, setReasonCode] = useState('');
   const [error, setError] = useState<unknown>(null);
   const [created, setCreated] = useState<number | null>(null);
   const reasonValid = /^[A-Z][A-Z0-9_]{2,63}$/.test(reasonCode);
+  const scopeValid = scope.kind === 'ANY' || scope.groups.length > 0;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     const body: DraftRequest =
       rule.kind === 'flow'
-        ? { enforceFailClosed: true, mode, rolloutStage: stage, reasonCode }
-        : { action, mode, rolloutStage: stage, reasonCode };
+        ? { enforceFailClosed: true, mode, scope: { kind: 'ANY', groups: [] }, reasonCode }
+        : { action, mode, scope: scope.kind === 'ANY' ? { kind: 'ANY', groups: [] } : scope, reasonCode };
     try {
       const v = await api.draftVersion(rule.ruleId, body);
       setCreated(v.version);
@@ -511,21 +554,6 @@ function DraftForm({ rule, registry, onChanged }: { rule: Rule; registry: Regist
               ))}
             </Select>
           </FormControl>
-          <FormControl size="small" sx={{ minWidth: 140 }}>
-            <InputLabel id="draft-stage">{t('draft.stage')}</InputLabel>
-            <Select
-              labelId="draft-stage"
-              label={t('draft.stage')}
-              value={stage}
-              onChange={(e) => setStage(e.target.value as RolloutStage)}
-            >
-              {registry.stages.map((s) => (
-                <MenuItem key={s} value={s}>
-                  {stageLabel(i18n, s)}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
           <TextField
             size="small"
             label={t('draft.reasonField')}
@@ -535,14 +563,108 @@ function DraftForm({ rule, registry, onChanged }: { rule: Rule; registry: Regist
             error={reasonCode !== '' && !reasonValid}
           />
         </Box>
+        {rule.kind === 'class_action' && (
+          <ScopePicker scope={scope} max={registry.maxScopeGroups} onChange={setScope} />
+        )}
         {error !== null && <ErrorPanel error={error} />}
         {created !== null && <Alert severity="success">{t('draft.created', { version: created })}</Alert>}
         <Box>
-          <Button type="submit" variant="contained" disabled={!reasonValid}>
+          <Button type="submit" variant="contained" disabled={!reasonValid || !scopeValid}>
             {t('draft.submit')}
           </Button>
         </Box>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * The scope picker of a new class-rule version (PO decision Q-39): everyone, or the members of directory groups typed
+ * by the operator (chips; 1 to `max`; a name typed twice, ignoring case, is added once). Group names stay in this form
+ * and the request; they are never written to the browser's storage.
+ */
+export function ScopePicker({ scope, max, onChange }: { scope: Scope; max: number; onChange: (s: Scope) => void }) {
+  const { t } = useI18n();
+  const [entry, setEntry] = useState('');
+  const full = scope.groups.length >= max;
+  const comma = entry.includes(',');
+
+  function add() {
+    const name = entry.trim();
+    if (!name || full || comma) {
+      return;
+    }
+    if (!scope.groups.some((g) => g.toLowerCase() === name.toLowerCase())) {
+      onChange({ kind: 'GROUPS', groups: [...scope.groups, name] });
+    }
+    setEntry('');
+  }
+
+  return (
+    <Box display="grid" gap={1}>
+      <FormControl>
+        <FormLabel id="draft-scope">{t('draft.scope')}</FormLabel>
+        <RadioGroup
+          row
+          aria-labelledby="draft-scope"
+          value={scope.kind}
+          onChange={(e) => onChange({ kind: e.target.value as ScopeKind, groups: scope.groups })}
+        >
+          <FormControlLabel value="ANY" control={<Radio size="small" />} label={t('draft.scopeEveryone')} />
+          <FormControlLabel value="GROUPS" control={<Radio size="small" />} label={t('draft.scopeGroups')} />
+        </RadioGroup>
+      </FormControl>
+      {scope.kind === 'GROUPS' && (
+        <Box display="grid" gap={1}>
+          <Box display="flex" gap={1} alignItems="flex-start" flexWrap="wrap">
+            <TextField
+              size="small"
+              label={t('draft.groupField')}
+              value={entry}
+              inputProps={{ maxLength: 256 }}
+              onChange={(e) => setEntry(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  add();
+                }
+              }}
+              helperText={
+                full ? t('draft.groupLimit', { max }) : comma ? t('draft.groupComma') : t('draft.groupHelp', { max })
+              }
+              error={comma}
+              disabled={full}
+            />
+            <Button variant="outlined" onClick={add} disabled={full || comma || entry.trim() === ''}>
+              {t('draft.groupAdd')}
+            </Button>
+          </Box>
+          {scope.groups.length === 0 ? (
+            <Typography variant="body2" color="warning.main">
+              {t('draft.groupsNeeded')}
+            </Typography>
+          ) : (
+            <Box display="flex" gap={0.5} flexWrap="wrap" aria-label={t('scope.groupsAria')}>
+              {scope.groups.map((g) => (
+                <Chip
+                  key={g}
+                  size="small"
+                  label={g}
+                  onDelete={() => onChange({ kind: 'GROUPS', groups: scope.groups.filter((x) => x !== g) })}
+                  deleteIcon={
+                    <Box component="span" role="button" aria-label={t('draft.groupRemove', { group: g })}>
+                      ×
+                    </Box>
+                  }
+                />
+              ))}
+            </Box>
+          )}
+          <Typography variant="body2" color="text.secondary">
+            {t('draft.scopeNote')}
+          </Typography>
+        </Box>
+      )}
+    </Box>
   );
 }
