@@ -21,8 +21,8 @@
       "purpose": "32 random bytes; rwsafe's own masking and pseudonym key, never neXus's (AGENTS.md 4.8)"
     },
     "rwsafe-db-credentials": {
-      "keys": ["spring.datasource.password"],
-      "purpose": "the rwsafe_app role password: the database's initial role and the control plane's config-tree file"
+      "keys": ["spring.datasource.password", "rwsafe.migration.password"],
+      "purpose": "ADR-002 roles: rwsafe_app's password (DML; the database's start script and the control plane's datasource) and rwsafe_migrate's (the database owner; Flyway); both config-tree files in the control plane"
     },
     "rwsafe-ldap-bind": {
       "keys": ["password"],
@@ -31,8 +31,8 @@
   },
   "configMaps": {
     "rwsafe-estate": {
-      "keys": ["ldap-url", "ldap-bind-dn", "ldap-user-search-base", "trusted-proxies", "estate-dictionary.txt"],
-      "purpose": "real names: directory URL and base DNs, the ingress addresses as a regular expression, the estate dictionary"
+      "keys": ["ldap-url", "ldap-bind-dn", "ldap-user-search-base", "trusted-proxies", "estate-dictionary.txt", "directory-cidr"],
+      "purpose": "real names: directory URL and base DNs, the ingress addresses as a regular expression, the estate dictionary, and the directory's CIDR that the deploy's in-memory patch puts into NetworkPolicy rwsafe-control-to-directory (DEPLOY_AND_SHARED_HOST_RUNBOOK section 7.4)"
     },
     "rwsafe-snapshot-public-keys": {
       "keys": ["rwsafe-snapshot-1.pem"],

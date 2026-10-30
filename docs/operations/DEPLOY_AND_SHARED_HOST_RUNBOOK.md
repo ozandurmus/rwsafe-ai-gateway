@@ -85,7 +85,8 @@ values are created once by the operator procedure in §4 and patched.
 ## 4. First installation (operator steps, one time)
 
 1. Apply the k3s overlay's namespace objects (Namespace with PSA labels, PriorityClasses, ResourceQuota, LimitRange).
-2. Create the Secrets' values with `openssl rand`, patched into the committed empty Secret objects: database roles, privacy
+2. Create the Secrets' values with `openssl rand` as the Secrets named in `runtime-contracts.json`; no Secret object is
+   committed or rendered (§7.1, §7.4): database roles, privacy
    HMAC key (32 bytes, rwsafe's own), capture-store envelope key, policy-signing key, ICAP TLS server certificate and the
    ProxySG client CA for mTLS (from the proxy team), the gateway's upstream corporate API keys (from the AI platform
    admins), the e2e machine token. Values never touch a tracked file, a command argument or the terminal.
@@ -123,8 +124,8 @@ release.
 | Path | What |
 |---|---|
 | `deploy/images/dataplane.Containerfile`, `deploy/images/control.Containerfile` | multi-stage builds: Gradle `imageDist` (the locked, checksum-verified runtime classpath) on UBI 9 OpenJDK 21, then the UBI 9 OpenJDK 21 runtime; digest-pinned bases, UID 185 with group 0, read-only-root friendly, no shell entry point |
-| `deploy/rwsafe/base/` | ServiceAccounts (no token), committed ConfigMaps, `rwsafe-dataplane` (Deployment, ClusterIP `rwsafe-icap`, PDB), `rwsafe-control` (Deployment, Service 8080/8091/8092), `rwsafe-db` (PVC `rwsafe-db-data` 20Gi, StatefulSet, Service), NetworkPolicies between rwsafe's workloads with a default deny |
-| `deploy/rwsafe/overlays/k3s/` | namespaces, PriorityClasses and their assignment, quota and limits, the ICAP ServiceLB Service, the platform-peer NetworkPolicies (DNS, ServiceLB, Traefik), the in-cluster registry image names with a placeholder digest |
+| `deploy/rwsafe/base/` | ServiceAccounts (no token), committed ConfigMaps, `rwsafe-icap` (Deployment of the `rwsafe-dataplane` image, ClusterIP `rwsafe-icap`, PDB; preStop `/admin/drain` on the metrics port 9401, grace 30 s), `rwsafe-control` (Deployment, Service 8080/8091/8092, ready on `/readyz` when all three listen), `rwsafe-db` (PVC `rwsafe-db-data` 20Gi, StatefulSet, Service; roles `rwsafe_migrate` and `rwsafe_app` and the ADR-002 §7 tuning from `base/db/`), NetworkPolicies between rwsafe's workloads with a default deny |
+| `deploy/rwsafe/overlays/k3s/` | namespaces, PriorityClasses and their assignment, quota and limits, the ICAP ServiceLB Service, the platform-peer NetworkPolicies (DNS, ServiceLB, Traefik, the metrics scraper) and the directory egress with an RFC 5737 placeholder CIDR, the in-cluster registry image names with a placeholder digest |
 | `deploy/rwsafe/contracts/runtime-contracts.json` | names and keys of the Secrets and uncommitted ConfigMaps the manifests reference; never rendered, never applied |
 | `tools/deploy/manifest_check.py` | renders the k3s overlay offline and asserts the section 8 rules; CI job `manifests` |
 
@@ -155,13 +156,25 @@ cd "${scratch}/overlays/k3s"
 kustomize edit set image \
   rwsafe-dataplane=registry.kube-system.svc.cluster.local/rwsafe-dataplane@sha256:<dataplane digest> \
   rwsafe-control=registry.kube-system.svc.cluster.local/rwsafe-control@sha256:<control digest>
-python3 -B "${repo}/tools/deploy/manifest_check.py" --overlay . --release
-kubectl kustomize . | kubectl diff --server-side -f -
-kubectl kustomize . | kubectl apply --server-side -f -
-kubectl -n rwsafe rollout status deploy/rwsafe-dataplane --timeout=5m
+# the estate patch, in memory only (§2): the directory's CIDR replaces the RFC 5737 placeholder of the NetworkPolicy
+# rwsafe-control-to-directory; nothing holding the real value is written to disk or printed
+export RWSAFE_DIRECTORY_CIDR="$(kubectl -n rwsafe get configmap rwsafe-estate -o jsonpath='{.data.directory-cidr}')"
+render() { kubectl kustomize . | python3 -c 'import os, sys; sys.stdout.write(sys.stdin.read().replace(
+  "cidr: 192.0.2.0/24", "cidr: " + os.environ["RWSAFE_DIRECTORY_CIDR"]))'; }
+render | python3 -B "${repo}/tools/deploy/manifest_check.py" --rendered /dev/stdin --release
+render | kubectl diff --server-side -f -
+# the control plane first, and wait for it: a rolling ICAP pod posts its drain's verdict events to a running control
+# plane, never to its own emptyDir spool that dies with it (PR 18 review D-02)
+render | kubectl apply --server-side -l 'app.kubernetes.io/name!=rwsafe-icap' -f -
+kubectl -n rwsafe rollout status deploy/rwsafe-control --timeout=5m
+render | kubectl apply --server-side -f -
+kubectl -n rwsafe rollout status deploy/rwsafe-icap --timeout=5m
 ```
 
-`--release` refuses the committed all-zero placeholder digest. The digest edit lives only in the scratch copy (or in the
+The control plane is ready only when `/readyz` answers, that is after Flyway ran as `rwsafe_migrate` and with all three
+listeners (8080, 8091, 8092) up; its 5 s preStop lets in-flight event batches on 8092 finish. The ICAP pods drain from
+their preStop hook (`/admin/drain`, §1.2) and end inside the 30 s grace period. `--release` refuses the committed
+all-zero placeholder digest and the documentation-range directory CIDR. The digest edit lives only in the scratch copy (or in the
 deploy script's memory) and is never committed. The data plane is ready only once it holds a valid signed
 snapshot from `rwsafe-control:8091`; until the control plane serves the snapshot feed, a fresh data plane stays not
 ready (fail closed) and ProxySG follows ADR-010.

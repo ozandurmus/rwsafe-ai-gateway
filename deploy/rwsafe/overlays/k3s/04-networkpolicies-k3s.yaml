@@ -1,6 +1,8 @@
 # k3s platform peers (PORT-3): CoreDNS, Traefik and the ServiceLB (klipper-lb) pods all run in kube-system. Labels are the
 # k3s defaults; UNVERIFIED on HOST-A for the ServiceLB labels (2026-10-30): verify with a masked label listing of the
 # svclb pods (`tools/hosta/inventory_readonly.sh`, shapes only) before the first apply.
+# DNS only for the pods that resolve a name (the ICAP pods resolve the control plane's Service, the control plane its
+# database and the directory); the database gets none (PR 18 review D-03).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -8,7 +10,9 @@ metadata:
   namespace: rwsafe
   labels: { app.kubernetes.io/part-of: rwsafe }
 spec:
-  podSelector: {}
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/name, operator: In, values: [rwsafe-icap, rwsafe-control] }
   policyTypes: [Egress]
   egress:
     - to:
@@ -29,11 +33,11 @@ kind: NetworkPolicy
 metadata:
   name: rwsafe-icap-from-servicelb
   namespace: rwsafe
-  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-dataplane }
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap }
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: rwsafe-dataplane
+      app.kubernetes.io/name: rwsafe-icap
   policyTypes: [Ingress]
   ingress:
     - from:
@@ -70,3 +74,50 @@ spec:
               app.kubernetes.io/name: traefik
       ports:
         - { protocol: TCP, port: 8080 }
+---
+# PORTS_AND_RESOURCES §3: the ICAP pods' metrics port (9401) from the metrics scraper only. Which namespace scrapes on
+# HOST-A is UNVERIFIED (2026-10-30); the rule admits a namespace that carries the label below, which no namespace carries
+# until the PO labels the scraper's (a change outside rwsafe's namespaces, asked of the PO first, AGENTS.md section 8), so
+# until then nothing is admitted. The same listener holds the preStop drain (/admin/drain): an admitted scraper could
+# drain a pod, which is why nothing else is admitted to this port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-icap-metrics-from-scraper
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-icap
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              rwsafe.io/metrics-scraper: "true"
+      ports:
+        - { protocol: TCP, port: 9401 }
+---
+# The directory (LDAP/LDAPS, Q-9) by address only (PR 18 review D-03). The committed CIDR is an RFC 5737 documentation
+# placeholder that reaches nothing; the deploy's transient estate patch (DEPLOY_AND_SHARED_HOST_RUNBOOK §2, from
+# `rwsafe-estate`) replaces it with the directory's addresses in memory, and `manifest_check.py --release` refuses a
+# render that still holds a documentation range.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-control-to-directory
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-control }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.0/24
+      ports:
+        - { protocol: TCP, port: 636 }
+        - { protocol: TCP, port: 389 }

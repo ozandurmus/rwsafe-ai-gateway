@@ -18,6 +18,10 @@ import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -31,7 +35,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *       rewriting the file in place;</li>
  *   <li>when the spool is full the shipper holds the batch and stops draining, the queue fills past its high-water mark,
  *       and the engine blocks fail-closed flows;</li>
- *   <li>on shutdown the shipper drains the queue to the control plane or the spool before it returns (D-01).</li>
+ *   <li>on shutdown the shipper drains the queue to the control plane or the spool before it returns (D-01), within the
+ *       flush bound it is stopped with: what is left when the bound ends is counted lost, so the pod's termination
+ *       stays inside its grace period (PR 18 review D-02).</li>
  * </ul>
  * Without a configured endpoint the events are counted and discarded (local runs).
  */
@@ -40,6 +46,9 @@ public final class EventShipper implements Runnable {
     private static final int BATCH = 200;
     private static final String SPOOL = "verdict-spool.jsonl";
     private static final int SHUTDOWN_ATTEMPTS = 3;
+    private static final Duration POST_TIMEOUT = Duration.ofSeconds(5);
+    /** The flush bound of {@link #stop()}. */
+    public static final Duration DEFAULT_FLUSH_BOUND = Duration.ofSeconds(5);
 
     private final BoundedEventQueue queue;
     private final URI endpoint;
@@ -53,6 +62,7 @@ public final class EventShipper implements Runnable {
     private final AtomicLong spoolBytes = new AtomicLong();
     private final Object wake = new Object();
     private volatile boolean running = true;
+    private volatile long stopDeadlineNanos;
     private long nextReplayAtNanos;
 
     public EventShipper(BoundedEventQueue queue, URI endpoint) {
@@ -82,6 +92,10 @@ public final class EventShipper implements Runnable {
     public void run() {
         List<VerdictEvent> batch = new ArrayList<>(BATCH);
         while (running || queue.size() > 0) {
+            if (flushBoundPassed()) {
+                abandonQueued();
+                return;
+            }
             // On shutdown with a spool, queued batches go straight to disk: no replay and no HTTP wait (PR 14 recheck N-01).
             boolean shuttingDownToSpool = !running && spoolDir != null;
             boolean spoolPending = client != null
@@ -128,7 +142,7 @@ public final class EventShipper implements Runnable {
     private void hold(String json, int size) {
         int attempts = 0;
         while (!post(json)) {
-            if (!running && ++attempts >= SHUTDOWN_ATTEMPTS) {
+            if (!running && (++attempts >= SHUTDOWN_ATTEMPTS || flushBoundPassed())) {
                 lost.addAndGet(size);
                 return;
             }
@@ -138,17 +152,37 @@ public final class EventShipper implements Runnable {
     }
 
     private boolean post(String json) {
+        Duration timeout = POST_TIMEOUT;
+        if (!running) {
+            long left = stopDeadlineNanos - System.nanoTime();
+            if (left <= 0) {
+                return false;
+            }
+            timeout = Duration.ofNanos(Math.min(left, POST_TIMEOUT.toNanos()));
+        }
         HttpRequest request = HttpRequest.newBuilder(endpoint)
-            .timeout(Duration.ofSeconds(5))
+            .timeout(timeout)
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(json))
             .build();
+        // Asynchronous with a short wait, so a stop's flush bound also ends a post that began while running.
+        CompletableFuture<HttpResponse<Void>> response = client.sendAsync(request, HttpResponse.BodyHandlers.discarding());
         try {
-            return client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode() / 100 == 2;
-        } catch (IOException e) {
+            while (true) {
+                try {
+                    return response.get(50, TimeUnit.MILLISECONDS).statusCode() / 100 == 2;
+                } catch (TimeoutException e) {
+                    if (flushBoundPassed()) {
+                        response.cancel(true);
+                        return false;
+                    }
+                }
+            }
+        } catch (ExecutionException e) {
             return false;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            response.cancel(true);
             return false;
         }
     }
@@ -249,8 +283,32 @@ public final class EventShipper implements Runnable {
         }
     }
 
-    /** Asks the shipper to finish: it drains what is queued (to the control plane or the spool) and returns. */
+    /** True once a stopped shipper's flush bound has ended. */
+    private boolean flushBoundPassed() {
+        return !running && System.nanoTime() - stopDeadlineNanos >= 0;
+    }
+
+    /** The flush bound ended: what is still queued is counted lost, never silently dropped. */
+    private void abandonQueued() {
+        List<VerdictEvent> rest = new ArrayList<>(BATCH);
+        int n;
+        while ((n = queue.drainTo(rest, BATCH)) > 0) {
+            lost.addAndGet(n);
+            rest.clear();
+        }
+    }
+
+    /** {@link #stop(Duration)} with {@link #DEFAULT_FLUSH_BOUND}. */
     public void stop() {
+        stop(DEFAULT_FLUSH_BOUND);
+    }
+
+    /**
+     * Asks the shipper to finish: it drains what is queued (to the control plane or the spool) and returns, at the
+     * latest when {@code flushBound} has passed; events still queued then are counted in {@link #lost()}.
+     */
+    public void stop(Duration flushBound) {
+        stopDeadlineNanos = System.nanoTime() + Math.max(0, flushBound.toNanos());
         running = false;
         synchronized (wake) {
             wake.notifyAll();
@@ -265,7 +323,7 @@ public final class EventShipper implements Runnable {
         return discarded.get();
     }
 
-    /** Events that could neither be sent nor spooled at shutdown (no spool, control plane down). */
+    /** Events that could neither be sent nor spooled at shutdown (no spool, control plane down, flush bound over). */
     public long lost() {
         return lost.get();
     }

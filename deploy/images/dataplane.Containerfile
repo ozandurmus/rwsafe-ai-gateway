@@ -36,8 +36,9 @@ WORKDIR /app
 ENV HOME=/tmp \
     LANG=C.UTF-8 \
     RWSAFE_ICAP_BIND=0.0.0.0
-# 1344 plain ICAP (H-2 pilot only), 11344 Secure ICAP (mTLS), 9090 /metrics and /ready.
-EXPOSE 1344 11344 9090
+# 1344 plain ICAP (H-2 pilot only), 11344 Secure ICAP (mTLS), 9401 /metrics, /ready and the preStop /admin/drain
+# (PORTS_AND_RESOURCES §3).
+EXPOSE 1344 11344 9401
 # The JVM directly, no shell wrapper. Memory: 2Gi container limit = heap (50 %) + 512 MiB direct buffers + the rest
 # (PORTS_AND_RESOURCES §4.3, PLAT-F1). No heap dump and no JFR in production (AGENTS.md 4.14, PRIV-10); exit on OOM so
 # the kubelet restarts the pod; no hsperfdata file.

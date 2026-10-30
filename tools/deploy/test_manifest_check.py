@@ -62,6 +62,12 @@ class ViolatingFixture(unittest.TestCase):
             "capabilities added", "runAsNonRoot is not true", "seccomp profile", "hostPort 8080", "no requests.cpu",
             "no limits.memory", "fixture-unknown-secret is neither rendered nor in the runtime contract",
             "no default-deny NetworkPolicy", "no NetworkPolicy selects", "without a PodDisruptionBudget",
+            "above the rwsafe ceiling 1000", "PSA enforce is privileged", "PSA audit is not restricted",
+            "PSA warn is not restricted", "ServiceAccount automountServiceAccountToken is not false",
+            "PodDisruptionBudget selects no workload", "tolerates taint fixture.example.invalid/dedicated",
+            "pod runAsUser 185 is fixed", "pod seccomp profile is not RuntimeDefault", "emptyDir ram is memory-backed",
+            "emptyDir ram sizeLimit 1Gi is above the cap 512Mi", "Namespace/fixture: no ResourceQuota",
+            "Namespace/fixture: no LimitRange",
         ):
             self.assertIn(expected, self.text)
 
@@ -122,6 +128,157 @@ class Mutations(unittest.TestCase):
         policy["spec"]["ingress"][0]["from"] = [{"namespaceSelector": {"matchLabels": {
             "kubernetes.io/metadata.name": "ui2"}}}]
         self.assertFails(objects, "names a ui2* (neXus) object")
+
+    # PR 18 review D-04: the whole object tree, keys and values, and tokens of names and URLs.
+    def test_ui2_anywhere_in_the_tree_fails(self):
+        cases = {
+            "ConfigMap data URL": lambda o: next(x for x in o if x["kind"] == "ConfigMap")["data"].update(
+                {"DB_URL": "jdbc:postgresql://ui2-db.example.invalid:5432/x"}),
+            "ConfigMap data key": lambda o: next(x for x in o if x["kind"] == "ConfigMap")["data"].update(
+                {"ui2-setting": "1"}),
+            "env value": lambda o: container(o)["env"].append({"name": "PEER", "value": "http://ui2-service:8080/"}),
+            "claimName": lambda o: pod(o)["volumes"].append(
+                {"name": "data", "persistentVolumeClaim": {"claimName": "ui2-db-data"}}),
+            "matchExpressions": lambda o: next(x for x in o if x["kind"] == "NetworkPolicy"
+                                               and x["metadata"]["name"] == "fixture-app")["spec"]["ingress"][0]
+            .update({"from": [{"namespaceSelector": {"matchExpressions": [
+                {"key": "kubernetes.io/metadata.name", "operator": "In", "values": ["ui2"]}]}}]}),
+            "label value": lambda o: deployment(o)["metadata"].setdefault("labels", {}).update(
+                {"app.kubernetes.io/part-of": "nexus-ui2"}),
+            "pod template label key": lambda o: deployment(o)["spec"]["template"]["metadata"]["labels"].update(
+                {"ui2.example.invalid/tier": "x"}),
+            "serviceName": lambda o: deployment(o)["spec"].update({"serviceName": "ui2-service-internal"}),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name):
+                objects = compliant()
+                mutate(objects)
+                self.assertFails(objects, "names a ui2* (neXus) object")
+
+    def test_rwsafe_names_are_not_mistaken_for_ui2(self):
+        self.assertFalse(mc.names_nexus("rwsafe-icap.rwsafe.svc.cluster.local:8091/internal/v1/policy/snapshot"))
+        self.assertFalse(mc.names_nexus("app.kubernetes.io/part-of"))
+        self.assertTrue(mc.names_nexus("UI2-DB"))
+
+    # PR 18 review D-05: one mutation per rule.
+    def test_init_container_counts_in_the_quota(self):
+        objects = compliant()
+        pod(objects)["initContainers"] = [dict(copy.deepcopy(container(objects)), name="init",
+                                               resources={"requests": {"cpu": "400m", "memory": "128Mi"},
+                                                          "limits": {"cpu": "700m", "memory": "512Mi"}})]
+        self.assertFails(objects, "limits.cpu needs 2.1")
+
+    def test_volume_claim_templates_count_in_the_quota(self):
+        objects = compliant()
+        quota = next(o for o in objects if o["kind"] == "ResourceQuota")
+        quota["spec"]["hard"]["requests.storage"] = "10Gi"
+        objects.append({"apiVersion": "apps/v1", "kind": "StatefulSet",
+                        "metadata": {"name": "fixture-db", "namespace": "fixture"},
+                        "spec": {"replicas": 1, "selector": {"matchLabels": {"app.kubernetes.io/name": "fixture-app"}},
+                                 "template": copy.deepcopy(deployment(objects)["spec"]["template"]),
+                                 "volumeClaimTemplates": [{"metadata": {"name": "data"}, "spec": {
+                                     "resources": {"requests": {"storage": "20Gi"}}}}]}})
+        self.assertFails(objects, "requests.storage needs")
+
+    def test_namespace_without_quota_or_limitrange_fails(self):
+        for kind in ("ResourceQuota", "LimitRange"):
+            with self.subTest(kind):
+                objects = [o for o in compliant() if o["kind"] != kind]
+                self.assertFails(objects, f"Namespace/fixture: no {kind}")
+
+    def test_psa_labels(self):
+        objects = compliant()
+        ns = next(o for o in objects if o["kind"] == "Namespace")
+        ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] = "baseline"
+        self.assertFails(objects, "PSA enforce is baseline, not restricted")
+        ns["metadata"]["name"] = "rwsafe-build"
+        failures, _ = mc.check(objects, CONTRACTS)
+        self.assertFalse(any("PSA enforce" in f for f in failures), "baseline is the build namespace's exception")
+        del ns["metadata"]["labels"]["pod-security.kubernetes.io/audit"]
+        self.assertFails(objects, "PSA audit is not restricted")
+
+    def test_emptydir_caps_and_memory_medium(self):
+        objects = compliant()
+        pod(objects)["volumes"][0]["emptyDir"]["sizeLimit"] = "513Mi"
+        self.assertFails(objects, "sizeLimit 513Mi is above the cap 512Mi")
+        objects = compliant()
+        pod(objects)["volumes"][0]["emptyDir"]["medium"] = "Memory"
+        self.assertFails(objects, "emptyDir tmp is memory-backed")
+
+    def test_build_namespace_emptydir_cap_is_4gi(self):
+        objects = compliant()
+        for o in objects:
+            if o["kind"] == "Namespace":
+                o["metadata"]["name"] = "rwsafe-build"
+            elif o["metadata"].get("namespace") == "fixture":
+                o["metadata"]["namespace"] = "rwsafe-build"
+        pod(objects)["volumes"][0]["emptyDir"]["sizeLimit"] = "4Gi"
+        failures, _ = mc.check(objects, CONTRACTS)
+        self.assertFalse(any("above the cap" in f for f in failures), failures)
+        pod(objects)["volumes"][0]["emptyDir"]["sizeLimit"] = "5Gi"
+        self.assertFails(objects, "above the cap 4Gi")
+
+    def test_any_toleration_fails(self):
+        objects = compliant()
+        pod(objects)["tolerations"] = [{"key": "fixture.example.invalid/gpu", "operator": "Exists"}]
+        self.assertFails(objects, "tolerates taint fixture.example.invalid/gpu")
+
+    def test_seccomp_localhost_fails(self):
+        objects = compliant()
+        pod(objects)["securityContext"]["seccompProfile"] = {"type": "Localhost", "localhostProfile": "x.json"}
+        self.assertFails(objects, "seccomp profile is not RuntimeDefault")
+
+    def test_fixed_uid_or_gid_fails(self):
+        for where, field in (("pod", "runAsUser"), ("pod", "runAsGroup"), ("container", "runAsUser"),
+                             ("container", "runAsGroup")):
+            with self.subTest(f"{where} {field}"):
+                objects = compliant()
+                target = pod(objects) if where == "pod" else container(objects)
+                target["securityContext"][field] = 185
+                self.assertFails(objects, f"{field} 185 is fixed")
+
+    def test_service_account_must_not_automount(self):
+        objects = compliant()
+        sa = next(o for o in objects if o["kind"] == "ServiceAccount")
+        del sa["automountServiceAccountToken"]
+        self.assertFails(objects, "ServiceAccount automountServiceAccountToken is not false")
+
+    def test_pdb_bounds(self):
+        for spec, fragment in (({"minAvailable": 0}, "minAvailable 0 is not between"),
+                               ({"minAvailable": 2}, "minAvailable 2 is not between"),
+                               ({"minAvailable": "100%"}, "minAvailable 100% is not between"),
+                               ({"maxUnavailable": 0}, "maxUnavailable 0 is not between"),
+                               ({}, "sets neither minAvailable nor maxUnavailable")):
+            with self.subTest(str(spec)):
+                objects = compliant()
+                pdb = next(o for o in objects if o["kind"] == "PodDisruptionBudget")
+                pdb["spec"] = {"selector": pdb["spec"]["selector"], **spec}
+                self.assertFails(objects, fragment)
+
+    # Q-1 (PO decision Q-10): no rwsafe PriorityClass above 1000.
+    def test_priority_ceiling(self):
+        objects = compliant()
+        next(o for o in objects if o["kind"] == "PriorityClass")["value"] = 1001
+        self.assertFails(objects, "above the rwsafe ceiling 1000")
+
+    # PR 18 review D-03: egress names its destination; the documentation placeholder is refused in a release render.
+    def test_egress_without_destination_fails(self):
+        objects = compliant()
+        policy = next(o for o in objects if o["kind"] == "NetworkPolicy" and o["metadata"]["name"] == "fixture-app")
+        policy["spec"]["egress"].append({"ports": [{"protocol": "TCP", "port": 636}]})
+        self.assertFails(objects, "egress rule without a destination")
+
+    def test_documentation_ip_block_is_a_note_and_a_release_failure(self):
+        objects = compliant()
+        policy = next(o for o in objects if o["kind"] == "NetworkPolicy" and o["metadata"]["name"] == "fixture-app")
+        policy["spec"]["egress"].append({"to": [{"ipBlock": {"cidr": "198.51.100.0/28"}}],
+                                         "ports": [{"protocol": "TCP", "port": 636}]})
+        failures, notes = mc.check(objects, CONTRACTS)
+        self.assertEqual(failures, [])
+        self.assertTrue(any("documentation-range placeholder" in n for n in notes))
+        self.assertFails(objects, "documentation-range placeholder in a release render", release=True)
+        policy["spec"]["egress"][-1]["to"][0]["ipBlock"]["cidr"] = "0.0.0.0/0"
+        self.assertFails(objects, "ipBlock 0.0.0.0/0 is every address")
 
     def test_default_deny_with_rules_does_not_count(self):
         objects = compliant()

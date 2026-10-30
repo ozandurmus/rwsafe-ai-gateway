@@ -156,8 +156,8 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
 ## Done (deploy manifests, branch `feature/deploy-manifests`)
 
 Container builds `deploy/images/{dataplane,control}.Containerfile` (Gradle `imageDist`, UBI 9 OpenJDK 21, digest-pinned
-bases, UID 185 group 0, read-only root); kustomize base for `rwsafe-dataplane`, `rwsafe-control` and `rwsafe-db` with
-NetworkPolicies, PDB and Secret contracts (`deploy/rwsafe/contracts/runtime-contracts.json`); k3s overlay additions
+bases, UID 185 group 0, read-only root); kustomize base for `rwsafe-icap` (the `rwsafe-dataplane` image), `rwsafe-control` and
+`rwsafe-db` (two roles, ADR-002) with NetworkPolicies, PDB and Secret contracts (`deploy/rwsafe/contracts/runtime-contracts.json`); k3s overlay additions
 (priority assignment, platform-peer NetworkPolicies, in-cluster image names with a placeholder digest). CI job
 `manifests` runs `tools/deploy/manifest_check.py` (AGENTS.md section 8 rules, quota fit) and its fixture self-test.
 Nothing applied; build and apply commands in `DEPLOY_AND_SHARED_HOST_RUNBOOK.md` §7 (apply is the PO's step).

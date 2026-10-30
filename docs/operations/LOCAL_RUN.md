@@ -24,7 +24,7 @@ card numbers are redacted; the AI-category flow is fail-closed). Environment var
 | `RWSAFE_SNAPSHOT_URL` | unset | the control plane's signed snapshot endpoint (`docs/architecture/POLICY_SNAPSHOT_CONTRACT.md`); set, the engine is not ready until the first valid snapshot |
 | `RWSAFE_SNAPSHOT_PUBLIC_KEYS` | unset | comma-separated `<key id>.pem` public keys that verify snapshots |
 | `RWSAFE_SNAPSHOT_CACHE` | unset | directory for the last good snapshot, verified again at start |
-| `RWSAFE_METRICS_PORT` | `9090` | `GET /metrics` (Prometheus text, fixed labels only) and `GET /ready` |
+| `RWSAFE_METRICS_PORT` | `9401` | `GET /metrics` (Prometheus text, fixed labels only), `GET /ready` and the preStop drain `GET`/`POST /admin/drain` (starts the drain, answers after the 15 s serve window) |
 | `RWSAFE_SHARED_ADDRESS_PREFIXES` | unset | client-address prefixes shared by many users (VDI, terminal servers): 256 transactions in flight instead of 32 |
 
 In a second terminal, replay the synthetic sample traffic:

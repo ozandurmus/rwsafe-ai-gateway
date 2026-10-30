@@ -63,6 +63,8 @@ server:
       tracking-modes: cookie
 
 rwsafe:
+  # ADR-002 §1-§2: Flyway's role is RWSAFE_DB_MIGRATE_USER (read in PersistenceConfig) with the config-tree file
+  # `rwsafe.migration.password`; without it the application's data source migrates (local runs and tests).
   capture-sink:
     port: ${RWSAFE_CAPTURE_SINK_PORT:8092}
     bind-address: ${RWSAFE_CAPTURE_SINK_BIND:127.0.0.1}

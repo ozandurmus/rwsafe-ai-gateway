@@ -4,9 +4,12 @@
 #   8091 the signed policy snapshot feed for the data plane (POLICY_SNAPSHOT_CONTRACT.md)
 #   8092 verdict-event ingestion from the data plane
 # Recreate (PORTS_AND_RESOURCES §4.3): one replica that runs migrations at start; the data plane keeps serving from its
-# snapshot during the gap. Secrets are mounted files only (AGENTS.md 4.2, CORPORATE_TECHNOLOGY_STACK §2): the database
-# password through Spring's config tree, the privacy HMAC key, the snapshot signing key and the LDAP bind password as
-# paths. The estate values (directory URL and base DNs, trusted ingress addresses, the estate dictionary) come from the
+# snapshot during the gap. Ready (GET /readyz) only when all three listeners are up, which is after Flyway ran (PR 18 review
+# D-01). The preStop sleep lets in-flight verdict-event batches on 8092 finish and the endpoint removal propagate before
+# SIGTERM (D-02); the runbook rolls this Deployment, and waits for it, before the data plane (§7.4). Secrets are mounted
+# files only (AGENTS.md 4.2, CORPORATE_TECHNOLOGY_STACK §2): the two database passwords (ADR-002: rwsafe_app for the
+# application, rwsafe_migrate for Flyway) through Spring's config tree, the privacy HMAC key, the snapshot signing key and
+# the LDAP bind password as paths. The estate values (directory URL and base DNs, trusted ingress addresses, the estate dictionary) come from the
 # uncommitted ConfigMap `rwsafe-estate`; without it the pod does not start (fail closed, AGENTS.md 4.10).
 apiVersion: apps/v1
 kind: Deployment
@@ -82,9 +85,11 @@ spec:
             periodSeconds: 5
             failureThreshold: 60
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /readyz
               port: http
             periodSeconds: 10
+            timeoutSeconds: 2
             failureThreshold: 3
           livenessProbe:
             tcpSocket:
@@ -92,6 +97,10 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           resources:
             # PORTS_AND_RESOURCES §4.3 quota sum (1.5 CPU, 3Gi): keeps a data-plane surge pod inside the 8 CPU quota.
             requests: { cpu: 500m, memory: 1Gi }
@@ -130,31 +139,32 @@ spec:
         - name: db-password
           secret:
             secretName: rwsafe-db-credentials
-            defaultMode: 0440
+            defaultMode: 288   # 0440 octal, written in decimal (YAML 1.2 reads a leading zero as decimal)
             items:
               - { key: spring.datasource.password, path: spring.datasource.password }
+              - { key: rwsafe.migration.password, path: rwsafe.migration.password }
         - name: privacy-hmac-key
           secret:
             secretName: rwsafe-privacy-hmac-key
-            defaultMode: 0440
+            defaultMode: 288
             items:
               - { key: key, path: key }
         - name: snapshot-signing-key
           secret:
             secretName: rwsafe-snapshot-signing-key
-            defaultMode: 0440
+            defaultMode: 288
             items:
               - { key: rwsafe-snapshot-1.pem, path: rwsafe-snapshot-1.pem }
         - name: ldap-bind
           secret:
             secretName: rwsafe-ldap-bind
-            defaultMode: 0440
+            defaultMode: 288
             items:
               - { key: password, path: password }
         - name: estate-dictionary
           configMap:
             name: rwsafe-estate
-            defaultMode: 0440
+            defaultMode: 288
             items:
               - { key: estate-dictionary.txt, path: estate-dictionary.txt }
 ---

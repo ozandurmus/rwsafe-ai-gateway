@@ -1,6 +1,7 @@
 # PORTS_AND_RESOURCES §4.2, ADR-001 §5: namespace default-deny, then explicit allows between rwsafe's own workloads.
-# Platform peers (DNS, Traefik, the ServiceLB pods) are named in the overlay because their labels are platform facts
-# (PORT-3). No rule names a `ui2*` namespace. Ports are numeric (kube-router, the k3s policy controller).
+# Platform peers (DNS, Traefik, the ServiceLB pods, the metrics scraper) and the directory's addresses are named in the
+# overlay because they are platform or estate facts (PORT-3). No rule names a `ui2*` namespace, and every egress rule names
+# its destination. Ports are numeric (kube-router, the k3s policy controller).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -11,19 +12,29 @@ spec:
   podSelector: {}
   policyTypes: [Ingress, Egress]
 ---
-# The data plane reaches only the control plane's snapshot feed and ingestion route (ARCH-1); no other egress, no
-# database, no internet.
+# The ICAP pods reach only the control plane's snapshot feed and ingestion route (ARCH-1); no other egress (DNS in the
+# overlay), no database, no internet. In-cluster ICAP comes only from the ICAP e2e Job's pods (label
+# app.kubernetes.io/name: rwsafe-icap-e2e, the Job that SHIP_PIPELINE_PLAN runs after a deploy); ProxySG traffic arrives
+# through the ServiceLB pods and the metrics scrape from the scraper's namespace (both in the overlay).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: rwsafe-dataplane
+  name: rwsafe-icap
   namespace: rwsafe
-  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-dataplane }
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap }
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: rwsafe-dataplane
-  policyTypes: [Egress]
+      app.kubernetes.io/name: rwsafe-icap
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rwsafe-icap-e2e
+      ports:
+        - { protocol: TCP, port: 1344 }
+        - { protocol: TCP, port: 11344 }
   egress:
     - to:
         - podSelector:
@@ -33,8 +44,8 @@ spec:
         - { protocol: TCP, port: 8091 }
         - { protocol: TCP, port: 8092 }
 ---
-# The control plane: 8091/8092 from the data plane only; out to its database and the directory (LDAP/LDAPS). The
-# directory's addresses are estate values; the egress rule names the ports only.
+# The control plane: 8091/8092 from the ICAP pods only; out to its database. The directory (LDAP/LDAPS) egress names the
+# directory's addresses, which are estate values: the overlay's `rwsafe-control-to-directory`.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -50,7 +61,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: rwsafe-dataplane
+              app.kubernetes.io/name: rwsafe-icap
       ports:
         - { protocol: TCP, port: 8091 }
         - { protocol: TCP, port: 8092 }
@@ -61,11 +72,8 @@ spec:
               app.kubernetes.io/name: rwsafe-db
       ports:
         - { protocol: TCP, port: 5432 }
-    - ports:
-        - { protocol: TCP, port: 636 }
-        - { protocol: TCP, port: 389 }
 ---
-# The database: 5432 from the control plane only; no egress beyond DNS (overlay).
+# The database: 5432 from the control plane only; no egress at all (the default deny holds; DNS is not granted to it).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

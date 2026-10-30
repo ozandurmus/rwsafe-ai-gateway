@@ -31,7 +31,8 @@ import java.util.Map;
  *   <li>{@code RWSAFE_SNAPSHOT_URL}, {@code RWSAFE_SNAPSHOT_PUBLIC_KEYS} (comma-separated {@code <key id>.pem} files),
  *       {@code RWSAFE_SNAPSHOT_CACHE} (directory): the signed policy pull; unset, the built-in development snapshot</li>
  *   <li>{@code RWSAFE_CONTROL_EVENTS_URL} and {@code RWSAFE_SPOOL_DIR}: verdict events and their spool</li>
- *   <li>{@code RWSAFE_METRICS_PORT} (default 9090), {@code RWSAFE_SHARED_ADDRESS_PREFIXES} (comma-separated)</li>
+ *   <li>{@code RWSAFE_METRICS_PORT} (default 9401, PORTS_AND_RESOURCES §3; {@code /metrics}, {@code /ready} and the
+ *       preStop drain {@code /admin/drain}), {@code RWSAFE_SHARED_ADDRESS_PREFIXES} (comma-separated)</li>
  * </ul>
  */
 public final class DataPlaneApplication {
@@ -82,23 +83,13 @@ public final class DataPlaneApplication {
             server.startSecure(bind, Integer.parseInt(env("RWSAFE_ICAPS_PORT", "11344")), new File(cert),
                 new File(System.getenv("RWSAFE_TLS_KEY")), new File(System.getenv("RWSAFE_TLS_CLIENT_CA")));
         }
-        MetricsEndpoint metrics = new MetricsEndpoint(bind, Integer.parseInt(env("RWSAFE_METRICS_PORT", "9090")), engine,
-            queue, shipper, poller);
+        MetricsEndpoint metrics = new MetricsEndpoint(bind, Integer.parseInt(env("RWSAFE_METRICS_PORT", "9401")), engine,
+            queue, shipper, poller, config.drainServeMillis());
         SnapshotPoller pollerRef = poller;
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            server.close();
-            metrics.close();
-            shipper.stop();
-            try {
-                // D-01: the queued events of the drain reach the control plane or the spool before the JVM exits.
-                shipperThread.join(15_000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            if (pollerRef != null) {
-                pollerRef.stop();
-            }
-        }, "rwsafe-shutdown"));
+        // D-01: the queued events of the drain reach the control plane or the spool before the JVM exits; PR 18 review
+        // D-02: the whole sequence ends inside the 30 s grace period (ShutdownSequence).
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> ShutdownSequence.run(engine, server, metrics, queue, shipper,
+            shipperThread, pollerRef), "rwsafe-shutdown"));
         server.awaitClose();
     }
 

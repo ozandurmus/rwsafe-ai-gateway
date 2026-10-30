@@ -89,6 +89,17 @@ class ControlPlaneIntegrationTest {
         assertEquals(2, detail.get("findings").get(0).get("count").asInt());
     }
 
+    /** PR 18 review D-01: the kubelet's readiness endpoint, on the admin listener only, without a session. */
+    @Test
+    void readinessAnswersOnTheAdminListenerOnceEveryListenerIsUp() throws Exception {
+        assertTrue(internal.listening());
+        ApiClient.Response ready = admin().get("/readyz");
+        assertEquals(200, ready.status());
+        assertNull(ready.body(), "no body");
+        assertEquals(404, internalClient().get("/readyz").status(), "not on the capture sink");
+        assertEquals(404, new ApiClient(internal.snapshotPort()).get("/readyz").status(), "not on the snapshot feed");
+    }
+
     @Test
     void sampleEventsPassTheRealIngestionPath() {
         java.time.Instant now = java.time.Instant.now();

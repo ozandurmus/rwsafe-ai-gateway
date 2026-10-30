@@ -5,7 +5,14 @@
 # Byte cap (ADR-002 §1, PORTS_AND_RESOURCES §4.2): the PVC `rwsafe-db-data` requests 20Gi and counts against the quota's
 # requests.storage; local-path does not enforce a size (measured), so the enforcement is the application's byte caps and
 # the node-disk watermark breaker (CAPACITY_AND_SLO_MODEL §2). Prompt and response bodies never live here.
-# Reachable only from the control plane (60-networkpolicies.yaml). The data plane holds no database credential.
+# Reachable only from the control plane (60-networkpolicies.yaml); no egress at all, DNS included. The data plane holds no
+# database credential.
+# Roles (ADR-002 §1-§2, PR 18 review D-06): the image's own user is rwsafe_migrate, the database owner and Flyway's DDL
+# role; db/rwsafe-roles.sh (sourced by the image on every start) adds the DML role rwsafe_app and its grants. Tuning
+# (ADR-002 §7): shared_buffers through the image's POSTGRESQL_SHARED_BUFFERS, the rest in db/rwsafe-tuning.conf. Both
+# files reach the image through its documented extension directories under /opt/app-root/src (sclorg postgresql-start/
+# and postgresql-cfg/); UNVERIFIED (2026-10-30) on the pinned digest until the first-installation dry run shows the two
+# roles and `SHOW work_mem` = 16MB (DEPLOY_AND_SHARED_HOST_RUNBOOK §4).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -56,12 +63,17 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: POSTGRESQL_USER
-              value: rwsafe_app
+              value: rwsafe_migrate
             - name: POSTGRESQL_DATABASE
               value: rwsafe
-            # The sclorg image reads its initial role password from the environment only; it comes from the Secret and
-            # never appears in a manifest, an argument or a log (ADR-002 §1).
+            - name: POSTGRESQL_SHARED_BUFFERS
+              value: 512MB
+            # The sclorg image reads role passwords from the environment only; they come from the Secret and never
+            # appear in a manifest, an argument or a log (ADR-002 §1). rwsafe-roles.sh unsets RWSAFE_APP_PASSWORD before
+            # the server starts for good.
             - name: POSTGRESQL_PASSWORD
+              valueFrom: { secretKeyRef: { name: rwsafe-db-credentials, key: rwsafe.migration.password } }
+            - name: RWSAFE_APP_PASSWORD
               valueFrom: { secretKeyRef: { name: rwsafe-db-credentials, key: spring.datasource.password } }
           ports:
             - name: postgresql
@@ -105,6 +117,12 @@ spec:
               mountPath: /var/run/postgresql
             - name: tmp
               mountPath: /tmp
+            - name: db-start
+              mountPath: /opt/app-root/src/postgresql-start
+              readOnly: true
+            - name: db-cfg
+              mountPath: /opt/app-root/src/postgresql-cfg
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -115,6 +133,19 @@ spec:
           emptyDir: { sizeLimit: 16Mi }
         - name: tmp
           emptyDir: { sizeLimit: 256Mi }
+        - name: db-start
+          configMap:
+            name: rwsafe-db-config
+            defaultMode: 292   # 0444 octal: sourced, never executed
+            items:
+              - { key: rwsafe-roles.sh, path: rwsafe-roles.sh }
+              - { key: rwsafe-roles.sql, path: rwsafe-roles.sql }
+        - name: db-cfg
+          configMap:
+            name: rwsafe-db-config
+            defaultMode: 292
+            items:
+              - { key: rwsafe-tuning.conf, path: rwsafe-tuning.conf }
 ---
 apiVersion: v1
 kind: Service

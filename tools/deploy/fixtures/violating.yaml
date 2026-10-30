@@ -1,4 +1,21 @@
 # Synthetic fixture for tools/deploy/test_manifest_check.py: one workload breaking many shared-host rules at once.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fixture
+  labels: { pod-security.kubernetes.io/enforce: privileged }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: fixture-bad, namespace: fixture }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: fixture-unselecting, namespace: fixture }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app.kubernetes.io/name: fixture-nothing } }
+---
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
@@ -31,8 +48,10 @@ spec:
     metadata: { labels: { app.kubernetes.io/name: fixture-bad } }
     spec:
       hostNetwork: true
+      securityContext: { runAsUser: 185, seccompProfile: { type: Localhost, localhostProfile: fixture.json } }
       tolerations:
         - { key: node.kubernetes.io/disk-pressure, operator: Exists, effect: NoSchedule }
+        - { key: fixture.example.invalid/dedicated, operator: Exists, effect: NoSchedule }
       containers:
         - name: bad
           image: registry.example.invalid/fixture-bad:latest
@@ -51,3 +70,5 @@ spec:
           hostPath: { path: /var/lib/fixture }
         - name: scratch
           emptyDir: {}
+        - name: ram
+          emptyDir: { medium: Memory, sizeLimit: 1Gi }

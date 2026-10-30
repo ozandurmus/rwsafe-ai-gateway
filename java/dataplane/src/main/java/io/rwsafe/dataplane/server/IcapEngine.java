@@ -114,6 +114,11 @@ public final class IcapEngine {
         return drainingSinceNanos >= 0;
     }
 
+    /** When the drain began ({@link System#nanoTime()}), or -1 while the engine serves normally. */
+    public long drainingSinceNanos() {
+        return drainingSinceNanos;
+    }
+
     /** During the first 15 s of a drain transactions are served with Connection: close; afterwards they are refused. */
     boolean refusingNewTransactions() {
         return draining() && System.nanoTime() - drainingSinceNanos > config.drainServeNanos();
