@@ -129,14 +129,13 @@ class DecodingEndToEndTest {
         assertTrue(r.httpHead().contains("X-RWSAFE-Reason: secret"));
         assertFalse(r.bodyText().contains(key));
         assertEquals(Verdict.BLOCK, awaitEvent().verdict());
-        // Double encoded: the key itself is a run inside the second layer, so it is also a third layer (recheck D-05);
-        // the request blocks and the event keeps the secret.
+        // Recheck 2 D-10, Q-1: double encoded, the key is second-layer content, not a third layer: BLOCK on the secret.
         IcapTestClient.Response twice = once(API, BodyDecodingTest.utf8(
             BodyDecodingTest.prompt("synthetic deploy " + BodyDecodingTest.b64(BodyDecodingTest.b64(key)))));
         assertTrue(twice.httpHead().startsWith("HTTP/1.1 403"));
+        assertTrue(twice.httpHead().contains("X-RWSAFE-Reason: secret"));
         VerdictEvent e = awaitEvent();
-        assertEquals(Verdict.UNINSPECTABLE, e.verdict());
-        assertEquals("UNDECODABLE_BLOB", e.reason());
+        assertEquals(Verdict.BLOCK, e.verdict());
         assertEquals(1, e.findings().get("SECRET"));
     }
 
@@ -253,5 +252,33 @@ class DecodingEndToEndTest {
             VerdictEvent e = awaitEvent();
             assertEquals(Verdict.STREAM_ABORTED, e.verdict());
         }
+    }
+
+    // ---- PR 17 second confirmation review ----
+
+    /** Recheck 2 D-08: secrets that reach the finding limit inside a decoded layer still block on a fail-open flow. */
+    @Test
+    void encodedSecretsAtTheFindingLimitStillBlockOnAFailOpenFlow() throws Exception {
+        String key = Synthetic.awsKey();
+        for (int copies : new int[] {70, 1000}) {
+            String encoded = BodyDecodingTest.b64((key + " ").repeat(copies));
+            IcapTestClient.Response r = once(failOpenPort, API, BodyDecodingTest.utf8(BodyDecodingTest.prompt(encoded)));
+            assertTrue(r.httpHead().startsWith("HTTP/1.1 403"), copies + " copies");
+            assertFalse(r.bodyText().contains(key));
+            VerdictEvent e = awaitEvent();
+            assertEquals(Verdict.BLOCK, e.verdict(), copies + " copies");
+            assertTrue(e.findings().get("SECRET") >= copies, copies + " copies");
+        }
+    }
+
+    /** Recheck 2 D-10: a TCKN inside double base64 beside an ordinary long word is redacted, not a blob. */
+    @Test
+    void doubleEncodedTcknBesideAWordIsRedacted() throws Exception {
+        String tckn = Synthetic.tckn(61);
+        String encoded = BodyDecodingTest.b64(BodyDecodingTest.b64("configuration musteri_numarasi " + tckn));
+        IcapTestClient.Response r = once(API, BodyDecodingTest.utf8(BodyDecodingTest.prompt(encoded)));
+        assertEquals(200, r.status());
+        assertTrue(r.bodyText().contains("\"content\":\"[REDACTED:TCKN]\""), r.bodyText());
+        assertEquals(Verdict.REDACT, awaitEvent().verdict());
     }
 }

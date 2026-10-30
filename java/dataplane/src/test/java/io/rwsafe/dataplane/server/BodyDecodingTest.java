@@ -435,23 +435,76 @@ class BodyDecodingTest {
         }
     }
 
-    /** D-07: prefixes of 1 to 8 and suffixes of 0 to 3 characters, standard and URL-safe alphabets. */
+    /**
+     * D-07, recheck 2 D-09: prefixes of 1 to 8 and suffixes of 0 to 3 characters, standard and URL-safe alphabets, for
+     * payloads of 3k, 3k+1 and 3k+2 bytes (a bare TCKN of 11, a bare key of 20, a 21-byte sentence, a 30-byte one).
+     */
     @Test
     void prefixAndSuffixMatrixInBothAlphabets() {
-        byte[] secret = utf8("synthetic " + Synthetic.awsKey());
-        String[] payloads = {Base64.getEncoder().encodeToString(secret),
-            Base64.getUrlEncoder().withoutPadding().encodeToString(secret)};
+        String tckn = Synthetic.tckn(62);
+        String key = Synthetic.awsKey();
+        byte[][] payloads = {utf8(tckn), utf8(key), utf8("customer " + tckn + "."), utf8("synthetic " + key)};
+        DataClass[] classes = {DataClass.TCKN, DataClass.SECRET, DataClass.TCKN, DataClass.SECRET};
+        assertEquals(java.util.List.of(2, 2, 0, 0), java.util.List.of(payloads[0].length % 3, payloads[1].length % 3,
+            payloads[2].length % 3, payloads[3].length % 3));
         String[] prefixChars = {"Q+/a9Zk+", "Q-_a9Zk_"};
         String[] suffixChars = {"+/a", "-_a"};
         for (int a = 0; a < 2; a++) {
-            for (int p = 1; p <= 8; p++) {
-                for (int x = 0; x <= 3; x++) {
-                    String v = prefixChars[a].substring(0, p) + payloads[a] + suffixChars[a].substring(0, x);
-                    assertTrue(has(inspect(JSON, utf8(prompt(v))), DataClass.SECRET),
-                        "alphabet " + a + " prefix " + p + " suffix " + x);
+            for (int i = 0; i < payloads.length; i++) {
+                String payload = a == 0 ? Base64.getEncoder().withoutPadding().encodeToString(payloads[i])
+                    : Base64.getUrlEncoder().withoutPadding().encodeToString(payloads[i]);
+                for (int p = 1; p <= 8; p++) {
+                    for (int x = 0; x <= 3; x++) {
+                        String v = prefixChars[a].substring(0, p) + payload + suffixChars[a].substring(0, x);
+                        assertTrue(has(inspect(JSON, utf8(prompt(v))), classes[i]),
+                            "alphabet " + a + " payload " + payloads[i].length + " prefix " + p + " suffix " + x);
+                    }
                 }
             }
         }
+    }
+
+    /** Recheck 2 D-09: the reviewer's cases, a bare TCKN and a bare key behind "-", "/" and "v1/". */
+    @Test
+    void prefixedPayloadsWithAPartialLastQuantumAreFound() {
+        String tckn = Synthetic.tckn(63);
+        for (String prefix : new String[] {"-", "/", "v1/", "item-", "token_"}) {
+            assertTrue(has(inspect(JSON, utf8(prompt(prefix + b64(tckn).replace("=", "")))), DataClass.TCKN), prefix);
+            assertTrue(has(inspect(JSON, utf8(prompt(prefix + b64(Synthetic.awsKey()).replace("=", "")))),
+                DataClass.SECRET), prefix);
+            assertTrue(has(inspect(JSON, utf8(prompt(prefix + b64("customer " + tckn).replace("=", "")))),
+                DataClass.TCKN), prefix);
+        }
+    }
+
+    /** Recheck 2 D-08: findings that reach the limit inside a decoded layer are kept with FINDING_LIMIT. */
+    @Test
+    void theFindingLimitInsideALayerKeepsItsFindings() {
+        InspectionResult r = inspect(JSON, utf8(prompt(b64((Synthetic.awsKey() + " ").repeat(1000)))));
+        assertEquals(Verdict.UNINSPECTABLE, r.nonVerdict());
+        assertEquals("FINDING_LIMIT", r.reason());
+        assertTrue(r.findings().size() >= 1000);
+        assertTrue(has(r, DataClass.SECRET));
+    }
+
+    /** Recheck 2 D-10, Q-1: words and values inside the second layer are its content, not a third layer. */
+    @Test
+    void secondLayerWordsAndValuesAreContent() {
+        String tckn = Synthetic.tckn(64);
+        String[] clean = {"international release notes", "configuration musteri_numarasi synthetic_identifier"};
+        for (String text : clean) {
+            InspectionResult r = inspect(JSON, utf8(prompt(b64(b64(text)))));
+            assertNull(r.nonVerdict(), text);
+            assertTrue(r.findings().isEmpty(), text);
+        }
+        InspectionResult key = inspect(JSON, utf8(prompt(b64(b64(Synthetic.awsKey())))));
+        assertNull(key.nonVerdict());
+        assertTrue(has(key, DataClass.SECRET));
+        InspectionResult redact = inspect(JSON, utf8(prompt(b64(b64("configuration " + tckn)))));
+        assertNull(redact.nonVerdict());
+        assertTrue(has(redact, DataClass.TCKN));
+        assertTrue(new String(redact.redactedBody(), StandardCharsets.UTF_8).contains("[REDACTED:TCKN]"));
+        assertEquals("UNDECODABLE_BLOB", inspect(JSON, utf8(prompt(b64(b64(b64("synthetic note")))))).reason());
     }
 
     /** A PNG-signature byte array of {@code n} bytes (a synthetic image header, no real image). */
