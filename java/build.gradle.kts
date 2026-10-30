@@ -7,6 +7,7 @@
 //   ./java/gradlew -p java resolveAndLockAll --write-locks   refresh the lockfiles after a dependency change
 //   ./java/gradlew -p java generateMavenSmokeBuild   write build/maven-smoke/pom.xml for the Maven-portability smoke build
 //   ./java/gradlew -p java fuzzTest   fuzz the parsers (Jazzer fuzzing mode; `unitTest` replays the corpus)
+//   ./java/gradlew -p java :dataplane:imageDist :control:imageDist   the runnable classpaths the container images copy
 
 subprojects {
     apply(plugin = "java-library")
@@ -76,6 +77,23 @@ tasks.register("architectureTest") {
 // the corpus. A per-input @Timeout on each target bounds every replayed input under JUnit and becomes libFuzzer's
 // -timeout when fuzzing, where JUnit's own timeout is disabled (it would otherwise apply to the whole fuzzing run). Never
 // cached: a fuzzing run is not a function of its inputs. `detect` joins this list with the normaliser, its first parser (it adds jazzer-junit then).
+// Container images (deploy/images/*.Containerfile): `imageDist` lays out the module jar and its runtime classpath, one jar
+// per library, under build/image/lib; the image runs `java -cp '/app/lib/*' <main class>`. No fat jar and no Spring Boot
+// Gradle plugin: the classpath is exactly the locked, checksum-verified runtime classpath the tests ran against.
+//   ./java/gradlew -p java :dataplane:imageDist :control:imageDist
+val imageModules = listOf("dataplane", "control")
+
+configure(imageModules.map { project(":$it") }) {
+    tasks.register<Sync>("imageDist") {
+        group = "distribution"
+        description = "Lays out the runnable classpath for the container image."
+        from(tasks.named("jar"))
+        from(configurations.named("runtimeClasspath"))
+        into(layout.buildDirectory.dir("image/lib"))
+        duplicatesStrategy = DuplicatesStrategy.FAIL
+    }
+}
+
 val fuzzModules = listOf("dataplane")
 
 configure(fuzzModules.map { project(":$it") }) {

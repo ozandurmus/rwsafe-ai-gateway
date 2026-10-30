@@ -24,7 +24,9 @@ import javax.net.ssl.SSLException;
 public final class IcapServer implements AutoCloseable {
 
     /** ICAP spec §7: the whole drain window, of which the first part serves with Connection: close. */
-    private static final long DRAIN_TOTAL_MILLIS = 20_000;
+    static final long DRAIN_TOTAL_MILLIS = 20_000;
+    /** After the drain window: closing the listeners and stopping the event loops, all together (ShutdownSequence). */
+    static final long CLOSE_MILLIS = 3_000;
 
     private final IcapEngine engine;
     private final long drainServeMillis;
@@ -82,27 +84,38 @@ public final class IcapServer implements AutoCloseable {
 
     /**
      * Drains (ICAP spec §7): OPTIONS answers 503 at once; transactions are served with Connection: close for the serve
-     * window; afterwards new ones get 503; the listeners close when nothing is in flight or the window ends.
+     * window; afterwards new ones get 503; the listeners close when nothing is in flight or the window ends. The windows
+     * count from the drain's start, so a drain the preStop hook began ({@link MetricsEndpoint}, {@code /admin/drain}) is
+     * not served twice when SIGTERM follows (PR 18 review D-02). Returns at most {@link #DRAIN_TOTAL_MILLIS} plus
+     * {@link #CLOSE_MILLIS} after the drain began.
      */
     @Override
     public void close() {
         engine.startDraining();
-        long start = System.nanoTime();
+        long start = engine.drainingSinceNanos();
         sleepUntil(start, drainServeMillis);
         long deadline = start + TimeUnit.MILLISECONDS.toNanos(Math.max(DRAIN_TOTAL_MILLIS, drainServeMillis));
         while (engine.admission().inflight() > 0 && System.nanoTime() < deadline) {
             sleepUntil(System.nanoTime(), 50);
         }
+        long closeEnd = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(CLOSE_MILLIS);
         for (Channel ch : channels) {
-            ch.close().awaitUninterruptibly(5, TimeUnit.SECONDS);
+            ch.close().awaitUninterruptibly(left(closeEnd), TimeUnit.MILLISECONDS);
         }
         // Wait for the loops to stop, so every verdict event of the drain is queued before the shipper drains (D-01).
-        inspection.shutdownGracefully(0, 5, TimeUnit.SECONDS).awaitUninterruptibly(6, TimeUnit.SECONDS);
-        workers.shutdownGracefully(0, 5, TimeUnit.SECONDS).awaitUninterruptibly(6, TimeUnit.SECONDS);
-        boss.shutdownGracefully(0, 2, TimeUnit.SECONDS).awaitUninterruptibly(3, TimeUnit.SECONDS);
+        inspection.shutdownGracefully(0, left(closeEnd), TimeUnit.MILLISECONDS)
+            .awaitUninterruptibly(left(closeEnd), TimeUnit.MILLISECONDS);
+        workers.shutdownGracefully(0, left(closeEnd), TimeUnit.MILLISECONDS)
+            .awaitUninterruptibly(left(closeEnd), TimeUnit.MILLISECONDS);
+        boss.shutdownGracefully(0, left(closeEnd), TimeUnit.MILLISECONDS)
+            .awaitUninterruptibly(left(closeEnd), TimeUnit.MILLISECONDS);
     }
 
-    private static void sleepUntil(long startNanos, long millis) {
+    private static long left(long endNanos) {
+        return Math.max(1, TimeUnit.NANOSECONDS.toMillis(endNanos - System.nanoTime()));
+    }
+
+    static void sleepUntil(long startNanos, long millis) {
         long end = startNanos + TimeUnit.MILLISECONDS.toNanos(millis);
         long left;
         while ((left = end - System.nanoTime()) > 0) {

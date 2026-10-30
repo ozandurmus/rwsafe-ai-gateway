@@ -227,7 +227,7 @@ class Pr14ReviewTest {
             assertFalse(t.isAlive(), "the shipper returns after draining");
             assertEquals(0, queue.size(), "nothing is left in memory at shutdown");
             assertEquals(0, shipper.lost());
-            long lines = Files.readAllLines(spool.resolve("verdict-spool.jsonl")).size();
+            long lines = spoolLines(spool).size();
             assertEquals(3, lines, "every batch of the outage is in the spool");
 
             accept.set(1);
@@ -238,12 +238,12 @@ class Pr14ReviewTest {
             waitFor(() -> received.indexOf("batch-a") >= 0);
             waitFor(() -> {
                 try {
-                    return Files.readAllLines(spool.resolve("verdict-spool.jsonl")).size() == 2;
+                    return spoolLines(spool).size() == 2;
                 } catch (java.io.IOException e) {
                     return false;
                 }
             });
-            List<String> rest = Files.readAllLines(spool.resolve("verdict-spool.jsonl"));
+            List<String> rest = spoolLines(spool);
             assertTrue(rest.get(0).contains("batch-b") && rest.get(1).contains("batch-c"), "the rest keeps its order");
             replay.stop();
             r.join(10_000);
@@ -279,10 +279,19 @@ class Pr14ReviewTest {
             assertFalse(t.isAlive());
             assertEquals(0, queue.size());
             assertEquals(0, requests.get(), "no HTTP attempt during the shutdown spill");
-            assertEquals(3, Files.readAllLines(spool.resolve("verdict-spool.jsonl")).size());
+            assertEquals(3, spoolLines(spool).size());
         } finally {
             http.stop(0);
         }
+    }
+
+    /** Every spooled batch, oldest segment first (the spool is segmented since PR 18). */
+    private static List<String> spoolLines(Path spool) throws java.io.IOException {
+        List<String> lines = new java.util.ArrayList<>();
+        for (Path seg : EventShipper.spoolSegments(spool)) {
+            lines.addAll(Files.readAllLines(seg));
+        }
+        return lines;
     }
 
     private static void waitFor(java.util.function.BooleanSupplier condition) throws InterruptedException {

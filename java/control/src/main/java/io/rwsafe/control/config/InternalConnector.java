@@ -5,6 +5,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import org.apache.catalina.LifecycleState;
 import org.apache.catalina.connector.Connector;
 import org.springframework.boot.tomcat.servlet.TomcatServletWebServerFactory;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
@@ -52,6 +53,18 @@ public class InternalConnector {
     /** The snapshot feed's bound port. */
     public int snapshotPort() {
         return snapshotFeed.getLocalPort();
+    }
+
+    /**
+     * True when both internal listeners are bound and started (the readiness endpoint; the admin listener answers the
+     * probe itself, and the migrations ran before the context, and so any listener, came up).
+     */
+    public boolean listening() {
+        return started(captureSink) && started(snapshotFeed);
+    }
+
+    private static boolean started(Connector connector) {
+        return connector.getState() == LifecycleState.STARTED && connector.getLocalPort() > 0;
     }
 
     /** True when {@code uri} may be served on {@code localPort}. */

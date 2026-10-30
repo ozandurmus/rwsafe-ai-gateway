@@ -20,18 +20,25 @@ final class TestDatabase {
 
     static synchronized DataSource fresh() {
         try {
+            String name = "rwsafe_test_" + SEQUENCE.incrementAndGet();
+            try (Connection c = server().getPostgresDatabase().getConnection(); Statement s = c.createStatement()) {
+                s.execute("CREATE DATABASE " + name);
+            }
+            return server().getDatabase("postgres", name);
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** The shared server, started on first use. */
+    static synchronized EmbeddedPostgres server() {
+        try {
             if (server == null) {
                 server = EmbeddedPostgres.builder().start();
             }
-            String name = "rwsafe_test_" + SEQUENCE.incrementAndGet();
-            try (Connection c = server.getPostgresDatabase().getConnection(); Statement s = c.createStatement()) {
-                s.execute("CREATE DATABASE " + name);
-            }
-            return server.getDatabase("postgres", name);
+            return server;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
-        } catch (SQLException e) {
-            throw new IllegalStateException(e);
         }
     }
 }
