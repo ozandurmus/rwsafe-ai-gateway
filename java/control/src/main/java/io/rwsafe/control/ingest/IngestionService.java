@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -44,21 +45,23 @@ public class IngestionService {
     private final Database database;
     private final PrivacyKeys keys;
     private final Pseudonymiser pseudonymiser;
-    private final PolicyRegistryService registry;
+    /** The registry's platform ids, read once per batch. */
+    private final Supplier<Set<String>> platformIds;
     private final Clock clock;
 
     @Autowired
     public IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser,
                             PolicyRegistryService registry) {
-        this(database, keys, pseudonymiser, registry, Clock.systemUTC());
+        this(database, keys, pseudonymiser, registry::platformIds, Clock.systemUTC());
     }
 
-    IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser, PolicyRegistryService registry,
-                     Clock clock) {
+    /** @param platformIds the platform ids an event may name (the registry's, in the application) */
+    public IngestionService(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser,
+                            Supplier<Set<String>> platformIds, Clock clock) {
         this.database = database;
         this.keys = keys;
         this.pseudonymiser = pseudonymiser;
-        this.registry = registry;
+        this.platformIds = platformIds;
         this.clock = clock;
     }
 
@@ -73,7 +76,7 @@ public class IngestionService {
             throw new InvalidEventException("a batch holds at most " + MAX_BATCH + " events");
         }
         String keyId = keys.keyId();
-        Set<String> platforms = registry.platformIds();
+        Set<String> platforms = platformIds.get();
         Instant now = clock.instant();
         List<StoredVerdictEvent> rows = new ArrayList<>(batch.size());
         Set<UUID> ids = new HashSet<>();

@@ -12,6 +12,7 @@ import io.rwsafe.control.config.ControlProperties;
 import io.rwsafe.control.policy.PolicyRegistryService;
 import io.rwsafe.control.policy.SnapshotSigner;
 import io.rwsafe.control.privacy.PrivacyKeys;
+import io.rwsafe.control.siem.SiemExportService;
 import io.rwsafe.persistence.Database;
 import io.rwsafe.persistence.PolicySnapshotStore.IssuedSnapshot;
 import io.rwsafe.persistence.VerdictQueries;
@@ -43,13 +44,16 @@ public class ReadApiController {
     private final PrivacyKeys keys;
     private final SnapshotSigner signer;
     private final PolicyRegistryService registry;
+    private final SiemExportService siem;
     private final Clock clock;
 
-    public ReadApiController(Database database, PrivacyKeys keys, SnapshotSigner signer, PolicyRegistryService registry) {
+    public ReadApiController(Database database, PrivacyKeys keys, SnapshotSigner signer, PolicyRegistryService registry,
+                             SiemExportService siem) {
         this.database = database;
         this.keys = keys;
         this.signer = signer;
         this.registry = registry;
+        this.siem = siem;
         this.clock = Clock.systemUTC();
     }
 
@@ -122,8 +126,15 @@ public class ReadApiController {
             new ComponentView("ingestion", stats.eventsSince() > 0 ? "UP" : "UNKNOWN",
                 stats.eventsSince() + " events in the last 5 minutes"),
             snapshotFeed(db, now),
+            siem(),
             new ComponentView("dataplane", "UNKNOWN", "data-plane metrics are not implemented yet"));
         return new HealthView(now, components, stats.eventsSince(), stats.totalEvents(), stats.latestReceivedAt());
+    }
+
+    /** SIEM export: off, or per destination delivered counts, queue depth and the latest failure class. */
+    private ComponentView siem() {
+        SiemExportService.Health h = siem.health();
+        return new ComponentView("siem", h.state(), h.detail());
     }
 
     /** The signed snapshot feed: the signing key, and the latest issued version and its age (the contract's 6 h re-sign). */

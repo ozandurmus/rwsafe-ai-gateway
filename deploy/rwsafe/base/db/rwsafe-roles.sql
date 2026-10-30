@@ -12,6 +12,12 @@ BEGIN
 END
 $$;
 ALTER ROLE rwsafe_app WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+-- PR 23 confirmation review D-11 / Q-SIEM-3: the SIEM export reads only rows below the oldest open transaction (V7), so
+-- a session left idle inside a transaction would pause the export for as long as it stays open. Both application roles
+-- abort such a session after 60 s; the export then resumes, and Health shows any longer stall. Superuser sessions (the
+-- operator's psql) are not covered: an operator never leaves a transaction open on this database.
+ALTER ROLE rwsafe_app SET idle_in_transaction_session_timeout = '60s';
+ALTER ROLE rwsafe_migrate SET idle_in_transaction_session_timeout = '60s';
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO rwsafe_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rwsafe_app;

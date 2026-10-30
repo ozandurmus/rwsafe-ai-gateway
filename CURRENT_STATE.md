@@ -262,6 +262,32 @@ Both run in `:control:test`, so in `unitTest` and the CI `java-tests` job; no wo
   only where pseudonymisation applies or where ingestion refuses them); third-party loggers below their production
   levels.
 
+## Done (SIEM export, branch `feature/siem-export`)
+
+`java/control` package `siem` (ROADMAP MVP "SIEM out (CEF/LEEF/HEC)", SR-SIEM-1 to 3): verdict events and audit-ledger rows
+leave as CEF or LEEF 1.0 lines over syslog with TLS (RFC 5425 octet framing) and as Splunk HEC JSON over HTTPS. A fixed
+field set (`SiemField`; C1/C2/C6/C7 only, no body field, schema test). Every value must match its exact shape and hold no
+estate term, or it leaves as `[WITHHELD]`. Ledger row keys leave as written only in an allow-listed table's key shape;
+account keys become `USR-` pseudonyms and any other key a keyed `KEY-` pseudonym. Every string is stripped of control
+characters and bounded ANSI sequences and length-capped. CEF escaping, LEEF tab, `=` and `\` safety are tested against an
+independent parser. TLS only (CA bundle, host-name check, TLS 1.3/1.2), no UDP or plain-TCP path. Without the privacy key
+or the estate dictionary nothing starts; an unsafe destination is not started; the Health screen's `siem` row says why.
+Commit-safe order (PR 23 review D-1): Flyway V7 adds `tx_id` (the writing transaction) to `verdict_event` and
+`audit_event`, and the exporter reads only rows below the snapshot's xmin in (tx_id, id) order, so a late commit is never
+overtaken. Two threads per destination around a bounded queue, a page per stream per round: the reader defers when the
+queue has no room (nothing dropped, ingestion untouched). The sender retries with exponential back-off and moves the
+persisted watermark (`siem_watermark`) only after acknowledgement: at least once, restart from the watermark. Creating a
+watermark is a ledger row. Ledger rows always export from the first one; `latest` skips only verdict events and records
+the count (Q-SIEM-1). A delivered batch whose watermark save fails is kept and only the save is retried. Health and
+fixed-label counters (`rwsafe_siem_*`) show the backlog (rows held behind an open transaction counted separately), a
+stall after 3 minutes without progress, separate reader and sender failure states and possibly lost syslog batches.
+Both application database roles abort a session idle in a transaction after 60 s (Q-SIEM-3). Audit durability relies on
+HEC (Q-SIEM-2). Tests run a local TLS syslog receiver and a HEC stub with certificates generated at runtime, and two
+concurrent transactions where the older commits last. Second review `docs/reviews/PR23_2026_10_31_ARGON_SIEM_EXPORT.md`
+and confirmation review `PR23_2026_10_31_ARGON_SIEM_EXPORT_RECHECK.md`, answered in `PR23_2026_10_31_RESPONSE.md`.
+Configuration and residuals: `docs/operations/LOCAL_RUN.md` "SIEM export". The runtime contract holds the ConfigMap
+`rwsafe-siem-destination` and the Secret `rwsafe-siem-credentials`.
+
 ## Done (end-user notices, branch `feature/end-user-notices`)
 
 - Turkish end-user catalogue (AGENTS.md section 3, council PRIV-2): first-use notice (aydınlatma metni: what is
@@ -309,7 +335,10 @@ settings store for the UI language, the
 ratified decision record that mirrors the seed fixture, C3 capture store, the Incidents, Identities and roles and
 Administration screens, a browser-level (Playwright) masked-role leak probe on top of the API-level one, the cluster PostgreSQL Job); the
 Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with them); Trivy image scanning and SBOM (with
-the first image, ship pipeline).
+the first image, ship pipeline). SIEM export, later: the Deployment's environment and volume wiring with the NetworkPolicy
+egress to the SIEM (deploy lane), the 9400 metrics listener, a client certificate towards the SIEM, deletion events
+(ADR-009 §4, with the retention job), the raw-access SIEM copy (with raw access), and one QRadar test event per format to
+clear the LEEF UNVERIFIED marks.
 
 ## Next (ROADMAP phase 0, in this order)
 

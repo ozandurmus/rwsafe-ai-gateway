@@ -115,6 +115,16 @@ public final class ControlTestEnvironment {
         return dir;
     }
 
+    /** A fresh, empty database on the shared embedded PostgreSQL, for tests without a Spring context. */
+    public static synchronized javax.sql.DataSource freshDataSource() throws Exception {
+        start();
+        String db = "rwsafe_control_" + DATABASES.incrementAndGet();
+        try (Connection c = postgres.getPostgresDatabase().getConnection(); Statement s = c.createStatement()) {
+            s.execute("CREATE DATABASE " + db);
+        }
+        return postgres.getDatabase("postgres", db);
+    }
+
     private static void start() throws Exception {
         if (postgres != null) {
             return;

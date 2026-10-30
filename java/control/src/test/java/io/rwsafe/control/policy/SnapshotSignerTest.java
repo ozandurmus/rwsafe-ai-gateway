@@ -26,7 +26,7 @@ class SnapshotSignerTest {
 
     private static ControlProperties properties(Path keyFile, String keyId) {
         return new ControlProperties(null, null, null, null,
-            new ControlProperties.Policy(null, keyFile, keyId, null, null), null);
+            new ControlProperties.Policy(null, keyFile, keyId, null, null), null, null);
     }
 
     @Test

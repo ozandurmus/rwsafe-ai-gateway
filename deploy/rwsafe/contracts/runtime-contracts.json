@@ -27,6 +27,10 @@
     "rwsafe-ldap-bind": {
       "keys": ["password"],
       "purpose": "the directory bind account's password"
+    },
+    "rwsafe-siem-credentials": {
+      "keys": ["hec-token"],
+      "purpose": "the Splunk HEC token, mounted as a file for RWSAFE_SIEM_HEC_TOKEN_FILE (LOCAL_RUN.md SIEM export); absent when only syslog is used"
     }
   },
   "configMaps": {
@@ -37,6 +41,10 @@
     "rwsafe-snapshot-public-keys": {
       "keys": ["rwsafe-snapshot-1.pem"],
       "purpose": "the snapshot verification public key per key id (X.509 SubjectPublicKeyInfo PEM), generated with the signing key"
+    },
+    "rwsafe-siem-destination": {
+      "keys": ["enabled", "syslog-host", "syslog-port", "syslog-format", "hec-url", "hec-index", "ca.crt", "siem-cidr"],
+      "purpose": "real SIEM destinations: RWSAFE_SIEM_ENABLED, the syslog receiver (host, port, cef or leef), the HEC URL and index, the PEM CA bundle mounted for RWSAFE_SIEM_SYSLOG_CA_FILE and RWSAFE_SIEM_HEC_CA_FILE, and the SIEM CIDR for the egress NetworkPolicy the deploy lane adds (LOCAL_RUN.md SIEM export)"
     }
   }
 }
