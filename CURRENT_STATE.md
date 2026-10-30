@@ -19,10 +19,10 @@ Public GitHub repository with branch protection; pull request 1 merged; pull req
 
 ## Pending on the Product Owner
 
-Merge of pull request 2. PO-only files the harness refuses the agent: `.claude/settings.json` (rules given in chat),
-`AGENTS.md` section 1 item 4 (`docs/reviews/` → evidence, Q-36) and section 9 (standing push/PR/merge sentence), the
-Git-authority decision record. Decisions Q-1..Q-29 (ask one at a time with the recommendation first). Lab tenant
-procurement (Q-34). Approvers and DPO identity (Q-5).
+Decisions Q-1..Q-29 and Q-37 (ask one at a time with the recommendation first). Lab tenant procurement (Q-34). Approvers
+and DPO identity (Q-5). Governance is settled: pull request 2 merged; `.claude/settings.json` committed; AGENTS.md section
+1 (reviews as evidence) and section 9 (standing push/PR/merge authorisation) amended; the Git-authority decision record
+RATIFIED; `main` requires a pull request and zero approving reviews.
 
 ## Not done
 

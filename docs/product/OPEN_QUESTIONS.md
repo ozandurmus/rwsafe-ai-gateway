@@ -42,7 +42,7 @@ to the "Decided" table. Chat answers in Turkish are quoted in the record; the qu
 | Q-27 | SNMP: poll 1161/udp, or add a host firewall redirect 161→1161 (exception H-3)? | (a) 1161; (b) redirect | **(a)** | HARDENING H-3 |
 | Q-28 | Pilot with plain ICAP on 1344 while Secure ICAP certificates are issued (exception H-2)? | (a) yes, max 30 days; (b) Secure ICAP from day one | **(b)**: the freeze council (Q-E) rejects running plain ICAP and REQMOD fail-open together; plain ICAP only if the certificate cannot be issued, and then never with fail-open | HARDENING H-2, ROADMAP MVP |
 | Q-29 | Residual risk acceptance: host root and cluster admin can read Secrets and PVCs (no HSM); streaming responses cannot be redacted; pinned apps and off-net users invisible until the agent phase; MV3 blocking is best-effort; **an AI agent working as `replay_viewer` on production data receives pseudonymised personal data abroad (PC-11); PII digests are reversible for low-entropy spaces if the digest key leaks (PC-6)**; redaction leaves undetected names and context in C3 (PC-7) | sign or request mitigation | sign for the pilot, revisit before production; restrict AI agents to aggregates until signed | THREAT_MODEL §10 |
-
+| Q-37 | Will a second human GitHub account, or the corporate GitHub Enterprise instance, later restore approving reviews on `main`? Until then the second review on security-sensitive PRs is a recorded review-script or code-review run | (a) move to the corporate instance when the product leaves the skeleton stage; (b) add a second human account now; (c) keep zero approvals | **(a)**; (c) is the accepted residual risk until then (Git-authority record, review 2027-01-31) | AGENTS.md §9, GITHUB_REPOSITORY_SETTINGS |
 
 ## C. Decided
 

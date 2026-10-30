@@ -138,6 +138,8 @@ def scan(root: Path) -> tuple[int, list[Finding]]:
         parts = [p.lower() for p in rel.parts]
         if ".git" in parts or any(p in FORBIDDEN_DIRS_ANYWHERE for p in parts) or path.is_dir():
             continue
+        if ".claude" in parts and "worktrees" in parts:  # agent worktrees nested by the desktop app; never repository content
+            continue
         relp = rel.as_posix()
         low = path.name.lower()
         if low.startswith(".env") and low != ".env.example":
