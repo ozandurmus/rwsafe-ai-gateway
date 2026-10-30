@@ -43,16 +43,15 @@ to the "Decided" table. Chat answers in Turkish are quoted in the record; the qu
 | Q-28 | Pilot with plain ICAP on 1344 while Secure ICAP certificates are issued (exception H-2)? | (a) yes, max 30 days; (b) Secure ICAP from day one | **(b)**: the freeze council (Q-E) rejects running plain ICAP and REQMOD fail-open together; plain ICAP only if the certificate cannot be issued, and then never with fail-open | HARDENING H-2, ROADMAP MVP |
 | Q-29 | Residual risk acceptance: host root and cluster admin can read Secrets and PVCs (no HSM); streaming responses cannot be redacted; pinned apps and off-net users invisible until the agent phase; MV3 blocking is best-effort; **an AI agent working as `replay_viewer` on production data receives pseudonymised personal data abroad (PC-11); PII digests are reversible for low-entropy spaces if the digest key leaks (PC-6)**; redaction leaves undetected names and context in C3 (PC-7) | sign or request mitigation | sign for the pilot, revisit before production; restrict AI agents to aggregates until signed | THREAT_MODEL §10 |
 
-| Q-30 | Header-only metadata mode: may ProxySG send **all uncategorised domains** (and selected broad categories) to REQMOD with headers only, no body capture, 30-day retention, so relays and new AI hosts are detected by request shape? (OFF2-5) | (a) yes; (b) AI category only (relays invisible by construction) | **(a)**; documented as a C1-only class in DATA_CLASSES | ADR-004, ADR-010 §2 |
-| Q-31 | Response-side and tool-result prompt injection: alert-only, or block high-confidence deterministic patterns on agentic surfaces (CLI, IDE, MCP)? (OFF2-7) | (a) alert-only; (b) monitor in the pilot, then enforce on agentic surfaces | **(b)** | ADR-005, ADR-008 |
-| Q-32 | Is explicit consent excluded as a basis for every class, so that the notice acknowledgement is proof, not a switch? (PC-2) | (a) yes; (b) keep consent as a fallback | **(a)**, recorded in a decision record | REGULATORY art. 5, DATA_CLASSES |
-| Q-33 | May any vendor receive traffic before its KVKK art. 9 instrument is recorded, even for "public" prompts? (PC-4) | (a) no, fail-closed until recorded; (b) yes for public data | **(a)** | ADR-007 §3a, PLATFORM_MATRIX §5 |
-| Q-34 | Procure lab tenants (ChatGPT Enterprise, Google Workspace, Entra, Anthropic) for the pentest and the ICAP e2e tenant fixtures? (OFF2-17) | (a) yes, at least the three header vendors; (b) test on production tenants with pilot users | **(a)** | PENETRATION_TEST_PLAN, ROADMAP MVP |
-| Q-35 | For IDE, CLI and API users, may the HR policy acknowledgement imported from the directory count as the C12 record? (PC-3) | (a) yes, with version and date; (b) banner-only, so those users stay metadata-only | **(a)** | DATA_CLASSES C12 |
-| Q-36 | Council outputs in `docs/reviews/`: binding for the design phase (AGENTS.md §1 item 4 today) or evidence that only a PO decision record promotes? (OFF2-15, Q-F) | (a) evidence only; (b) keep binding | **(a)**; needs the PO's hand on AGENTS.md | AGENTS.md §1 |
 
 ## C. Decided
 
 | Id | Decision record | Date |
 |---|---|---|
-| — | — | — |
+| Q-30 | `PO_DECISION_RECORD_2026_10_30_FREEZE_COUNCIL_QUESTIONS_Q30_Q36.md`: (a) header-only metadata mode for all uncategorised domains | 2026-10-30 |
+| Q-31 | `PO_DECISION_RECORD_2026_10_30_FREEZE_COUNCIL_QUESTIONS_Q30_Q36.md`: (b) monitor in the pilot, then enforce on agentic surfaces | 2026-10-30 |
+| Q-32 | `PO_DECISION_RECORD_2026_10_30_FREEZE_COUNCIL_QUESTIONS_Q30_Q36.md`: (a) explicit consent excluded as a basis | 2026-10-30 |
+| Q-33 | `PO_DECISION_RECORD_2026_10_30_FREEZE_COUNCIL_QUESTIONS_Q30_Q36.md`: (a) fail-closed until the art. 9 instrument is recorded | 2026-10-30 |
+| Q-34 | `PO_DECISION_RECORD_2026_10_30_FREEZE_COUNCIL_QUESTIONS_Q30_Q36.md`: (a) lab tenants for the header vendors and Anthropic | 2026-10-30 |
+| Q-35 | `PO_DECISION_RECORD_2026_10_30_FREEZE_COUNCIL_QUESTIONS_Q30_Q36.md`: (a) directory HR acknowledgement with version and date counts as C12 | 2026-10-30 |
+| Q-36 | `PO_DECISION_RECORD_2026_10_30_FREEZE_COUNCIL_QUESTIONS_Q30_Q36.md`: (a) council outputs are evidence only | 2026-10-30 |

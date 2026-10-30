@@ -1,6 +1,9 @@
 # Capacity and SLO model, sized from HOST-A's measured CPU, RAM and disk
 
-**Status:** DRAFT for design freeze. Inputs: the 2026-10-30 masked inventory (`PORTS_AND_RESOURCES.md` §1, §4.1), the
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze. Inputs: the 2026-10-30 masked inventory (`PORTS_AND_RESOURCES.md` §1, §4.1), the
 kickoff brief sections 4 and 6, council ARCH-1, ARCH-2, ARCH-7, P0-2 and the AC-1 acceptance criterion. Traffic figures
 are **assumptions to be replaced by phase-0 measurement** of ProxySG logs (ROADMAP phase 0); each is marked ASSUMED.
 

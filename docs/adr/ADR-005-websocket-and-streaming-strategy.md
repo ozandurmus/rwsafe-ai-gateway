@@ -1,6 +1,6 @@
 # ADR-005: WebSocket and streaming strategy
 
-Status: PROPOSED
+Status: ACCEPTED (PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE, 2026-10-30)
 Date: 2026-10-30
 Answers: brief 5B (streaming SSE, chunked, WebSocket), 6; council ARCH-4, Argon P0-4, brief 10.6 question 1
 

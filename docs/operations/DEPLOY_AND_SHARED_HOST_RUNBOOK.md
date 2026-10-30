@@ -1,6 +1,9 @@
 # Deploy and shared-host runbook
 
-**Status:** DRAFT for design freeze (becomes the operator procedure in the implementation phase). Companion to ADR-001,
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze (becomes the operator procedure in the implementation phase). Companion to ADR-001,
 ADR-003, ADR-010, ADR-011 and `docs/design/SHIP_PIPELINE_PLAN.md`. Mirrors neXus `docs/operations/UI2_LOCAL_KUBERNETES_DEPLOYMENT.md`
 and `HOST_A_RUNBOOK.md` where the mechanics are the same. No address, host name, account or key path appears here; the
 operator's own store holds them (`~/.config/nexus/hosta`, `~/.config/rwsafe/`).

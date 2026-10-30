@@ -1,6 +1,9 @@
 # Privacy impact assessment
 
-**Status:** DRAFT for the DPO and the PO. Answers council privacy P1 "privacy impact assessment" and PRIV-1 to PRIV-10 as a
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for the DPO and the PO. Answers council privacy P1 "privacy impact assessment" and PRIV-1 to PRIV-10 as a
 whole; brief 6 (Privacy). Structure: inventory, flows, basis per class, risks and residuals, breach runbook, open legal
 questions. Companion documents: `DATA_CLASSES_AND_RETENTION.md`, `RAW_CONTENT_ACCESS.md`, `MASKING_AND_PRIVACY.md`,
 `docs/compliance/REGULATORY_MAPPING.md`.

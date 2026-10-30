@@ -1,6 +1,6 @@
 # ADR-009: Data model, retention and privacy
 
-Status: PROPOSED
+Status: ACCEPTED (PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE, 2026-10-30)
 Date: 2026-10-30
 Answers: brief section 2 (Prompt content), 4A product rules 1 to 7, 5B (store per policy), 6 (Privacy); council PRIV-1,
 PRIV-4, PRIV-5, PRIV-6, PRIV-7, PRIV-8, PRIV-9, PRIV-10, ARCH-2 (dedup, byte cap), SEC-5 (stored prompts are hostile input)

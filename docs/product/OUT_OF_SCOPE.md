@@ -1,6 +1,9 @@
 # Out of scope for the gateway, with compensating controls
 
-**Status:** DRAFT for design freeze. Answers brief 10.4 (non-goals), 10.5, council SEC-2 and the offensive seat's
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze. Answers brief 10.4 (non-goals), 10.5, council SEC-2 and the offensive seat's
 "gateway cannot see this" list. A row here is a declared blind spot with a named owner of the compensating control, not an
 accepted loss.
 

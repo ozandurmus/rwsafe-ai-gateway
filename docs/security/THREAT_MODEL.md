@@ -1,6 +1,9 @@
 # Threat model (STRIDE per external interface)
 
-**Status:** DRAFT for design freeze (SSDF PW.1/PW.2). Interfaces: ICAP listener, LLM API gateway, admin UI/API, agent
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze (SSDF PW.1/PW.2). Interfaces: ICAP listener, LLM API gateway, admin UI/API, agent
 channel, SIEM/notification egress, plus the storage and the review surface the offensive seat added ("stored prompts are
 hostile input", "the masked AI reviewer is a target"). Each threat names the control and the test that proves it
 (`SECURITY_REQUIREMENTS.md` ids). Residual risks are listed for PO acceptance.

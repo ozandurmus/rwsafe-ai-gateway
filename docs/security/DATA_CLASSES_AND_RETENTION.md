@@ -1,6 +1,9 @@
 # Data classes and retention matrix, with the deletion path
 
-**Status:** DRAFT for PO decision (retention figures are recommendations, OPEN_QUESTIONS Q-5). Answers council PRIV-1
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for PO decision (retention figures are recommendations, OPEN_QUESTIONS Q-5). Answers council PRIV-1
 (legal basis per class), PRIV-4, PRIV-7, PRIV-8, PRIV-10, brief 4A product rule 6, 6 (Privacy). Vocabulary from ADR-009.
 Legal articles are KVKK (Law 6698); the sector rules are in `docs/compliance/REGULATORY_MAPPING.md`. UNVERIFIED legal
 readings are marked for the DPO's review; the architect is not counsel.

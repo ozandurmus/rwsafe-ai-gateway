@@ -1,6 +1,6 @@
 # ADR-010: Fail-open and fail-closed
 
-Status: PROPOSED (revised after the design-freeze council 2026-10-30: OFF2-2, OFF2-3, OFF2-4, PLAT-F5, PLAT-F9, PC-5, Q-E)
+Status: ACCEPTED (PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE, 2026-10-30); revised after the design-freeze council 2026-10-30: OFF2-2, OFF2-3, OFF2-4, PLAT-F5, PLAT-F9, PC-5, Q-E)
 Date: 2026-10-30
 Answers: brief section 6; council ARCH-1, ARCH-6, PRIV-3, SEC-1, SEC-6, Argon risk table row 2
 

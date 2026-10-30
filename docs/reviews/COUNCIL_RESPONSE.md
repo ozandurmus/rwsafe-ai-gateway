@@ -1,6 +1,6 @@
 # Council response: every P0 answered by ID, every P1 answered or deferred
 
-**Status:** DRAFT for the design-freeze council (AC-8). The three seats' unaltered outputs are the `COUNCIL_2026_10_30_*`
+**Status:** FINAL; the design freeze was ratified on 2026-10-30 (`docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md`). Written for the design-freeze council (AC-8). The three seats' unaltered outputs are the `COUNCIL_2026_10_30_*`
 files in this directory. Each row says where the design answers the item and what remains for the PO. Where a council
 recommendation conflicts with a PO decision in brief section 2, the conflict is in `docs/product/OPEN_QUESTIONS.md` with
 both options, never overruled here.
@@ -175,4 +175,5 @@ CORRECTIONS**. Every dissent is answered below with the correction made or the r
 
 All P0-grade corrections named by the seats (PC-1, PC-4, PC-5, PC-8; OFF2-1..7; PLAT-F1..F9) are applied in the documents.
 Open for the PO: Q-30..Q-36 and the AGENTS.md changes that need the PO's hand (Q-36 and the Git-authority sentence). The
-freeze is accepted when the PO ratifies by decision record.
+freeze was ratified on 2026-10-30 by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md`; Q-30..Q-36 are decided in
+`PO_DECISION_RECORD_2026_10_30_FREEZE_COUNCIL_QUESTIONS_Q30_Q36.md`.

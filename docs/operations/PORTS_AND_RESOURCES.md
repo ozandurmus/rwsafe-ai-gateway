@@ -1,6 +1,9 @@
 # Ports and resources: the HOST-A inventory and the rwsafe plan
 
-**Status:** DRAFT for design freeze. Source: read-only, masked inventory of HOST-A taken on 2026-10-30 with
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze. Source: read-only, masked inventory of HOST-A taken on 2026-10-30 with
 `tools/hosta/inventory_readonly.sh` (non-root) and `tools/hosta/po_sudo_readonly.sh` (root-only listings run by the PO).
 Values below are shapes and counts; no address, host name or account appears. Where the root-only pass has not yet been
 read, the row says (root-only pass read 2026-10-30).

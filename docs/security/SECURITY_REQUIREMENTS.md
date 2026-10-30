@@ -1,6 +1,9 @@
 # Security requirements catalogue, each with the test that proves it
 
-**Status:** DRAFT for design freeze (SSDF PO.1, PW.8). Ids are stable and referenced from the threat model, ADRs and the
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze (SSDF PO.1, PW.8). Ids are stable and referenced from the threat model, ADRs and the
 council response. Test kinds: `unit`, `arch` (ArchUnit), `fuzz` (Jazzer), `it` (PostgreSQL integration Job), `e2e-icap`
 (in-cluster ICAP Job), `e2e-ui` (Playwright as the masked role), `load`, `manifest` (manifest tests), `scan` (ship gate),
 `drill` (operator exercise with a recorded result). AC-n marks the brief's design-freeze criteria.

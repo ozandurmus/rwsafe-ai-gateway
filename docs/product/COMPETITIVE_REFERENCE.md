@@ -1,6 +1,9 @@
 # Competitive and reference products: what to adopt, what to avoid
 
-**Status:** DRAFT for design freeze. Answers brief section 3 (study list) and 9 item 7. Sources are vendor pages and
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze. Answers brief section 3 (study list) and 9 item 7. Sources are vendor pages and
 documentation read on 2026-10-30; marketing claims are labelled as such; where no primary documentation was found the row
 says UNVERIFIED. rwsafe's position on each is in the last column.
 

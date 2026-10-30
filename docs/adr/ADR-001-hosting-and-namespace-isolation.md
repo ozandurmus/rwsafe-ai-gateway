@@ -1,6 +1,6 @@
 # ADR-001: Hosting on HOST-A and namespace isolation
 
-Status: PROPOSED
+Status: ACCEPTED (PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE, 2026-10-30)
 Date: 2026-10-30
 Answers: brief section 2 (Hosting), section 4 rules 1 and 6, section 10.4 Portability; council ARCH-2, Argon P0-2, P1-2,
 offensive seat "same server" risks, privacy seat "same server" risks

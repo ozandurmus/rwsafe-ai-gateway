@@ -1,6 +1,9 @@
 # Raw content access: just-in-time, four eyes, reason codes, notice
 
-**Status:** DRAFT for PO decision (approver roles and DPO identity: OPEN_QUESTIONS Q-5). Answers council PRIV-9, brief 4A
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for PO decision (approver roles and DPO identity: OPEN_QUESTIONS Q-5). Answers council PRIV-9, brief 4A
 product rule 6, AC-6 ("a raw read without a reason returns 403 and is audited").
 
 ## 1. Principle

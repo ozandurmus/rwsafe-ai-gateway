@@ -1,6 +1,6 @@
 # ADR-004: ICAP versus chained proxy versus agent, per traffic type
 
-Status: PROPOSED
+Status: ACCEPTED (PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE, 2026-10-30)
 Date: 2026-10-30
 Answers: brief section 2 (Inline inspection), 4 rule 3 (optional chained forward proxy), 5B, 5E; council SEC-1, SEC-2,
 Argon "protocol coverage" P0; PLATFORM_MATRIX §3

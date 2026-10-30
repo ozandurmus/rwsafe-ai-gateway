@@ -1,6 +1,9 @@
 # Pre-pilot independent penetration test plan
 
-**Status:** DRAFT for design freeze. Answers brief 10.5 ("a pre-pilot independent penetration test plan covering ICAP
+**Status:** FROZEN by `docs/design/PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE.md` (2026-10-30); amended only through a PO decision record or an ADR
+that quotes one.
+
+**History:** DRAFT for design freeze. Answers brief 10.5 ("a pre-pilot independent penetration test plan covering ICAP
 fuzzing and agent tampering") and the offensive seat's note that weekly ZAP does not cover ICAP or the agent channel.
 
 ## 1. Scope and timing

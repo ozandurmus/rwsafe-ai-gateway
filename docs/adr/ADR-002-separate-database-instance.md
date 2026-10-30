@@ -1,6 +1,6 @@
 # ADR-002: Separate PostgreSQL instance
 
-Status: PROPOSED
+Status: ACCEPTED (PO_DECISION_RECORD_2026_10_30_DESIGN_FREEZE, 2026-10-30)
 Date: 2026-10-30
 Answers: brief section 2 (own database instance), section 4 rule 2, section 5F (audit by triggers, backup and restore);
 council ARCH-1 (no synchronous DB on the hot path), PRIV-4 (deletion reaches backups), Argon P0-1
