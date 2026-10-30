@@ -64,6 +64,7 @@ public final class ControlTestEnvironment {
         r.add("spring.datasource.username", () -> "postgres");
         r.add("rwsafe.capture-sink.port", () -> "0");
         r.add("rwsafe.snapshot-feed.port", () -> "0");
+        r.add("rwsafe.metrics.port", () -> "0");
         r.add("rwsafe.policy.seed-file", () -> seedFixture().toString());
         r.add("rwsafe.policy.signing-key-file", () -> dir.resolve("snapshot-signing.key").toString());
         r.add("rwsafe.policy.signing-key-id", () -> signingKeyId);

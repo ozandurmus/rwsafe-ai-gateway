@@ -71,6 +71,10 @@ rwsafe:
   snapshot-feed:
     port: ${RWSAFE_SNAPSHOT_FEED_PORT:8091}
     bind-address: ${RWSAFE_SNAPSHOT_FEED_BIND:127.0.0.1}
+  # PORTS_AND_RESOURCES §3: the control plane's metrics listener (GET /metrics only, Prometheus text).
+  metrics:
+    port: ${RWSAFE_METRICS_PORT:9400}
+    bind-address: ${RWSAFE_METRICS_BIND:127.0.0.1}
   policy:
     seed-file: ${RWSAFE_POLICY_SEED_FILE:/etc/rwsafe/policy/registry-seed.yaml}
     signing-key-file: ${RWSAFE_SNAPSHOT_SIGNING_KEY:/run/secrets/rwsafe-snapshot-signing/private-key}

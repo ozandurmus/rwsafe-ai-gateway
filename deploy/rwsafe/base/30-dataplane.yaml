@@ -66,6 +66,21 @@ spec:
             # Snapshot verification keys, one file per key id (`<key id>.pem`); rotation adds the second slot here.
             - name: RWSAFE_SNAPSHOT_PUBLIC_KEYS
               value: /etc/rwsafe/snapshot-keys/rwsafe-snapshot-1.pem
+            # The end-user texts' configured values (docs/i18n/README.md placeholders) for the block pages, from the
+            # uncommitted ConfigMap `rwsafe-enduser`. Optional: the inline path never waits on a notice text; without a
+            # value the page leaves the optional paragraph out (EndUserParameters).
+            - name: RWSAFE_ENDUSER_CONTROLLER_NAME
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: controller-name, optional: true } }
+            - name: RWSAFE_ENDUSER_DPO_CONTACT
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: dpo-contact, optional: true } }
+            - name: RWSAFE_ENDUSER_POLICY_LINK
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: policy-link, optional: true } }
+            - name: RWSAFE_ENDUSER_RETENTION_METADATA
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: retention-metadata, optional: true } }
+            - name: RWSAFE_ENDUSER_RETENTION_REDACTED
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: retention-redacted, optional: true } }
+            - name: RWSAFE_ENDUSER_RETENTION_RAW
+              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: retention-raw, optional: true } }
           ports:
             - name: icap
               containerPort: 1344

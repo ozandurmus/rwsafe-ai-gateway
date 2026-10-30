@@ -235,8 +235,8 @@ to syslog over TLS (RFC 5425 octet framing, CEF or LEEF 1.0 payload) and/or Splu
 Tuning stays in `rwsafe.siem.*` (`poll-interval` 2 s, `queue-capacity` 10000, `page-size` 500 (the queue holds at least
 two pages), `batch-size` 200, `backoff-initial` 1 s, `backoff-max` 2 min). In the cluster the real destinations, the
 index and the CA bundle live in the uncommitted ConfigMap `rwsafe-siem-destination` and the token in the Secret
-`rwsafe-siem-credentials` (`deploy/rwsafe/contracts/runtime-contracts.json`); the Deployment wiring and the NetworkPolicy
-egress to the SIEM follow in the deploy lane.
+`rwsafe-siem-credentials` (`deploy/rwsafe/contracts/runtime-contracts.json`), wired in `deploy/rwsafe/base/40-control.yaml`
+with the egress NetworkPolicy `rwsafe-control-to-siem` (DEPLOY_AND_SHARED_HOST_RUNBOOK §7.5).
 
 - **Fail closed (AGENTS.md 4.10)**: without rwsafe's privacy key or the estate dictionary no exporter starts. A
   destination with a missing CA bundle or token, a non-HTTPS URL, an unknown format or a host name that is not a plain
@@ -274,7 +274,8 @@ egress to the SIEM follow in the deploy lane.
   - the syslog batches possibly lost and a `latest` start's skip count.
 
   The backlog is recounted on every caught-up round, and at most every 30 s while the queue is full or a backlog drains. Metrics `rwsafe_siem_*` (labels destination, stream, reason, thread
-  only) are rendered by `SiemExportService.prometheus()`; the metrics listener (9400) is not served yet.
+  only) are rendered by `SiemExportService.prometheus()` and served as `GET /metrics` on the metrics listener
+  (`RWSAFE_METRICS_PORT`, default `127.0.0.1:9400` with `RWSAFE_METRICS_BIND`; nothing else answers there).
 - **Audit durability (PO decision Q-SIEM-2)**: RFC 5425 has no acknowledgement. A watcher thread on each syslog
   connection sees the receiver close it. The next batch then goes on a new connection, and a batch flushed on the closed
   connection counts as possibly lost (`rwsafe_siem_batches_possibly_lost_total`, Health). A deployment that relies on the

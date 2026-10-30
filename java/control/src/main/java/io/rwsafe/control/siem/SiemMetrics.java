@@ -17,7 +17,7 @@ import java.util.function.LongSupplier;
  * stream, failure reason); no label or value ever carries a host, a user, a field value or a server answer (AGENTS.md
  * 4.14). The reader's and the sender's failure states are kept apart (PR 23 review D-4): a delivered batch never hides a
  * failing database read, and the other way round. {@link #prometheus()} renders them for the control plane's metrics
- * listener (PORTS_AND_RESOURCES 9400, not yet served); Health shows the same numbers.
+ * listener (PORTS_AND_RESOURCES 9400, MetricsController); Health shows the same numbers.
  */
 public final class SiemMetrics {
 

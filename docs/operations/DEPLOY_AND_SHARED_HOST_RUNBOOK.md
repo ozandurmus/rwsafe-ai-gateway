@@ -124,8 +124,8 @@ release.
 | Path | What |
 |---|---|
 | `deploy/images/dataplane.Containerfile`, `deploy/images/control.Containerfile` | multi-stage builds: Gradle `imageDist` (the locked, checksum-verified runtime classpath) on UBI 9 OpenJDK 21, then the UBI 9 OpenJDK 21 runtime; digest-pinned bases, UID 185 with group 0, read-only-root friendly, no shell entry point |
-| `deploy/rwsafe/base/` | ServiceAccounts (no token), committed ConfigMaps, `rwsafe-icap` (Deployment of the `rwsafe-dataplane` image, ClusterIP `rwsafe-icap`, PDB; preStop `/admin/drain` on the metrics port 9401, grace 30 s), `rwsafe-control` (Deployment, Service 8080/8091/8092, ready on `/readyz` when all three listen), `rwsafe-db` (PVC `rwsafe-db-data` 20Gi, StatefulSet, Service; roles `rwsafe_migrate` and `rwsafe_app` and the ADR-002 §7 tuning from `base/db/`), NetworkPolicies between rwsafe's workloads with a default deny |
-| `deploy/rwsafe/overlays/k3s/` | namespaces, PriorityClasses and their assignment, quota and limits, the ICAP ServiceLB Service, the platform-peer NetworkPolicies (DNS, ServiceLB, Traefik, the metrics scraper) and the directory egress with an RFC 5737 placeholder CIDR, the in-cluster registry image names with a placeholder digest |
+| `deploy/rwsafe/base/` | ServiceAccounts (no token), committed ConfigMaps, `rwsafe-icap` (Deployment of the `rwsafe-dataplane` image, ClusterIP `rwsafe-icap`, PDB; preStop `/admin/drain` on the metrics port 9401, grace 30 s), `rwsafe-control` (Deployment, Service 8080/8091/8092 and metrics 9400, ready on `/readyz` when 8080, 8091, 8092 and 9400 listen; the SIEM, capture-key and notice values mounted from their contract objects; PVC `rwsafe-capture-store` 40Gi), `rwsafe-db` (PVC `rwsafe-db-data` 20Gi, StatefulSet, Service; roles `rwsafe_migrate` and `rwsafe_app` and the ADR-002 §7 tuning from `base/db/`), NetworkPolicies between rwsafe's workloads with a default deny |
+| `deploy/rwsafe/overlays/k3s/` | namespaces, PriorityClasses and their assignment, quota and limits, the ICAP ServiceLB Service, the platform-peer NetworkPolicies (DNS, ServiceLB, Traefik, the metrics scraper on 9400 and 9401) and the directory and SIEM egress, each with its own RFC 5737 placeholder CIDR, the in-cluster registry image names with a placeholder digest |
 | `deploy/rwsafe/contracts/runtime-contracts.json` | names and keys of the Secrets and uncommitted ConfigMaps the manifests reference; never rendered, never applied |
 | `tools/deploy/manifest_check.py` | renders the k3s overlay offline and asserts the section 8 rules; CI job `manifests` |
 
@@ -145,9 +145,11 @@ and reports the digest. On a workstation, only for a smoke check: `podman build 
 
 ### 7.4 Apply (Product Owner, HOST-A terminal)
 
-First installation follows §4: namespaces and isolation objects, then the Secrets and the ConfigMaps `rwsafe-estate` and
-`rwsafe-snapshot-public-keys` from `runtime-contracts.json` (values from the operator's store; `kubectl create secret
-generic ... --from-file`, never `--from-literal`). Every release then renders with the candidate digests in memory and
+First installation follows §4: namespaces and isolation objects, then the Secrets and the ConfigMaps `rwsafe-estate`,
+`rwsafe-snapshot-public-keys` and `rwsafe-siem-destination` from `runtime-contracts.json` (values from the operator's
+store; `kubectl create secret generic ... --from-file`, never `--from-literal`). The optional objects of §7.5
+(`rwsafe-capture-key`, `rwsafe-siem-credentials`, `rwsafe-enduser`) may follow later: without them the pods start with
+capture and the notice off and no HEC destination. Every release then renders with the candidate digests in memory and
 diffs before it applies:
 
 ```bash
@@ -156,11 +158,15 @@ cd "${scratch}/overlays/k3s"
 kustomize edit set image \
   rwsafe-dataplane=registry.kube-system.svc.cluster.local/rwsafe-dataplane@sha256:<dataplane digest> \
   rwsafe-control=registry.kube-system.svc.cluster.local/rwsafe-control@sha256:<control digest>
-# the estate patch, in memory only (§2): the directory's CIDR replaces the RFC 5737 placeholder of the NetworkPolicy
-# rwsafe-control-to-directory; nothing holding the real value is written to disk or printed
+# the estate patch, in memory only (§2): each estate CIDR replaces its own RFC 5737 placeholder, the directory's in the
+# NetworkPolicy rwsafe-control-to-directory (192.0.2.0/24) and the SIEM receivers' in rwsafe-control-to-siem
+# (198.51.100.0/24); nothing holding a real value is written to disk or printed. An empty value leaves `cidr: ` and the
+# check below refuses the render.
 export RWSAFE_DIRECTORY_CIDR="$(kubectl -n rwsafe get configmap rwsafe-estate -o jsonpath='{.data.directory-cidr}')"
-render() { kubectl kustomize . | python3 -c 'import os, sys; sys.stdout.write(sys.stdin.read().replace(
-  "cidr: 192.0.2.0/24", "cidr: " + os.environ["RWSAFE_DIRECTORY_CIDR"]))'; }
+export RWSAFE_SIEM_CIDR="$(kubectl -n rwsafe get configmap rwsafe-siem-destination -o jsonpath='{.data.siem-cidr}')"
+render() { kubectl kustomize . | python3 -c 'import os, sys; sys.stdout.write(sys.stdin.read()
+  .replace("cidr: 192.0.2.0/24", "cidr: " + os.environ["RWSAFE_DIRECTORY_CIDR"])
+  .replace("cidr: 198.51.100.0/24", "cidr: " + os.environ["RWSAFE_SIEM_CIDR"]))'; }
 render | python3 -B "${repo}/tools/deploy/manifest_check.py" --rendered /dev/stdin --release
 render | kubectl diff --server-side -f -
 # the control plane first, and wait for it: a rolling ICAP pod posts its drain's verdict events to a running control
@@ -171,10 +177,98 @@ render | kubectl apply --server-side -f -
 kubectl -n rwsafe rollout status deploy/rwsafe-icap --timeout=5m
 ```
 
-The control plane is ready only when `/readyz` answers, that is after Flyway ran as `rwsafe_migrate` and with all three
-listeners (8080, 8091, 8092) up; its 5 s preStop lets in-flight event batches on 8092 finish. The ICAP pods drain from
+The control plane is ready only when `/readyz` answers, that is after Flyway ran as `rwsafe_migrate` and with all four
+listeners (8080, 8091, 8092, 9400) up; its 5 s preStop lets in-flight event batches on 8092 finish. The ICAP pods drain from
 their preStop hook (`/admin/drain`, §1.2) and end inside the 30 s grace period. `--release` refuses the committed
-all-zero placeholder digest and the documentation-range directory CIDR. The digest edit lives only in the scratch copy (or in the
+all-zero placeholder digest and the documentation-range directory and SIEM CIDRs. The digest edit lives only in the scratch copy (or in the
 deploy script's memory) and is never committed. The data plane is ready only once it holds a valid signed
 snapshot from `rwsafe-control:8091`; until the control plane serves the snapshot feed, a fresh data plane stays not
 ready (fail closed) and ProxySG follows ADR-010.
+
+### 7.5 First run of group claims, redacted capture, the end-user notice, SIEM export and metrics (Product Owner)
+
+Operator steps for the features wired after the freeze (group claims PR 20, SIEM export PR 23, end-user notices PR 22,
+redacted capture PR 25); no design changes. Every switch below is a committed ConfigMap value changed by a pull request
+and applied with §7.4, or an uncommitted object from `runtime-contracts.json`; never `kubectl set env` or `kubectl
+patch`. Values come from the operator's store (`~/.config/rwsafe/`) and never touch a tracked file, a command argument or
+the terminal. An environment value is read at start, so after an uncommitted ConfigMap changes the PO deletes the pod
+(`kubectl -n rwsafe delete pod -l app.kubernetes.io/name=rwsafe-control`, or the ICAP pods one at a time) and waits for
+readiness; the Deployment recreates it with nothing hand-made left behind.
+
+**Group claims (`RWSAFE_GROUP_CLAIM_ENCODING`, committed unset).** While unset the engine reads no
+`X-Authenticated-Groups` claim and every transaction takes the strictest of the Everyone rule and every enforce group
+rule. Once the proxy's encoding of that header is verified (the PO, as proxy administrator, confirms the header
+substitution in the ProxySG ICAP service configuration; recorded in `docs/operations/PHASE0_PROXYSG_RECORD.md` as `plain`
+or `base64`, never with a group name), a pull request adds `RWSAFE_GROUP_CLAIM_ENCODING: "plain"` or `"base64"` to
+`rwsafe-icap-config` and §7.4 rolls the ICAP pods. Check: approve a synthetic group-scoped rule in monitor mode, send one
+REQMOD through Secure ICAP with a synthetic group, and see its rule id in the event's `monitorRuleIds` (Traffic screen).
+
+**End-user notice (`rwsafe-enduser`).** Create the ConfigMap from an env file in the operator's store holding the six
+keys of the contract (`controller-name`, `dpo-contact`, `policy-link`, and the retention figures in whole days):
+
+```bash
+kubectl -n rwsafe create configmap rwsafe-enduser --from-env-file="${HOME}/.config/rwsafe/enduser.env"
+```
+
+Then delete the control plane pod and the ICAP pods one at a time. Check: `GET /api/v1/notice` (signed in) names a version
+(`tr-<n>-<8 hex>`); while any value is missing or refused the notice has no version, nothing can be acknowledged and
+capture stores nothing.
+
+**Capture key (`rwsafe-capture-key`).** One key file per key id (base64 of 32 random bytes), `active` naming it and an
+empty `shredded`, created on the HOST-A terminal without printing anything:
+
+```bash
+d="$(mktemp -d)"   # mode 0700
+head -c 32 /dev/urandom | base64 > "${d}/cap-1.key"
+printf 'cap-1\n' > "${d}/active"
+: > "${d}/shredded"
+kubectl -n rwsafe create secret generic rwsafe-capture-key --from-file="${d}"
+shred -u "${d}"/* && rmdir "${d}"
+```
+
+The Secret is mounted whole, so a rotation (a new `<id>.key`, `active` pointed at it) and an emergency shred (the id
+added to `shredded`, its key file removed) reach the running pod without a manifest change (LOCAL_RUN.md "Redacted
+capture"). The capture store is the PVC `rwsafe-capture-store` (40Gi requested; the application caps it at 32 GiB,
+below ADR-009's 80 GiB, while HOST-A's disk is 80 % used). Raising the cap and the claim is the PO's decision, after a
+new disk measurement; `tools/deploy/manifest_check.py` refuses a render whose PVCs together exceed its host-free budget
+(`HOST_FREE_STORAGE_BUDGET`, 138Gi: PORTS_AND_RESOURCES §1 free space minus the kubelet's 5 % eviction reserve).
+
+**Turning capture on.** Only with the notice versioned, the key Secret present and the PO's go-ahead (Q-4 b): one pull
+request sets `RWSAFE_CAPTURE_MODE: "redacted"` in both `rwsafe-control-config` and `rwsafe-icap-config`; §7.4 applies
+it (control plane first). Check on Health: `capture` UP with the active key id, `capture-watermark` UP or DEGRADED (at
+the measured 80 % node-disk use it is DEGRADED, which stops raw content only; redacted content stops at 85 %). Turning
+it off is the same change back; stored records stay until retention.
+
+**SIEM export (`rwsafe-siem-destination`, `rwsafe-siem-credentials`).** The ConfigMap is created from a directory in
+the operator's store with one file per contract key (each value written with `printf '%s'`, no trailing newline; `ca.crt`
+is the receivers' PEM bundle; `siem-cidr` the receivers' addresses for the egress NetworkPolicy), the HEC token Secret
+the same way:
+
+```bash
+kubectl -n rwsafe create configmap rwsafe-siem-destination --from-file="${HOME}/.config/rwsafe/siem/"
+kubectl -n rwsafe create secret generic rwsafe-siem-credentials --from-file="${HOME}/.config/rwsafe/siem-credentials/"
+```
+
+The egress rule reaches only `siem-cidr` on 6514 (syslog over TLS) and 8088 (HEC); §7.4 refuses a release without it.
+One test event per format before production (clears the LEEF UNVERIFIED mark in LOCAL_RUN.md):
+
+1. CEF: `enabled` `true`, `syslog-format` `cef`; delete the control plane pod; Health's `siem` row shows `syslog` UP with a
+   delivered count (the `siem_export.start` ledger row is the first). Run the ICAP e2e Job (§4 step 5; synthetic traffic only) and confirm
+   on the SIEM that one verdict event and one ledger row parse into their fields, with no `[WITHHELD]` other than
+   expected. Record shapes and counts only in `docs/reviews/`.
+2. LEEF: `syslog-format` `leef`, recreate the ConfigMap (`kubectl -n rwsafe delete configmap rwsafe-siem-destination`,
+   then the create above), delete the pod, run the ICAP e2e Job again, and confirm in QRadar the LEEF 1.0 header and that
+   values holding `\` or `=` are escaped. The watermark is per destination, so the second run's new events are the test.
+3. HEC (when used, and for the audit-ledger copy, Q-SIEM-2): set `hec-url` and `hec-index`, create the token Secret,
+   delete the pod; Health shows `hec` UP with a delivered count (HTTP 200 acknowledgements); the events arrive in the
+   index.
+
+Keep the format the SIEM parsed correctly; a failure leaves the destination DOWN on Health with its reason, never a
+silent drop.
+
+**Metrics (9400 control plane, 9401 ICAP).** Both NetworkPolicies admit only pods labelled
+`rwsafe.io/metrics-scraper=true` in a namespace with the same label: both the scraper's namespace and its pods carry
+it. Labelling them is a change outside rwsafe's namespaces, asked of the PO first (AGENTS.md section 8); until then
+nothing scrapes. Residual (accepted, PR 27 review Q-1): 9401 also holds the ICAP preStop drain (`/admin/drain`), so an
+admitted scraper pod could drain an ICAP pod; label only the scraper itself. The control plane's `/metrics` carries the `rwsafe_siem_*`
+series.

@@ -87,7 +87,8 @@ spec:
   podSelector: { matchLabels: { app.kubernetes.io/name: fixture-app } }
   policyTypes: [Ingress, Egress]
   ingress:
-    - ports: [{ protocol: TCP, port: 8080 }]
+    - from: [{ podSelector: { matchLabels: { app.kubernetes.io/name: fixture-client } } }]
+      ports: [{ protocol: TCP, port: 8080 }]
   egress:
     - to: [{ podSelector: { matchLabels: { app.kubernetes.io/name: fixture-app } } }]
       ports: [{ protocol: TCP, port: 8080 }]
