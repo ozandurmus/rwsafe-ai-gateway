@@ -1,0 +1,4 @@
+{
+  "_comment": "Exact allowlist for the repository privacy gate. Every entry needs rule, path, reason, owner and an inclusive review_date; an expired or incomplete entry fails the gate. Keep it short.",
+  "entries": []
+}

@@ -1,0 +1,50 @@
+title = "rwsafe-ai-gateway security baseline (2026-10-30)"
+
+# Rules: gitleaks defaults plus the rwsafe additions below. Allowlists are exact (path or value), owned and dated; an
+# allowlist entry without a review date is a privacy-gate failure (tools/privacy/repository_privacy_check.py checks it).
+# Secret-shaped test values are built at runtime (AGENTS.md 4.5); this file should rarely need a new entry.
+
+[extend]
+useDefault = true
+
+# AI platform credentials the gateway will see in traffic: never as literals in this repository.
+[[rules]]
+id = "rwsafe-anthropic-api-key"
+description = "Anthropic API key"
+regex = '''sk-ant-[A-Za-z0-9_-]{20,}'''
+keywords = ["sk-ant-"]
+
+[[rules]]
+id = "rwsafe-openai-api-key"
+description = "OpenAI API key (classic and project keys)"
+regex = '''sk-(?:proj-)?[A-Za-z0-9_-]{20,}'''
+keywords = ["sk-"]
+
+[[rules]]
+id = "rwsafe-google-api-key"
+description = "Google API key"
+regex = '''AIza[0-9A-Za-z_-]{35}'''
+keywords = ["AIza"]
+
+[[rules]]
+id = "rwsafe-github-token"
+description = "GitHub token (PAT, OAuth, app, Copilot session)"
+regex = '''gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,}'''
+keywords = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"]
+
+[[rules]]
+id = "rwsafe-icap-shared-secret"
+description = "A literal that looks like an ICAP or gateway shared secret assignment"
+regex = '''(?i)(icap|gateway|client)[_-]?(secret|token|key)\s*[:=]\s*["'][A-Za-z0-9+/=_-]{16,}["']'''
+keywords = ["icap_secret", "gateway_secret", "client_secret", "icap-secret"]
+
+# Synthetic values the tests may contain. Each entry: owner and review date in the description.
+[[allowlists]]
+description = "Exact synthetic fixtures, architect 2026-10-30; review 2027-01-31"
+targetRules = ["generic-api-key", "rwsafe-anthropic-api-key", "rwsafe-openai-api-key"]
+regexTarget = "secret"
+regexes = [
+    '''^synthetic-value$''',
+    '''^sk-ant-synthetic-0000000000000000000000$''',
+    '''^sk-synthetic-000000000000000000000000$''',
+]

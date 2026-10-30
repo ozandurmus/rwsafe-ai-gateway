@@ -1,0 +1,34 @@
+# ADR-001 §3, PORTS_AND_RESOURCES §4.2, CAPACITY §1: the ceiling rwsafe may never exceed on HOST-A. Requests sum with
+# neXus and system stays under 75 % of the node (AC-1). PORT-3: this object exists only in the k3s overlay.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: rwsafe-compute
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe }
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    pods: "40"
+    persistentvolumeclaims: "6"
+    requests.storage: 150Gi
+    services.loadbalancers: "1"
+    services.nodeports: "0"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: rwsafe-defaults
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe }
+spec:
+  limits:
+    - type: Container
+      default: { cpu: 500m, memory: 512Mi }
+      defaultRequest: { cpu: 100m, memory: 128Mi }
+      max: { cpu: "4", memory: 8Gi }
+    - type: PersistentVolumeClaim
+      max: { storage: 100Gi }

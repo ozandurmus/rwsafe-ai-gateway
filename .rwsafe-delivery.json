@@ -1,0 +1,24 @@
+{
+  "product": "rwsafe-ai-gateway",
+  "repo_slug": "ozandurmus/rwsafe-ai-gateway",
+  "worktree_prefix": "~/Codo/rwsafe-",
+  "namespaces": { "runtime": "rwsafe", "build": "rwsafe-build", "security": "rwsafe-security" },
+  "host": {
+    "bare_repo": "~/rwsafe.git",
+    "checkout": "~/rwsafe",
+    "build_script": "~/run_rwsafe_build.sh",
+    "build_log": "~/rwsafe-logs/build.log",
+    "release_snapshots": "~/rwsafe-release-snapshots",
+    "security_config": "~/.config/rwsafe/security.json",
+    "lock": "~/.locks/hosta-build.lock"
+  },
+  "images": {
+    "registry": "registry.kube-system.svc.cluster.local",
+    "repositories": ["rwsafe-control", "rwsafe-dataplane", "rwsafe-e2e"]
+  },
+  "modules": ["control", "worker", "icap", "gateway"],
+  "frontend_dir": "frontend",
+  "java_dir": "java",
+  "protected_windows_istanbul": ["00:00-00:20", "06:00-06:20", "12:00-12:20", "18:00-18:20", "02:00-02:59"],
+  "db": { "statefulset": "rwsafe-db", "database": "rwsafe", "app_role": "rwsafe_app", "migrate_role": "rwsafe_migrate" }
+}

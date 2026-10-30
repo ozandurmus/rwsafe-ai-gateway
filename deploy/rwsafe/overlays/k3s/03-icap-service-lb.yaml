@@ -1,0 +1,26 @@
+# ADR-004, DEPLOY runbook §1.1, council ARCH-5: ICAP is exposed on the node address through a LoadBalancer Service that
+# k3s ServiceLB implements with its own svclb pod (the way Traefik is exposed today), so the rwsafe ICAP pods carry no
+# hostPort and two of them can run during a rollout. externalTrafficPolicy Local keeps the ProxySG source address visible
+# to the engine for the allowlist and the surrogate classification. The host firewall admits 1344/11344 only from the
+# ProxySG set (HARDENING_EXCEPTIONS H-1); 1344 exists only while H-2 is open.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rwsafe-icap-lb
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/component: icap }
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/part-of: rwsafe
+    app.kubernetes.io/component: icap
+  ports:
+    - name: icap
+      port: 1344
+      targetPort: icap
+      protocol: TCP
+    - name: icaps
+      port: 11344
+      targetPort: icaps
+      protocol: TCP
