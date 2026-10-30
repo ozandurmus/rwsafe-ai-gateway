@@ -1,7 +1,9 @@
 package io.rwsafe.control.privacy;
 
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Locale;
+import java.util.function.Predicate;
 import org.springframework.stereotype.Component;
 
 /**
@@ -13,6 +15,14 @@ public class Pseudonymiser {
 
     public static final String REDACTED_IP = "[REDACTED_IP]";
     public static final String INVALID_ADDRESS = "[INVALID_ADDRESS]";
+
+    /** The alphabet of {@code <WORD>} pseudonyms: four consonant-vowel syllables, 39^4 (about 2.3 million) words. */
+    private static final String WORD_CONSONANTS = "BDFGLMNPRSTVZ";
+    private static final String WORD_VOWELS = "AEO";
+    private static final int WORD_SYLLABLES = 4;
+    private static final int WORD_ATTEMPTS = 8;
+    /** Fragments a generated word never carries (an unfortunate reading in Turkish or English). */
+    private static final List<String> WORD_BLOCKED = List.of("GOT", "MEME", "POPO", "PEZE", "DOLO");
 
     private final PrivacyKeys keys;
 
@@ -83,6 +93,33 @@ public class Pseudonymiser {
     /** A class-visible token such as {@code TCKN-1a2b}: the same value reads the same across screens (layer 4). */
     public String token(String label, String value) {
         return label + "-" + HexFormat.of().formatHex(keys.hmac("token:" + label, value), 0, 2);
+    }
+
+    /**
+     * A {@code LABEL-<WORD>} pseudonym (MASKING_AND_PRIVACY B2, layer 4: {@code NAME-<WORD>}): a pronounceable upper-case
+     * word of four consonant-vowel syllables chosen by rwsafe's HMAC over the value, so it is stable per estate and
+     * changes with the key. A word with a blocked fragment, or one {@code refused} rejects (a word that reads as a real
+     * name), is drawn again from the next keyed attempt; the draws are deterministic, so the same value always reads the
+     * same. Two values can share a word (about one in 2.3 million per pair): the B3 pseudonym registry that would claim
+     * each word once per kind does not exist yet.
+     */
+    public String word(String label, String value, Predicate<String> refused) {
+        String word = null;
+        for (int attempt = 0; attempt < WORD_ATTEMPTS; attempt++) {
+            byte[] h = keys.hmac("word:" + label, attempt == 0 ? value : value + "\0" + attempt);
+            StringBuilder w = new StringBuilder(2 * WORD_SYLLABLES);
+            for (int k = 0; k < WORD_SYLLABLES; k++) {
+                int syllable = (((h[2 * k] & 0xFF) << 8) | (h[2 * k + 1] & 0xFF))
+                    % (WORD_CONSONANTS.length() * WORD_VOWELS.length());
+                w.append(WORD_CONSONANTS.charAt(syllable / WORD_VOWELS.length()))
+                    .append(WORD_VOWELS.charAt(syllable % WORD_VOWELS.length()));
+            }
+            word = w.toString();
+            if (WORD_BLOCKED.stream().noneMatch(word::contains) && !refused.test(word)) {
+                break;
+            }
+        }
+        return label + "-" + word;
     }
 
     /** Strict dotted-quad parse without name resolution; null for anything else. */

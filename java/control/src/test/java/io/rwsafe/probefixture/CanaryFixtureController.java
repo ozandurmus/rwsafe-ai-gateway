@@ -18,8 +18,11 @@ public class CanaryFixtureController {
 
     public static final String PATH = "/api/v1/test-fixture/canaries";
 
-    /** One seeded value; {@code maskable} when the text masker's layers recognise this form. */
-    public record Field(String canaryClass, String value, boolean maskable) {
+    /**
+     * One seeded value; {@code maskable} when the text masker's layers recognise this form; {@code freeText} when it sits
+     * in a sentence and goes through the free-text layers (names, layer 5) rather than the per-value ones.
+     */
+    public record Field(String canaryClass, String value, boolean maskable, boolean freeText) {
     }
 
     public record FixtureView(List<Field> fields) implements MaskedView {
@@ -27,7 +30,8 @@ public class CanaryFixtureController {
         @Override
         public FixtureView masked(TextMasker m) {
             return new FixtureView(fields.stream().map(f -> new Field(f.canaryClass(),
-                f.maskable() ? m.mask(f.value()) : TextMasker.WITHHELD, f.maskable())).toList());
+                !f.maskable() ? TextMasker.WITHHELD : f.freeText() ? m.maskFreeText(f.value()) : m.mask(f.value()),
+                f.maskable(), f.freeText())).toList());
         }
     }
 

@@ -112,7 +112,7 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
   break-glass account (owner-only initial password file, ledgered), every sign-in ledgered under a pseudonym, login
   throttling per name and client, request bodies bounded as read, session + CSRF cookies, roles
   `security_admin`, `viewer`, `replay_viewer` (read-only, masked). The masking funnel (`ResponseBodyAdvice`) serves the
-  masked role (exclusive, read-only) only `MaskedView` bodies through the text layers (now `rwmask-v2`), with
+  masked role (exclusive, read-only) only `MaskedView` bodies through the text layers (now `rwmask-v1`), with
   `X-RWSAFE-Masked`, and 503
   `MASKING_UNAVAILABLE` without the key or the estate dictionary; `FunnelCoverageTest` proves every API route has a masked
   projection. Read API: overview, traffic (keyset pages, pseudonym-only user filter), event detail, platforms, health
@@ -262,9 +262,8 @@ Both run in `:control:test`, so in `unitTest` and the CI `java-tests` job; no wo
   and also applies to scope group names and at activation; the probe decodes percent escapes per sequence and emits every
   span of grouped digits.
 - Not covered: a browser-level (Playwright) walk of the screens (needs a browser download; the UI reads only the API
-  client the probe enumerates); the layer 4 name dictionary and customer numbers (not implemented, so names are seeded
-  only where pseudonymisation applies or where ingestion refuses them); third-party loggers below their production
-  levels.
+  client the probe enumerates); layer 4 customer numbers (pending Q-23; the name dictionary arrived with masking
+  layers 4 and 5 below); third-party loggers below their production levels.
 
 ## Done (SIEM export, branch `feature/siem-export`)
 
@@ -327,24 +326,37 @@ Configuration and residuals: `docs/operations/LOCAL_RUN.md` "SIEM export". The r
 
 ## Done (masking layers 4 and 5, branch `feature/masking-layers-4-5`)
 
-- Rule set `rwmask-v2` (`TextMasker.RULE_SET`, header `X-RWSAFE-Mask-Rules` on every masked page). Layer 4: a committed
-  Turkish name dictionary (`java/control/src/main/resources/io/rwsafe/control/privacy/names/`: given names, family
-  names, and an allow list of names that are everyday words; source and licence in its README, PO decision Q-23).
-  Matching folds NFC, case, every i form and the Turkish diacritics, takes case endings with or without an apostrophe
-  (`Ayşe'nin`, `Mehmete`), whole words only, plain linear scans. A given name with a family name (also two given names
-  and a family name, either order) is one `NAME-<4 hex>` token in every masked field; a lone given name is masked only
-  in free text; an allow-listed word is never masked alone and counts in a pair only when capitalised or next to a name
-  that is not on the list. A missing dictionary makes masking unavailable (503, fail closed).
+- Rule set `rwmask-v1`, the name MASKING_AND_PRIVACY B2 gives it (`TextMasker.RULE_SET`, header `X-RWSAFE-Mask-Rules`
+  on every masked page; slice 1 was `rwmask-v1-slice1`). Layer 4: a committed Turkish name dictionary
+  (`java/control/src/main/resources/io/rwsafe/control/privacy/names/`: given names, family names, and an allow list of
+  names that are everyday words; source and licence in its README, PO decision Q-23). Matching folds NFC, case, every
+  i form and the Turkish diacritics, takes case endings with or without an apostrophe (`Ayşe'nin`, `Mehmete`), whole
+  words only, plain linear scans. A given name with a family name (also two given names and a family name, either
+  order) is one `NAME-<WORD>` token in every masked field; a lone given name is masked only in free text; an
+  allow-listed word is never masked alone and counts in a pair only when capitalised or next to a name that is not on
+  the list. `<WORD>` (`Pseudonymiser.word`) is four consonant-vowel syllables chosen by rwsafe's HMAC key over the
+  folded name: stable per estate, about 2.3 million words, never itself a dictionary name. A missing dictionary makes
+  masking unavailable (503, fail closed).
 - Layer 5 (`TextMasker.maskFreeText`, free text only): `DOMAIN\user` accounts (the user column's `USR-` pseudonym),
   IBAN-shaped groups of any country (`IBAN-`, a valid TR IBAN keeps `IBAN-TR-`), IPv4 glued to letters, digit runs of
   six or more glued to letters (`NUM-`; a glued valid TCKN or Turkish mobile number becomes `TCKN-`/`TEL-` in every
   field), host-shaped dotted labels (`HST-`). Tokens the masker wrote are never re-masked. The Tier-1 detector pass
   scans long texts in 8 KB pieces and withholds a piece that reaches the finding limit (`[REDACTED:OVER_LIMIT]`).
-- Applied to the free-text fields the masked role sees: error messages, health details, platform retirement and
-  withdrawal reasons. The retirement and withdrawal reasons that unmasked roles read in clear are refused when the
-  free-text layers would change them, so a person's name, host or glued number never reaches the row or the ledger.
-- Not in `rwmask-v2`: the keyword-following word, project code names and user-directory paths of B2 layer 5, the PO's
-  customer-number formats (Q-23), the `NAME-<WORD>` form of B2 (tokens are 4 hex like the other classes).
+- Applied to the free-text fields the masked role sees: error messages and health details. Retirement and withdrawal
+  reasons stay withheld from the masked role (PR 24 Q-1); on write they are refused when `IdentifierCheck` or the
+  free-text layers would change them, so a person's name, a host or a glued number never reaches the row, the ledger
+  or the SIEM. A vendor endpoint of an approved platform row (active, superseded or retired; an API or login host, or
+  a host under a host suffix) may be named: it is public, not estate data. The SIEM export sends a ledger reason that
+  is not a vocabulary token only through the free-text masker, and withholds it if the masked text still fails
+  `IdentifierCheck` or names the estate.
+- Leak probe: the positive-control fixture carries Turkish names in free-text fields (with a case ending, family name
+  first in capitals), a TCKN glued to letters and a domain account in sentences; the masked walk reads them as tokens
+  and the probe finds no seeded token. Names in registry reasons are now refused at write, and the probe proves it.
+- Not built in `rwmask-v1` yet (MASKING_AND_PRIVACY B2): layer 5's word after a keyword (host, user, from, to,
+  müşteri, hesap, TCKN, IBAN), project code names (upper-case tokens of 3 to 12 letters outside an allowlist) and file
+  paths with user directories; layer 4's customer numbers (`CUST-`), pending the PO's format rules (Q-23); the B3
+  pseudonym registry that would claim each `<WORD>` once per kind (two names can share a word today, about one in 2.3
+  million per pair).
 
 ## Not done
 

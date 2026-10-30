@@ -25,6 +25,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 import org.junit.jupiter.api.Test;
@@ -172,14 +173,21 @@ class MaskedRoleLeakProbeTest {
         // The masked fixture: every maskable form came back masked, every other one withheld.
         Probed fixture = masked.stream().filter(p -> p.endpoint().startsWith(FIXTURE)).findFirst().orElseThrow();
         int maskedFields = 0;
+        int maskedNames = 0;
         for (JsonNode field : fixture.response().body().get("fields")) {
             if (!field.get("maskable").asBoolean()) {
                 assertEquals(TextMasker.WITHHELD, field.get("value").asText());
             } else {
                 maskedFields++;
             }
+            if (field.get("freeText").asBoolean() && Canaries.TURKISH_NAME.equals(field.get("canaryClass").asText())) {
+                // Layer 4: the person reads as one NAME-<WORD> token; the rest of the sentence stays.
+                assertTrue(field.get("value").asText().matches(".*NAME-[A-Z]{8}.*"), "a free-text name field");
+                maskedNames++;
+            }
         }
         assertTrue(maskedFields >= 15, "the fixture masked " + maskedFields + " fields");
+        assertTrue(maskedNames >= 21, "the fixture masked " + maskedNames + " free-text name fields");
     }
 
     private static final String FIXTURE = "GET " + io.rwsafe.probefixture.CanaryFixtureController.PATH;
@@ -412,8 +420,9 @@ class MaskedRoleLeakProbeTest {
         assertEquals(200, officer.post(approvals, role("privacy_officer"), true).status());
 
         // A group-scoped class version (PO decision Q-39) naming the estate's directory groups, activated, then a
-        // withdrawal request and a platform retirement (Q-40, Q-41) whose free-text reasons name a person and carry a
-        // number glued to letters: the registry's free values that reach the screens.
+        // withdrawal request and a platform retirement (Q-40, Q-41) with free-text reasons: the registry's free values
+        // that reach the screens. A reason that names a person (masking layer 4) or carries a number glued to letters is
+        // refused before it is stored, so the stored reasons are plain sentences, withheld from the masked role anyway.
         ObjectNode scoped = JSON.createObjectNode().put("action", "BLOCK").put("mode", "enforce")
             .put("reasonCode", "SYNTHETIC_SCOPE");
         ObjectNode scope = scoped.putObject("scope").put("kind", "GROUPS");
@@ -427,16 +436,20 @@ class MaskedRoleLeakProbeTest {
         assertEquals(200, admin.post(scopedApprovals, role("security_admin"), true).status());
         assertEquals(200, officer.post(scopedApprovals, role("privacy_officer"), true).status());
         Person named = canaries.claimants.get(1);
-        String withdrawalReason = "Talep " + named.displayName() + " kapsam bitti";
+        String withdrawalReason = "Talep sahibi kapsamın bittiğini bildirdi";
         ApiClient.Response withdrawal = admin.post("/api/v1/policy/rules/class.TR_IBAN/versions/" + scopedVersion
             + "/withdrawal", JSON.createObjectNode().put("reason", withdrawalReason).toString(), true);
         assertEquals(201, withdrawal.status(), String.valueOf(withdrawal.body()));
-        String retirementReason = named.given() + " " + named.family() + " istedi";
-        // A reason with a number glued to letters is refused before it is stored, for every role.
-        for (String gluedReason : List.of("kayıt ref" + canaries.tckns.get(0), "arayan tel" + canaries.mobiles.get(0))) {
+        String retirementReason = "Platform artık kullanılmıyor";
+        // A reason with a person's name or a number glued to letters is refused before it is stored, for every role.
+        for (String gluedReason : List.of("kayıt ref" + canaries.tckns.get(0), "arayan tel" + canaries.mobiles.get(0),
+            "Talep " + named.displayName() + " kapsam bitti", named.given() + " " + named.family() + "'in isteği",
+            named.family().toUpperCase(Locale.forLanguageTag("tr")) + " "
+                + named.given().toUpperCase(Locale.forLanguageTag("tr")) + " istedi")) {
             ApiClient.Response r = admin.post("/api/v1/policy/rules/platform.devin/retirement",
                 JSON.createObjectNode().put("reason", gluedReason).toString(), true);
-            assertEquals(400, r.status(), "a reason with a glued number");
+            assertEquals(400, r.status(), "a reason with a name or a glued number");
+            assertEquals("REASON_HOLDS_IDENTIFIER", r.body().get("reason").asText());
             assertTrue(canaries.probe().scan("reason refusal", r.body()).isEmpty(), "the refusal echoed the reason");
         }
         ApiClient.Response retirement = admin.post("/api/v1/policy/rules/platform.windsurf/retirement",

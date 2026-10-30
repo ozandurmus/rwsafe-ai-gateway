@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
  * The text layers of MASKING_AND_PRIVACY B2 for one string, rule set {@value #RULE_SET}. Linear-time RE2/J and plain
@@ -24,16 +25,18 @@ import java.util.function.Function;
  *
  * <p>{@link #maskFreeText} is for sentences people write or read (reasons, details, messages): everything above plus the
  * heuristic pass of layer 5 (domain accounts, IBAN-shaped groups, addresses glued to letters, digit runs of six or more
- * glued to letters, host-shaped dotted labels) and a lone common given name.
+ * glued to letters, host-shaped dotted labels) and a lone common given name. A person reads as {@code NAME-<WORD>}
+ * ({@link Pseudonymiser#word}).
  */
 public final class TextMasker {
 
     /**
-     * The rule-set version on every masked page. {@code rwmask-v2} adds to slice 1 the Turkish name dictionary (layer 4)
-     * and the free-text heuristics (layer 5). Layer 5's keyword-following word, project code names and user-directory
-     * paths, and the PO's customer-number formats (Q-23), are not in it yet.
+     * The rule-set version on every masked page, as MASKING_AND_PRIVACY B2 names it. Slice 1 was {@code rwmask-v1-slice1};
+     * this adds the Turkish name dictionary (layer 4) and the free-text heuristics (layer 5). Still not built inside it:
+     * layer 5's keyword-following word, project code names and user-directory paths, and layer 4's customer numbers
+     * (their formats come from the PO, Q-23).
      */
-    public static final String RULE_SET = "rwmask-v2";
+    public static final String RULE_SET = "rwmask-v1";
 
     /**
      * What the masked role reads in place of free text a person wrote (retirement and withdrawal reasons, a correlation
@@ -54,7 +57,8 @@ public final class TextMasker {
     private static final Pattern IBAN_SHAPE =
         Pattern.compile("[A-Za-z]{2}[0-9]{2}(?: ?[A-Za-z0-9]{4})(?: ?[0-9]{4}){1,7}(?: ?[0-9]{1,3})?");
     private static final int IBAN_MIN_DIGITS = 12;
-    private static final int GLUED_DIGITS = 6;
+    /** The shared identifier check's run length: what it refuses on write, the masker masks on read. */
+    private static final int GLUED_DIGITS = IdentifierCheck.MAX_DIGIT_RUN_EXCLUSIVE;
     private static final Set<String> TOP_LEVEL = Set.of("com", "net", "org", "edu", "gov", "mil", "int", "info", "biz",
         "io", "ai", "dev", "app", "co", "tr", "uk", "de", "eu", "us", "local", "lan", "corp", "internal", "intra",
         "intranet", "localdomain", "home", "arpa", "example", "invalid", "test", "localhost", "cloud", "online", "site",
@@ -106,6 +110,14 @@ public final class TextMasker {
      * names. Masks more than it must rather than less.
      */
     public String maskFreeText(String text) {
+        return maskFreeText(text, host -> false);
+    }
+
+    /**
+     * {@link #maskFreeText(String)} that leaves the host names {@code publicHost} accepts (given in lower case) as
+     * written: the vendor endpoints of the policy registry's platform rows, which are public and not estate data.
+     */
+    public String maskFreeText(String text, Predicate<String> publicHost) {
         if (text == null || text.isEmpty()) {
             return text;
         }
@@ -117,7 +129,7 @@ public final class TextMasker {
         s = replace(s, IPV6, v6 -> looksLikeIpv6(v6) ? Pseudonymiser.REDACTED_IP : v6);
         s = replace(s, TR_MOBILE, phone -> pseudonymiser.token("TEL", subscriber(phone)));
         s = gluedDigits(s, true);
-        s = hosts(s);
+        s = hosts(s, publicHost);
         s = estate(s);
         return names(s, true);
     }
@@ -364,7 +376,7 @@ public final class TextMasker {
      * Host-shaped dotted labels: three or more labels, or two whose last is a known top-level name, the last label
      * letters only ({@code chat.vendor.example}, {@code node7.example.com}); never a version or a decimal.
      */
-    private String hosts(String s) {
+    private String hosts(String s, Predicate<String> publicHost) {
         StringBuilder out = null;
         int cursor = 0;
         int n = s.length();
@@ -386,13 +398,17 @@ public final class TextMasker {
             while (b > a && (s.charAt(b - 1) == '.' || s.charAt(b - 1) == '-')) {
                 b--;
             }
-            if (b <= a || !hostShaped(s.substring(a, b))) {
+            if (b <= a) {
+                continue;
+            }
+            String host = s.substring(a, b).toLowerCase(Locale.ROOT);
+            if (!hostShaped(host) || publicHost.test(host)) {
                 continue;
             }
             if (out == null) {
                 out = new StringBuilder(n);
             }
-            out.append(s, cursor, a).append(pseudonymiser.token("HST", s.substring(a, b).toLowerCase(Locale.ROOT)));
+            out.append(s, cursor, a).append(pseudonymiser.token("HST", host));
             cursor = b;
         }
         return out == null ? s : out.append(s, cursor, n).toString();
@@ -509,7 +525,7 @@ public final class TextMasker {
 
     /**
      * Name runs: up to four dictionary words joined by spaces or one {@code ._-}, a case ending on the last word only
-     * ({@code Ayşe'nin}, {@code Mehmete}). A run with a given name and a family name becomes one {@code NAME-} token
+     * ({@code Ayşe'nin}, {@code Mehmete}). A run with a given name and a family name becomes one {@code NAME-<WORD>} token
      * when one of its words is not an everyday word or every word is capitalised; in free text a lone given name that is
      * not an everyday word becomes a {@code NAME-} token too. The ending is dropped with the name.
      */
@@ -618,16 +634,24 @@ public final class TextMasker {
                 key.append(key.isEmpty() ? "" : " ").append(w.key());
             }
             spans.add(new int[] {run.get(0).start(), run.get(run.size() - 1).end()});
-            tokens.add(pseudonymiser.token("NAME", key.toString()));
+            tokens.add(nameToken(key.toString()));
         } else if (freeText) {
             for (NameWord w : run) {
                 if (w.given() && !w.common()) {
                     spans.add(new int[] {w.start(), w.end()});
-                    tokens.add(pseudonymiser.token("NAME", w.key()));
+                    tokens.add(nameToken(w.key()));
                 }
             }
         }
         run.clear();
+    }
+
+    /** {@code NAME-<WORD>}; a word that itself reads as a dictionary name is drawn again. */
+    private String nameToken(String key) {
+        return pseudonymiser.word("NAME", key, word -> {
+            String folded = NameDictionary.fold(word);
+            return names.flags(folded) != 0 || names.stem(folded) != null;
+        });
     }
 
     private static boolean isPerson(List<NameWord> run) {

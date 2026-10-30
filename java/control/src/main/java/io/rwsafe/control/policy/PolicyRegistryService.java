@@ -427,7 +427,8 @@ public class PolicyRegistryService {
      * D-06): nothing a Tier-1 detector finds (secret shapes, TCKN, IBAN, payment cards), nothing the free-text masking
      * layers would change (e-mail and IP addresses, phone numbers, domain accounts, host names, numbers glued to letters,
      * a Turkish person's name) and no estate-dictionary term, because unmasked roles read it in full on the row and in
-     * the ledger. The refusal never echoes the text.
+     * the ledger. A vendor endpoint of an approved platform row may be named: it is public, not estate data. The refusal
+     * never echoes the text.
      */
     String reasonText(String raw, String invalidReason, String what) {
         String reason = raw == null ? "" : raw.strip();
@@ -445,13 +446,34 @@ public class PolicyRegistryService {
         }
         // A number glued to letters (a TCKN, a phone or a customer number as "ref<digits>") escapes the detectors'
         // boundary rule: six or more digits in a row are refused too (leak probe); the free-text layers find the rest
-        // (a person's name, hosts, domain accounts, IBAN shapes).
-        if (IdentifierCheck.identifierShape(reason) || !masking.masker().maskFreeText(reason).equals(reason)) {
+        // (a person's name, hosts other than vendor endpoints, domain accounts, IBAN shapes).
+        if (IdentifierCheck.identifierShape(reason)
+            || !masking.masker().maskFreeText(reason, vendorHosts()).equals(reason)) {
             throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "REASON_HOLDS_IDENTIFIER",
                 "The reason holds an identifier (an address, a number or a name the masking rules recognise); describe "
                     + "the reason without it.");
         }
         return reason;
+    }
+
+    /**
+     * The public vendor endpoints of the registry's approved platform rows (active, superseded or retired; never a
+     * draft nobody approved; PLATFORM_MATRIX §2): an API or login host as written, or a host equal to or under a host
+     * suffix. Rows that name an estate term were refused when drafted.
+     */
+    private java.util.function.Predicate<String> vendorHosts() {
+        Set<String> exact = new java.util.HashSet<>();
+        List<String> suffixes = new ArrayList<>();
+        for (PolicyRuleVersion v : database.policyRegistry().versions()) {
+            if (RegistryVocabulary.KIND_PLATFORM.equals(v.kind())
+                && Set.of("active", "superseded", "retired").contains(v.status())) {
+                lower(v.apiHosts()).forEach(exact::add);
+                lower(v.loginHosts()).forEach(exact::add);
+                suffixes.addAll(lower(v.hostSuffixes()));
+            }
+        }
+        return host -> exact.contains(host)
+            || suffixes.stream().anyMatch(s -> host.equals(s) || host.endsWith("." + s));
     }
 
     /** The registry left by a retirement must still compile (every class, the flow, at least one platform row). */

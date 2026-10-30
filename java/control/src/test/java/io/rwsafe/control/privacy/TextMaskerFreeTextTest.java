@@ -12,20 +12,41 @@ import java.util.Random;
 import org.junit.jupiter.api.Test;
 
 /**
- * Masking layers 4 (Turkish names) and 5 (free-text heuristics) of {@code rwmask-v2} on a synthetic corpus built at
+ * Masking layers 4 (Turkish names) and 5 (free-text heuristics) of {@code rwmask-v1} on a synthetic corpus built at
  * runtime: generic dictionary names, identifiers with valid checksums generated here (AGENTS.md 4.5), documentation
  * addresses and example host names only.
  */
 class TextMaskerFreeTextTest {
 
-    private static final String NAME = "NAME-[0-9a-f]{4}";
+    /** MASKING_AND_PRIVACY B2 layer 4: {@code NAME-<WORD>}, four consonant-vowel syllables. */
+    private static final String NAME = "NAME-[A-Z]{8}";
 
     private final TextMasker m = new Masking(PseudonymiserTest.keys(1), new Pseudonymiser(PseudonymiserTest.keys(1)))
         .masker();
 
     @Test
-    void theRuleSetVersionIsV2() {
-        assertEquals("rwmask-v2", TextMasker.RULE_SET);
+    void theRuleSetVersionIsTheDesignsName() {
+        assertEquals("rwmask-v1", TextMasker.RULE_SET);
+    }
+
+    @Test
+    void nameWordsArePronounceableStablePerEstateAndNeverANameThemselves() {
+        Pseudonymiser p = new Pseudonymiser(PseudonymiserTest.keys(1));
+        java.util.Set<String> words = new java.util.HashSet<>();
+        for (int i = 0; i < 2_000; i++) {
+            String token = p.word("NAME", "synthetic person " + i, w -> false);
+            assertTrue(token.matches("NAME-(?:[BDFGLMNPRSTVZ][AEO]){4}"), token);
+            assertFalse(token.contains("GOT") || token.contains("MEME"), token);
+            words.add(token);
+        }
+        assertTrue(words.size() >= 1_998, "words are spread: " + words.size());
+        assertEquals(p.word("NAME", "ayse yilmaz", w -> false), p.word("NAME", "ayse yilmaz", w -> false));
+        assertNotEquals(p.word("NAME", "ayse yilmaz", w -> false),
+            new Pseudonymiser(PseudonymiserTest.keys(2)).word("NAME", "ayse yilmaz", w -> false));
+        String first = p.word("NAME", "ayse yilmaz", w -> false).substring(5);
+        String redrawn = p.word("NAME", "ayse yilmaz", first::equals);
+        assertNotEquals("NAME-" + first, redrawn, "a refused word is drawn again");
+        assertEquals(redrawn, p.word("NAME", "ayse yilmaz", first::equals), "and the redraw is stable too");
     }
 
     // ---- layer 4: names ----------------------------------------------------------------------------------------------
@@ -104,7 +125,8 @@ class TextMaskerFreeTextTest {
             assertEquals(text, m.maskFreeText(text), text);
         }
         // Hex bodies of tokens this masker writes can spell a name (ece, eda, ada): they stay as written.
-        for (String token : List.of("USR-ece0123456", "TEL-eda1", "NUM-ada1", "EST-ece", "HST-eda")) {
+        for (String token : List.of("USR-ece0123456", "TEL-eda1", "NUM-ada1", "EST-ece", "HST-eda", "NAME-ECE",
+            "NAME-SELIM")) {
             assertEquals("by " + token, m.maskFreeText("by " + token), token);
         }
     }
@@ -136,8 +158,12 @@ class TextMaskerFreeTextTest {
             "the user column's pseudonym");
         String hosts = m.maskFreeText("see https://chat.vendor.example/path and node7.example.com.");
         assertTrue(hosts.matches("see https://HST-[0-9a-f]{4}/path and HST-[0-9a-f]{4}\\."), hosts);
-        String keep = "report.pdf, v1.2.3, 3.5 GB, e.g. i.e. 12:30:45, rwmask-v2";
+        String keep = "report.pdf, v1.2.3, 3.5 GB, e.g. i.e. 12:30:45, rwmask-v1";
         assertEquals(keep, m.maskFreeText(keep));
+        String vendor = "moved to api.vendor.example and chat.vendor.example, not node7.example.com";
+        String allowed = m.maskFreeText(vendor, h -> h.equals("vendor.example") || h.endsWith(".vendor.example"));
+        assertTrue(allowed.matches("moved to api.vendor.example and chat.vendor.example, not HST-[0-9a-f]{4}"),
+            allowed);
         String address = m.maskFreeText("host192.0.2.10 down");
         assertFalse(address.contains("192.0.2.10"), address);
         assertEquals(m.mask("192.0.2.10"), address.substring(4, address.indexOf(' ')));

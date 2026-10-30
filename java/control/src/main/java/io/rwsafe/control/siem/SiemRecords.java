@@ -1,5 +1,6 @@
 package io.rwsafe.control.siem;
 
+import io.rwsafe.control.privacy.IdentifierCheck;
 import io.rwsafe.control.siem.SiemField.SiemStream;
 import io.rwsafe.control.siem.SiemRecord.Value;
 import io.rwsafe.detect.DetectorSet;
@@ -18,7 +19,8 @@ import java.util.function.Function;
 /**
  * Maps stored rows to {@link SiemRecord}s: the only place that decides what leaves for the SIEM (ADR-009 C8, SR-SIEM-2).
  * Every exported value must match the exact shape its field allows; a value that does not, or that contains a term of
- * the estate dictionary, leaves as {@value #WITHHELD} (fail closed, never the value).
+ * the estate dictionary, leaves as {@value #WITHHELD} (fail closed, never the value). The one free-text value, a ledger
+ * reason that is not a vocabulary token (a retirement or withdrawal reason), leaves only through the free-text masker.
  *
  * <p>Audit-ledger row keys (PR 23 review D-2) leave as they are only for the audited tables listed in
  * {@link #rowKeyShape}, only in that table's exact key shape (a number, a policy version key, a destination name) and
@@ -36,17 +38,27 @@ public final class SiemRecords {
     private final Function<String, String> accountPseudonym;
     private final Function<String, String> keyPseudonym;
     private final List<String> estateTerms;
+    private final Function<String, String> freeText;
+
+    /** Without a free-text masker: a ledger reason that is not a vocabulary token is withheld. */
+    public SiemRecords(Function<String, String> accountPseudonym, Function<String, String> keyPseudonym,
+                       List<String> estateTerms) {
+        this(accountPseudonym, keyPseudonym, estateTerms, null);
+    }
 
     /**
      * @param accountPseudonym the account name's {@code USR-} pseudonym
      * @param keyPseudonym     a keyed, class-visible token for any other row key ({@code KEY-xxxx})
      * @param estateTerms      the lower-case estate dictionary (masking layer 3)
+     * @param freeText         the free-text masker ({@code TextMasker::maskFreeText}) for the one free-text value the
+     *                         ledger carries, a retirement or withdrawal reason; null withholds it
      */
     public SiemRecords(Function<String, String> accountPseudonym, Function<String, String> keyPseudonym,
-                       List<String> estateTerms) {
+                       List<String> estateTerms, Function<String, String> freeText) {
         this.accountPseudonym = accountPseudonym;
         this.keyPseudonym = keyPseudonym;
         this.estateTerms = List.copyOf(estateTerms);
+        this.freeText = freeText;
     }
 
     public SiemRecord verdict(ExportVerdict row) {
@@ -82,7 +94,7 @@ public final class SiemRecords {
         v.add(new Value(SiemField.EVENT_ID, "audit-" + row.auditId()));
         v.add(new Value(SiemField.STREAM, "audit"));
         v.add(new Value(SiemField.ACTION, action));
-        v.add(new Value(SiemField.REASON, vocabulary(row.reasonCode(), 64)));
+        v.add(new Value(SiemField.REASON, ledgerReason(row.reasonCode())));
         v.add(new Value(SiemField.USER, exportableActor(row.actorFingerprint()) ? row.actorFingerprint() : WITHHELD));
         v.add(new Value(SiemField.AUDITED_TABLE, table));
         v.add(new Value(SiemField.OPERATION, oneOf(row.operation(), Set.of("INSERT", "UPDATE", "DELETE"))));
@@ -172,6 +184,30 @@ public final class SiemRecords {
     private String vocabulary(String s, int max) {
         return s != null && plain(s, max) && !estate(s) && longestDigitRun(s) < MAX_DIGIT_RUN
             && DETECTORS.scan(s).isEmpty() ? s : WITHHELD;
+    }
+
+    /**
+     * A ledger reason: a vocabulary token as it is; otherwise free text (a retirement or withdrawal reason) through the
+     * free-text masker (MASKING_AND_PRIVACY B2 layers 1 to 6), and only when the masked text, cut to the field length,
+     * still holds no estate term and no identifier shape ({@link IdentifierCheck#identifierShape}: a detector finding or
+     * six or more digits, grouped or glued). Anything else is withheld.
+     */
+    private String ledgerReason(String s) {
+        String token = vocabulary(s, SiemField.REASON.maxLength());
+        if (!WITHHELD.equals(token) || s == null || freeText == null) {
+            return token;
+        }
+        try {
+            String masked = freeText.apply(s);
+            if (masked == null) {
+                return WITHHELD;
+            }
+            String text = SiemText.clean(masked, SiemField.REASON.maxLength());
+            return text == null || text.isBlank() || estate(text) || IdentifierCheck.identifierShape(text) ? WITHHELD
+                : text;
+        } catch (RuntimeException maskingUnavailable) {
+            return WITHHELD;
+        }
     }
 
     static int longestDigitRun(String s) {
