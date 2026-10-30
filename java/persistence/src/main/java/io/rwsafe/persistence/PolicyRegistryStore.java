@@ -53,7 +53,7 @@ public final class PolicyRegistryStore {
             audit.apply(tx);
             Instant now = Instant.now();
             for (Draft d : rules) {
-                insert(tx, d, 1, "active", "seed", now);
+                insert(tx, d, 1, "active", "seed", now, null, null);
             }
             return true;
         });
@@ -78,29 +78,74 @@ public final class PolicyRegistryStore {
     }
 
     /**
-     * Adds the next version of {@code draft.ruleId()} as {@code pending}. A rule has at most one pending version: an
-     * earlier pending one (with whatever approvals it gathered) is superseded, so an approval given to an older draft can
-     * never be completed later by a single person (PR 16 review D-03).
+     * Adds the next version of {@code draft.ruleId()} as {@code pending}. A rule has at most one pending version per mode
+     * and scope (PR 21 Q-41: drafts for different scopes run side by side): an earlier pending one of the same mode and
+     * scope (with whatever approvals it gathered) is superseded, so an approval given to an older draft can never be
+     * completed later by a single person (PR 16 review D-03).
      */
     public PolicyRuleVersion draft(Draft draft, AuditContext audit) {
         return refusalsAsConflicts(() -> dsl.transactionResult(cfg -> {
             DSLContext tx = DSL.using(cfg);
             lockRule(tx, draft.ruleId());
-            Integer max = tx.select(DSL.max(RV_VERSION)).from(RULE_VERSION).where(RV_RULE_ID.eq(draft.ruleId()))
-                .fetchOne(0, Integer.class);
-            int next = max == null ? 1 : max + 1;
+            int next = nextVersion(tx, draft.ruleId());
             audit.apply(tx);
-            insert(tx, draft, next, "pending", "registry", null);
-            tx.update(RULE_VERSION).set(RV_STATUS, "superseded").set(RV_SUPERSEDED_AT, Instant.now())
-                .where(RV_RULE_ID.eq(draft.ruleId()).and(RV_STATUS.eq("pending")).and(RV_VERSION.lt(next))).execute();
+            insert(tx, draft, next, "pending", "registry", null, null, null);
+            supersedeOlderPending(tx, draft.ruleId(), next);
             return read(tx, RV_RULE_ID.eq(draft.ruleId()).and(RV_VERSION.eq(next))).get(0);
         }));
     }
 
     /**
+     * Requests the withdrawal of an active group-scoped class version (PR 21 Q-41): a pending version of the same rule,
+     * mode and scope that names the target and the reason. It takes the same two approvals as an activation
+     * ({@link #approve}); with the second the target becomes {@code withdrawn} and its groups fall back to {@code ANY}.
+     * The ledger's reason for the request is the withdrawal reason (the trigger checks it).
+     *
+     * @throws RegistryConflict {@code WITHDRAWAL_NOT_APPLICABLE} when the target is not an active group-scoped version
+     */
+    public PolicyRuleVersion requestWithdrawal(String ruleId, int targetVersion, String reason,
+                                               String authorFingerprint, AuditContext audit) {
+        return refusalsAsConflicts(() -> dsl.transactionResult(cfg -> {
+            DSLContext tx = DSL.using(cfg);
+            lockRule(tx, ruleId);
+            PolicyRuleVersion target = read(tx, RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(targetVersion))).stream()
+                .findFirst().orElseThrow(() -> new RegistryConflict("POLICY_VERSION_NOT_FOUND", "No such rule version."));
+            if (!"active".equals(target.status()) || !target.scopedToGroups() || target.withdrawalRequest()
+                || !"class_action".equals(target.kind())) {
+                throw new RegistryConflict("WITHDRAWAL_NOT_APPLICABLE",
+                    "Only an active group-scoped class version is withdrawn.");
+            }
+            int next = nextVersion(tx, ruleId);
+            audit.apply(tx);
+            insert(tx, new Draft(ruleId, target.kind(), target.dataClass(), target.action(), null, null, null, null, null,
+                target.mode(), "all", authorFingerprint, "SCOPE_WITHDRAWAL", target.scopeKind(), target.scopeGroups()),
+                next, "pending", "registry", null, targetVersion, reason);
+            supersedeOlderPending(tx, ruleId, next);
+            return read(tx, RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(next))).get(0);
+        }));
+    }
+
+    private static int nextVersion(DSLContext tx, String ruleId) {
+        Integer max = tx.select(DSL.max(RV_VERSION)).from(RULE_VERSION).where(RV_RULE_ID.eq(ruleId))
+            .fetchOne(0, Integer.class);
+        return max == null ? 1 : max + 1;
+    }
+
+    /** Supersedes the older pending versions of the new version's rule, mode and scope. */
+    private static void supersedeOlderPending(DSLContext tx, String ruleId, int version) {
+        Record created = tx.select(RV_MODE, RV_SCOPE_KEY).from(RULE_VERSION)
+            .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).fetchOne();
+        tx.update(RULE_VERSION).set(RV_STATUS, "superseded").set(RV_SUPERSEDED_AT, Instant.now())
+            .where(RV_RULE_ID.eq(ruleId).and(RV_STATUS.eq("pending")).and(RV_VERSION.lt(version))
+                .and(RV_MODE.eq(created.get(RV_MODE))).and(RV_SCOPE_KEY.eq(created.get(RV_SCOPE_KEY))))
+            .execute();
+    }
+
+    /**
      * Records one approval of a pending version; with the second (the other role, another person) the version becomes
-     * active and supersedes what it replaces: an {@code all} version every active version of its rule and mode, a staged
-     * version only the staged one (the {@code all} baseline keeps applying until a version reaches {@code all}).
+     * active and supersedes what it replaces: every active version of its rule, mode and scope (a new version is stage
+     * {@code all}; a legacy staged row of the same scope is replaced with the baseline). Versions of other scopes keep
+     * applying: an {@code ANY} version and a group-scoped version of one rule are active side by side.
      *
      * @param approverFingerprint the approver's {@code USR-} pseudonym
      * @param activation          the ledger context of the activation, applied after the approval's
@@ -116,7 +161,7 @@ public final class PolicyRegistryStore {
         return refusalsAsConflicts(() -> dsl.transactionResult(cfg -> {
             DSLContext tx = DSL.using(cfg);
             lockRule(tx, ruleId);
-            Record row = tx.select(RV_STATUS, RV_MODE, RV_STAGE).from(RULE_VERSION)
+            Record row = tx.select(RV_STATUS, RV_MODE, RV_STAGE, RV_SCOPE_KEY, RV_WITHDRAWS).from(RULE_VERSION)
                 .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).forUpdate().fetchOne();
             if (row == null) {
                 throw new RegistryConflict("POLICY_VERSION_NOT_FOUND", "No such rule version.");
@@ -125,8 +170,9 @@ public final class PolicyRegistryStore {
                 throw new RegistryConflict("POLICY_NOT_PENDING", "Only a pending version takes approvals.");
             }
             String mode = row.get(RV_MODE);
-            if (tx.fetchExists(RULE_VERSION, RV_RULE_ID.eq(ruleId).and(RV_MODE.eq(mode)).and(RV_STATUS.eq("active"))
-                .and(RV_VERSION.gt(version)))) {
+            String scopeKey = row.get(RV_SCOPE_KEY);
+            if (tx.fetchExists(RULE_VERSION, RV_RULE_ID.eq(ruleId).and(RV_MODE.eq(mode)).and(RV_SCOPE_KEY.eq(scopeKey))
+                .and(RV_STATUS.eq("active")).and(RV_VERSION.gt(version)))) {
                 throw new RegistryConflict("NEWER_VERSION_ACTIVE",
                     "A newer version of this rule is active; draft again from it.");
             }
@@ -145,15 +191,31 @@ public final class PolicyRegistryStore {
                 .values(ruleId, version, role, approverFingerprint).execute();
             int roles = tx.fetchCount(tx.selectDistinct(AP_ROLE).from(APPROVAL)
                 .where(AP_RULE_ID.eq(ruleId).and(AP_VERSION.eq(version))));
-            if (roles == 2) {
+            Integer withdraws = row.get(RV_WITHDRAWS);
+            if (roles == 2 && withdraws != null) {
+                // Q-41: the approved request turns its target withdrawn (the guard requires the request to be active
+                // first); a target that is no longer active refuses the activation.
+                if (!tx.fetchExists(RULE_VERSION, RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(withdraws))
+                    .and(RV_STATUS.eq("active")))) {
+                    throw new RegistryConflict("WITHDRAWAL_TARGET_NOT_ACTIVE",
+                        "The version this request withdraws is no longer active; nothing changed.");
+                }
+                activation.apply(tx);
+                Instant now = Instant.now();
+                tx.update(RULE_VERSION).set(RV_STATUS, "active").set(RV_ACTIVATED_AT, now)
+                    .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).execute();
+                tx.update(RULE_VERSION).set(RV_STATUS, "withdrawn").set(RV_WITHDRAWN_AT, now)
+                    .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(withdraws))).execute();
+                activationCheck.accept(activeIn(tx));
+            } else if (roles == 2) {
                 activation.apply(tx);
                 Instant now = Instant.now();
                 // The new version first, then what it replaces: the guard supersedes an active version only when a
                 // newer active one exists (the one-active constraints are checked at commit).
                 tx.update(RULE_VERSION).set(RV_STATUS, "active").set(RV_ACTIVATED_AT, now)
                     .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).execute();
-                Condition replaced = RV_RULE_ID.eq(ruleId).and(RV_MODE.eq(mode)).and(RV_STATUS.eq("active"))
-                    .and(RV_VERSION.lt(version));
+                Condition replaced = RV_RULE_ID.eq(ruleId).and(RV_MODE.eq(mode)).and(RV_SCOPE_KEY.eq(scopeKey))
+                    .and(RV_STATUS.eq("active")).and(RV_VERSION.lt(version));
                 if (!"all".equals(row.get(RV_STAGE))) {
                     replaced = replaced.and(RV_STAGE.ne("all"));
                 }
@@ -164,11 +226,47 @@ public final class PolicyRegistryStore {
         }));
     }
 
+    /**
+     * Retires every active version of a platform rule (PO decision Q-40): one {@code security_admin}'s action with a
+     * reason, no second approval. The rows stay (status {@code retired}, with the time, the administrator's pseudonym
+     * and the reason); the next snapshot no longer carries the platform. A retired version never becomes active again: a
+     * platform comes back only as a new version under the two approvals. The ledger records the update with
+     * {@code audit}, whose actor must be {@code administratorFingerprint} (the trigger checks it).
+     *
+     * @param retireCheck runs on the would-be active versions inside the same transaction; an exception it throws rolls
+     *                    the retirement back (a retirement that would leave no compilable snapshot is refused)
+     * @throws RegistryConflict {@code POLICY_VERSION_NOT_FOUND} when the rule has no active version
+     */
+    public List<PolicyRuleVersion> retirePlatform(String ruleId, String administratorFingerprint, String reason,
+                                                  AuditContext audit, Consumer<List<PolicyRuleVersion>> retireCheck) {
+        return refusalsAsConflicts(() -> dsl.transactionResult(cfg -> {
+            DSLContext tx = DSL.using(cfg);
+            lockRule(tx, ruleId);
+            Condition activeRows = RV_RULE_ID.eq(ruleId).and(RV_KIND.eq("platform")).and(RV_STATUS.eq("active"));
+            if (!tx.fetchExists(RULE_VERSION, activeRows)) {
+                throw new RegistryConflict("POLICY_VERSION_NOT_FOUND", "The platform has no active version to retire.");
+            }
+            audit.apply(tx);
+            List<Integer> versions = tx.select(RV_VERSION).from(RULE_VERSION).where(activeRows).forUpdate()
+                .fetch(RV_VERSION);
+            tx.update(RULE_VERSION).set(RV_STATUS, "retired").set(RV_RETIRED_AT, Instant.now())
+                .set(RV_RETIRED_BY, administratorFingerprint).set(RV_RETIRED_REASON, reason)
+                .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.in(versions))).execute();
+            // PR 21 review D-01: a pending draft of the retired platform (and any approval it holds) stops counting, so
+            // one approver can never bring the platform back by completing a draft started before the retirement.
+            tx.update(RULE_VERSION).set(RV_STATUS, "superseded").set(RV_SUPERSEDED_AT, Instant.now())
+                .where(RV_RULE_ID.eq(ruleId).and(RV_STATUS.eq("pending"))).execute();
+            retireCheck.accept(activeIn(tx));
+            return read(tx, RV_RULE_ID.eq(ruleId).and(RV_VERSION.in(versions)));
+        }));
+    }
+
     private static void lockRule(DSLContext tx, String ruleId) {
         tx.select(DSL.field("pg_advisory_xact_lock(hashtext({0}))", DSL.val("rwsafe.policy_rule:" + ruleId))).fetch();
     }
 
-    private static void insert(DSLContext tx, Draft d, int version, String status, String source, Instant activatedAt) {
+    private static void insert(DSLContext tx, Draft d, int version, String status, String source, Instant activatedAt,
+                               Integer withdraws, String withdrawalReason) {
         tx.insertInto(RULE_VERSION)
             .set(RV_RULE_ID, d.ruleId())
             .set(RV_VERSION, version)
@@ -182,11 +280,15 @@ public final class PolicyRegistryStore {
             .set(RV_ENFORCE_FAIL_CLOSED, d.enforceFailClosed())
             .set(RV_MODE, d.mode())
             .set(RV_STAGE, d.rolloutStage())
+            .set(RV_SCOPE_KIND, d.scopeKind())
+            .set(RV_SCOPE_GROUPS, d.scopeGroups().toArray(String[]::new))
             .set(RV_STATUS, status)
             .set(RV_SOURCE, source)
             .set(RV_AUTHOR, d.authorFingerprint())
             .set(RV_REASON, d.reasonCode())
             .set(RV_ACTIVATED_AT, activatedAt)
+            .set(RV_WITHDRAWS, withdraws)
+            .set(RV_WITHDRAWAL_REASON, withdrawalReason)
             .execute();
     }
 
@@ -201,7 +303,9 @@ public final class PolicyRegistryStore {
     private static List<PolicyRuleVersion> read(DSLContext ctx, Condition where) {
         List<Field<?>> fields = List.of(RV_RULE_ID, RV_VERSION, RV_KIND, RV_DATA_CLASS, RV_ACTION, RV_PLATFORM,
             RV_HOST_SUFFIXES, RV_API_HOSTS, RV_LOGIN_HOSTS, RV_ENFORCE_FAIL_CLOSED, RV_MODE, RV_STAGE, RV_STATUS,
-            RV_SOURCE, RV_AUTHOR, RV_REASON, RV_CREATED_AT, RV_ACTIVATED_AT, RV_SUPERSEDED_AT);
+            RV_SOURCE, RV_AUTHOR, RV_REASON, RV_CREATED_AT, RV_ACTIVATED_AT, RV_SUPERSEDED_AT, RV_SCOPE_KIND,
+            RV_SCOPE_GROUPS, RV_RETIRED_AT, RV_RETIRED_BY, RV_RETIRED_REASON, RV_WITHDRAWS, RV_WITHDRAWAL_REASON,
+            RV_WITHDRAWN_AT);
         List<Record> rows = ctx.select(fields).from(RULE_VERSION).where(where)
             .orderBy(RV_RULE_ID, RV_VERSION.desc()).fetch();
         Map<String, List<PolicyApproval>> approvals = new LinkedHashMap<>();
@@ -221,7 +325,11 @@ public final class PolicyRegistryStore {
                 list(r.get(RV_LOGIN_HOSTS)), r.get(RV_ENFORCE_FAIL_CLOSED), r.get(RV_MODE), r.get(RV_STAGE),
                 r.get(RV_STATUS), r.get(RV_SOURCE), r.get(RV_AUTHOR), r.get(RV_REASON), r.get(RV_CREATED_AT),
                 r.get(RV_ACTIVATED_AT), r.get(RV_SUPERSEDED_AT),
-                approvals.getOrDefault(r.get(RV_RULE_ID) + "@v" + r.get(RV_VERSION), List.of())));
+                approvals.getOrDefault(r.get(RV_RULE_ID) + "@v" + r.get(RV_VERSION), List.of()), r.get(RV_SCOPE_KIND),
+                list(r.get(RV_SCOPE_GROUPS)), r.get(RV_RETIRED_AT) == null ? null
+                    : new PolicyRuleVersion.Retirement(r.get(RV_RETIRED_AT), r.get(RV_RETIRED_BY),
+                        r.get(RV_RETIRED_REASON)),
+                r.get(RV_WITHDRAWS), r.get(RV_WITHDRAWAL_REASON), r.get(RV_WITHDRAWN_AT)));
         }
         return out;
     }

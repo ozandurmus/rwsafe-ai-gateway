@@ -22,6 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -176,7 +177,7 @@ class ShutdownSequenceTest {
 
     private static VerdictEvent event() {
         return new VerdictEvent(UUID.randomUUID(), Instant.now(), "reqmod", "claude", "api", "chat", Verdict.ALLOW, null,
-            Map.of(), 10, 5, null, null, "plain_allowlisted", 1, "synthetic");
+            Map.of(), 10, 5, null, null, "plain_allowlisted", 1, "synthetic", List.of(), List.of());
     }
 
     private static Path repositoryFile(String relative) {

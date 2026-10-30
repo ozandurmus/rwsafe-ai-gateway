@@ -34,7 +34,7 @@ class SnapshotCodecTest {
 
     @Test
     void refusesAnythingOutsideTheContract() {
-        assertEquals("FORMAT", reason(doc("2", ALL, true)));
+        assertEquals("FORMAT", reason(doc("3", ALL, true)));
         assertEquals("MISSING_CLASS", reason(doc("1", "\"SECRET\":\"BLOCK\"", true)));
         assertEquals("UNKNOWN_CLASS_OR_ACTION", reason(doc("1", ALL + ",\"PASSPORT\":\"BLOCK\"", true)));
         assertEquals("UNKNOWN_CLASS_OR_ACTION", reason(doc("1", ALL.replace("\"BLOCK\"", "\"QUARANTINE\""), true)));

@@ -135,7 +135,7 @@ public final class SampleEvents {
         String address = DOC_NETS[user % DOC_NETS.length] + (10 + user % 200);
         return new VerdictEventPayload(id, at.toString(), respmod ? "respmod" : "reqmod", p.id(), surface, step,
             verdict, reason, findings, bodyBytes, micros, "synthetic.user." + String.format("%03d", user), address,
-            "plain_allowlisted", 1L, id);
+            "plain_allowlisted", 1L, id, null, null);
     }
 
     private Platform platform() {

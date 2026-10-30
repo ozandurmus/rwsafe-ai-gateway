@@ -21,6 +21,7 @@ public final class PolicySnapshot {
     private final boolean enforceFailClosed;
     private final List<PlatformRule> platforms;
     private final Instant issuedAt;
+    private final List<ScopedRule> scopedRules;
 
     public PolicySnapshot(long version, String id, Map<DataClass, Action> classActions, boolean enforceFailClosed,
                           List<PlatformRule> platforms) {
@@ -30,18 +31,34 @@ public final class PolicySnapshot {
     /** @param issuedAt when the control plane signed it; null for the built-in development snapshot (never stale) */
     public PolicySnapshot(long version, String id, Map<DataClass, Action> classActions, boolean enforceFailClosed,
                           List<PlatformRule> platforms, Instant issuedAt) {
+        this(version, id, classActions, enforceFailClosed, platforms, issuedAt, List.of());
+    }
+
+    /**
+     * Format 2 (POLICY_SNAPSHOT_CONTRACT.md): {@code classActions} is the {@code ANY} scope; {@code scopedRules} are the
+     * group-scoped rules, resolved per transaction by {@link PolicyEvaluator#resolve}.
+     */
+    public PolicySnapshot(long version, String id, Map<DataClass, Action> classActions, boolean enforceFailClosed,
+                          List<PlatformRule> platforms, Instant issuedAt, List<ScopedRule> scopedRules) {
         if (version < 1 || id == null || id.isBlank()) {
             throw new IllegalArgumentException("a snapshot needs a positive version and an id");
         }
         this.version = version;
         this.id = id;
         this.classActions = new EnumMap<>(classActions);
+        for (Map.Entry<DataClass, Action> e : this.classActions.entrySet()) {
+            // ADR-010 §4, PR 20 review D-04: the ANY scope never relaxes a fail-closed class, whoever builds it.
+            if (e.getKey().failClosed() && (e.getValue() == Action.ALLOW || e.getValue() == Action.WARN)) {
+                throw new IllegalArgumentException("a fail-closed class may not be ALLOW or WARN");
+            }
+        }
         for (DataClass c : DataClass.values()) {
             this.classActions.putIfAbsent(c, Action.BLOCK);
         }
         this.enforceFailClosed = enforceFailClosed;
         this.platforms = List.copyOf(platforms);
         this.issuedAt = issuedAt;
+        this.scopedRules = List.copyOf(scopedRules);
     }
 
     public long version() {
@@ -52,7 +69,10 @@ public final class PolicySnapshot {
         return id;
     }
 
-    /** The action for a class; a class the snapshot does not name blocks (UNKNOWN fails closed, AGENTS.md section 6). */
+    /**
+     * The {@code ANY}-scope action for a class; a class the snapshot does not name blocks (UNKNOWN fails closed, AGENTS.md
+     * section 6). A transaction decides with {@link PolicyEvaluator#resolve}, which adds the scoped rules.
+     */
     public Action actionFor(DataClass dataClass) {
         return classActions.get(dataClass);
     }
@@ -70,6 +90,11 @@ public final class PolicySnapshot {
     /** Null for the built-in development snapshot. */
     public Instant issuedAt() {
         return issuedAt;
+    }
+
+    /** Group-scoped rules (format 2), in snapshot order; empty for a format 1 snapshot. */
+    public List<ScopedRule> scopedRules() {
+        return scopedRules;
     }
 
     public List<PlatformRule> platforms() {
