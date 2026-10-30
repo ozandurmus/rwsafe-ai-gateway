@@ -1,5 +1,14 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Portable workload manifests (PORT-1): Deployments, StatefulSet, Services, ConfigMap and Secret contracts,
-# NetworkPolicies, PodDisruptionBudgets, ServiceAccounts. Written in the implementation phase against ADR-001/002/009.
-resources: []
+# Portable workload manifests (PORT-1): Deployments, StatefulSet, Services, committed ConfigMaps, NetworkPolicies,
+# PodDisruptionBudgets, ServiceAccounts (ADR-001, ADR-002). No Secret and no estate ConfigMap is ever rendered here: their
+# names and keys are the contract in ../contracts/runtime-contracts.yaml, their values are created once by the operator
+# (DEPLOY_AND_SHARED_HOST_RUNBOOK §4) and never touch a tracked file. PriorityClass names, the in-cluster registry and the
+# platform's own pods (DNS, ingress, ServiceLB) are platform facts and live in the overlays (PORT-3).
+resources:
+  - 10-serviceaccounts.yaml
+  - 20-configmaps.yaml
+  - 30-dataplane.yaml
+  - 40-control.yaml
+  - 50-db.yaml
+  - 60-networkpolicies.yaml

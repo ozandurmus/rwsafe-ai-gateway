@@ -125,7 +125,7 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
 - Verified end to end locally: the ICAP engine's replay scenarios reach the control plane and appear in the UI.
 - Local run: `docs/operations/LOCAL_RUN.md` "Control plane and admin UI".
 
-## Done (MVP control plane and admin UI, slice 2: branch `feature/mvp2-control-ui`, not yet merged)
+## Done (MVP control plane and admin UI, slice 2: merged in PR 16)
 
 - Admin UI in Turkish and English (PO decision Q-38): one catalogue per language under `frontend/src/i18n` (keys in
   English), every UI string moved there; the Turkish catalogue is typed against the English key set and a Vitest test
@@ -152,6 +152,15 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
   through the funnel and changes nothing.
 - Local run: `docs/operations/LOCAL_RUN.md` "Control plane and admin UI" (dev signing key and its public key for a local
   data plane, the snapshot feed with curl, the two-approval walk-through).
+
+## Done (deploy manifests, branch `feature/deploy-manifests`)
+
+Container builds `deploy/images/{dataplane,control}.Containerfile` (Gradle `imageDist`, UBI 9 OpenJDK 21, digest-pinned
+bases, UID 185 group 0, read-only root); kustomize base for `rwsafe-dataplane`, `rwsafe-control` and `rwsafe-db` with
+NetworkPolicies, PDB and Secret contracts (`deploy/rwsafe/contracts/runtime-contracts.json`); k3s overlay additions
+(priority assignment, platform-peer NetworkPolicies, in-cluster image names with a placeholder digest). CI job
+`manifests` runs `tools/deploy/manifest_check.py` (AGENTS.md section 8 rules, quota fit) and its fixture self-test.
+Nothing applied; build and apply commands in `DEPLOY_AND_SHARED_HOST_RUNBOOK.md` §7 (apply is the PO's step).
 
 ## Not done
 

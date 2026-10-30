@@ -1,0 +1,86 @@
+# PORTS_AND_RESOURCES §4.2, ADR-001 §5: namespace default-deny, then explicit allows between rwsafe's own workloads.
+# Platform peers (DNS, Traefik, the ServiceLB pods) are named in the overlay because their labels are platform facts
+# (PORT-3). No rule names a `ui2*` namespace. Ports are numeric (kube-router, the k3s policy controller).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-default-deny
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# The data plane reaches only the control plane's snapshot feed and ingestion route (ARCH-1); no other egress, no
+# database, no internet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-dataplane
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-dataplane }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-dataplane
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rwsafe-control
+      ports:
+        - { protocol: TCP, port: 8091 }
+        - { protocol: TCP, port: 8092 }
+---
+# The control plane: 8091/8092 from the data plane only; out to its database and the directory (LDAP/LDAPS). The
+# directory's addresses are estate values; the egress rule names the ports only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-control
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-control }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-control
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rwsafe-dataplane
+      ports:
+        - { protocol: TCP, port: 8091 }
+        - { protocol: TCP, port: 8092 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rwsafe-db
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - ports:
+        - { protocol: TCP, port: 636 }
+        - { protocol: TCP, port: 389 }
+---
+# The database: 5432 from the control plane only; no egress beyond DNS (overlay).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-db
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-db }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-db
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rwsafe-control
+      ports:
+        - { protocol: TCP, port: 5432 }

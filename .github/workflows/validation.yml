@@ -3,7 +3,7 @@
 # commit the pull request adds), gitleaks over the tree and the history with a planted-key self-test, the Java unit and
 # ArchUnit tests with the Jazzer regression corpus and a bounded fuzzing run, the Maven-portability smoke build
 # (ADR-011 §4), Trivy (filesystem, lockfiles, configuration; SR-SC-2) and Semgrep (Java) judged against
-# security/baseline.yaml, and the admin SPA's type check, Vitest tests and production build. Every job prints the commit it tested. No secrets, no deploy, nothing reaches HOST-A.
+# security/baseline.yaml, the deploy manifest check (tools/deploy, AGENTS.md section 8), and the admin SPA's type check, Vitest tests and production build. Every job prints the commit it tested. No secrets, no deploy, nothing reaches HOST-A.
 # Actions are pinned by commit digest; the tag in the trailing comment is for humans only.
 name: validation
 
@@ -67,6 +67,26 @@ jobs:
             rm -rf "${dir}" "${RUNNER_TEMP}/index-${commit}"
           done
           exit "${status}"
+
+  # AGENTS.md section 8, ADR-001: the k3s overlay renders and every workload obeys the shared-host rules (priority below
+  # neXus, no hostPath or privilege, non-root, read-only root, limits, digest-pinned images, sized emptyDirs, no token,
+  # NetworkPolicies, quota fit, Secret contracts). The runner image's kubectl renders and decodes offline (KUBECONFIG is
+  # /dev/null inside the script); nothing reaches a cluster.
+  manifests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Commit under test
+        run: *print-commit
+      - name: Manifest check self-test (fixtures must pass and fail as planted)
+        run: |
+          kubectl version --client
+          python3 -B tools/deploy/test_manifest_check.py
+      - name: Manifest check on the k3s overlay
+        run: python3 -B tools/deploy/manifest_check.py
 
   gitleaks:
     runs-on: ubuntu-24.04

@@ -111,3 +111,57 @@ expired data does not return (ADR-002).
 (Flyway head), `images` (digests, 19 chars), `drift` (object count), `snapshot` id, the security gate summary line, the
 e2e verdicts. A deploy that ends without `Done.` is a failure with its reason in the last four lines (as neXus
 `hosta_deploy.sh`).
+
+## 7. Build and apply commands (implementation phase)
+
+Agents build and test; **the apply is the Product Owner's step**, run in the PO's own terminal after the checks in §3 and
+outside the protected windows. No agent runs `kubectl apply`, `kubectl diff` against HOST-A or a container build for a
+release.
+
+### 7.1 What is committed
+
+| Path | What |
+|---|---|
+| `deploy/images/dataplane.Containerfile`, `deploy/images/control.Containerfile` | multi-stage builds: Gradle `imageDist` (the locked, checksum-verified runtime classpath) on UBI 9 OpenJDK 21, then the UBI 9 OpenJDK 21 runtime; digest-pinned bases, UID 185 with group 0, read-only-root friendly, no shell entry point |
+| `deploy/rwsafe/base/` | ServiceAccounts (no token), committed ConfigMaps, `rwsafe-dataplane` (Deployment, ClusterIP `rwsafe-icap`, PDB), `rwsafe-control` (Deployment, Service 8080/8091/8092), `rwsafe-db` (PVC `rwsafe-db-data` 20Gi, StatefulSet, Service), NetworkPolicies between rwsafe's workloads with a default deny |
+| `deploy/rwsafe/overlays/k3s/` | namespaces, PriorityClasses and their assignment, quota and limits, the ICAP ServiceLB Service, the platform-peer NetworkPolicies (DNS, ServiceLB, Traefik), the in-cluster registry image names with a placeholder digest |
+| `deploy/rwsafe/contracts/runtime-contracts.json` | names and keys of the Secrets and uncommitted ConfigMaps the manifests reference; never rendered, never applied |
+| `tools/deploy/manifest_check.py` | renders the k3s overlay offline and asserts the section 8 rules; CI job `manifests` |
+
+### 7.2 Local checks (any agent, no cluster)
+
+```bash
+./java/gradlew -p java :dataplane:imageDist :control:imageDist   # the classpaths the images copy
+python3 -B tools/deploy/test_manifest_check.py                   # the check's self-test on synthetic fixtures
+python3 -B tools/deploy/manifest_check.py                        # renders the k3s overlay; PASS with placeholder notes
+```
+
+### 7.3 Image build (ship pipeline, kaniko in `rwsafe-build`)
+
+The build Job uses the repository root as context and one Containerfile per image; it pushes to the in-cluster registry
+and reports the digest. On a workstation, only for a smoke check: `podman build -f deploy/images/dataplane.Containerfile
+-t rwsafe-dataplane:dev .` (never pushed). Before a release, re-resolve the base digests named in each Containerfile.
+
+### 7.4 Apply (Product Owner, HOST-A terminal)
+
+First installation follows §4: namespaces and isolation objects, then the Secrets and the ConfigMaps `rwsafe-estate` and
+`rwsafe-snapshot-public-keys` from `runtime-contracts.json` (values from the operator's store; `kubectl create secret
+generic ... --from-file`, never `--from-literal`). Every release then renders with the candidate digests in memory and
+diffs before it applies:
+
+```bash
+# in a scratch copy of deploy/rwsafe (never committed): set the candidate digests
+cd "${scratch}/overlays/k3s"
+kustomize edit set image \
+  rwsafe-dataplane=registry.kube-system.svc.cluster.local/rwsafe-dataplane@sha256:<dataplane digest> \
+  rwsafe-control=registry.kube-system.svc.cluster.local/rwsafe-control@sha256:<control digest>
+python3 -B "${repo}/tools/deploy/manifest_check.py" --overlay . --release
+kubectl kustomize . | kubectl diff --server-side -f -
+kubectl kustomize . | kubectl apply --server-side -f -
+kubectl -n rwsafe rollout status deploy/rwsafe-dataplane --timeout=5m
+```
+
+`--release` refuses the committed all-zero placeholder digest. The digest edit lives only in the scratch copy (or in the
+deploy script's memory) and is never committed. The data plane is ready only once it holds a valid signed
+snapshot from `rwsafe-control:8091`; until the control plane serves the snapshot feed, a fresh data plane stays not
+ready (fail closed) and ProxySG follows ADR-010.

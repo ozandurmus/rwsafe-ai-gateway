@@ -1,0 +1,32 @@
+# ADR-001 §3, council ARCH-2: the PriorityClasses of 01-priorityclasses.yaml on the workloads (PORT-3: the base names no
+# PriorityClass; OpenShift's platform provisions its own). No toleration is added anywhere: rwsafe is evicted before
+# neXus when the disk fills.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rwsafe-dataplane
+  namespace: rwsafe
+spec:
+  template:
+    spec:
+      priorityClassName: rwsafe-dataplane
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rwsafe-control
+  namespace: rwsafe
+spec:
+  template:
+    spec:
+      priorityClassName: rwsafe-control
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rwsafe-db
+  namespace: rwsafe
+spec:
+  template:
+    spec:
+      priorityClassName: rwsafe-control

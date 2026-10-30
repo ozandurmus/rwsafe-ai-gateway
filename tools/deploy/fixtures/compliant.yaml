@@ -1,0 +1,89 @@
+# Synthetic fixture for tools/deploy/test_manifest_check.py: the smallest set that passes every rule.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: fixture-class
+  labels: { app.kubernetes.io/part-of: rwsafe }
+value: 1000
+globalDefault: false
+preemptionPolicy: Never
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: fixture-config, namespace: fixture }
+data: { SETTING: "1" }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: fixture-app, namespace: fixture }
+spec:
+  replicas: 2
+  strategy: { type: RollingUpdate, rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } }
+  selector: { matchLabels: { app.kubernetes.io/name: fixture-app } }
+  template:
+    metadata: { labels: { app.kubernetes.io/name: fixture-app } }
+    spec:
+      priorityClassName: fixture-class
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: registry.example.invalid/fixture-app@sha256:1111111111111111111111111111111111111111111111111111111111111111
+          envFrom: [{ configMapRef: { name: fixture-config } }]
+          env:
+            - name: FIXTURE_SECRET_FILE
+              value: /run/secrets/fixture/value
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: fixture-secret, mountPath: /run/secrets/fixture, readOnly: true }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+        - name: fixture-secret
+          secret:
+            secretName: fixture-secret
+            items: [{ key: value, path: value }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: fixture-app, namespace: fixture }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app.kubernetes.io/name: fixture-app } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny, namespace: fixture }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: fixture-app, namespace: fixture }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: fixture-app } }
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{ protocol: TCP, port: 8080 }]
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata: { name: fixture-quota, namespace: fixture }
+spec:
+  hard: { requests.cpu: "1", requests.memory: 1Gi, limits.cpu: "2", limits.memory: 2Gi, pods: "5" }
+---
+apiVersion: v1
+kind: LimitRange
+metadata: { name: fixture-limits, namespace: fixture }
+spec:
+  limits:
+    - type: Container
+      max: { cpu: "1", memory: 1Gi }

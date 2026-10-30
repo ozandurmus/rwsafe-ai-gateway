@@ -1,0 +1,42 @@
+{
+  "_comment": [
+    "The runtime objects rwsafe's manifests reference but the repository never renders (AGENTS.md section 8, 4.2): their",
+    "names and keys are committed here as the contract; their values are created once by the operator",
+    "(DEPLOY_AND_SHARED_HOST_RUNBOOK section 4) and never touch a tracked file, a command argument or the terminal.",
+    "tools/deploy/manifest_check.py fails when a manifest references a Secret or ConfigMap key that is neither rendered",
+    "nor listed here, and when the rendered build contains a Secret or one of these ConfigMaps."
+  ],
+  "namespace": "rwsafe",
+  "secrets": {
+    "rwsafe-icap-tls": {
+      "keys": ["tls.crt", "tls.key", "client-ca.crt"],
+      "purpose": "Secure ICAP server chain, its PKCS#8 key, and the CA that issued the proxy's client certificate (H-1)"
+    },
+    "rwsafe-snapshot-signing-key": {
+      "keys": ["rwsafe-snapshot-1.pem"],
+      "purpose": "Ed25519 policy-snapshot signing key, PKCS#8 PEM, named by its key id (POLICY_SNAPSHOT_CONTRACT.md)"
+    },
+    "rwsafe-privacy-hmac-key": {
+      "keys": ["key"],
+      "purpose": "32 random bytes; rwsafe's own masking and pseudonym key, never neXus's (AGENTS.md 4.8)"
+    },
+    "rwsafe-db-credentials": {
+      "keys": ["spring.datasource.password"],
+      "purpose": "the rwsafe_app role password: the database's initial role and the control plane's config-tree file"
+    },
+    "rwsafe-ldap-bind": {
+      "keys": ["password"],
+      "purpose": "the directory bind account's password"
+    }
+  },
+  "configMaps": {
+    "rwsafe-estate": {
+      "keys": ["ldap-url", "ldap-bind-dn", "ldap-user-search-base", "trusted-proxies", "estate-dictionary.txt"],
+      "purpose": "real names: directory URL and base DNs, the ingress addresses as a regular expression, the estate dictionary"
+    },
+    "rwsafe-snapshot-public-keys": {
+      "keys": ["rwsafe-snapshot-1.pem"],
+      "purpose": "the snapshot verification public key per key id (X.509 SubjectPublicKeyInfo PEM), generated with the signing key"
+    }
+  }
+}

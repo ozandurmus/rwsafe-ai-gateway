@@ -1,0 +1,53 @@
+# Synthetic fixture for tools/deploy/test_manifest_check.py: one workload breaking many shared-host rules at once.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: fixture-too-high
+  labels: { app.kubernetes.io/part-of: rwsafe }
+value: 2000000000
+globalDefault: true
+preemptionPolicy: PreemptLowerPriority
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: fixture-rendered-secret, namespace: fixture }
+type: Opaque
+---
+apiVersion: v1
+kind: Service
+metadata: { name: fixture-nodeport, namespace: fixture }
+spec:
+  type: NodePort
+  selector: { app.kubernetes.io/name: fixture-bad }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: fixture-bad, namespace: fixture }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app.kubernetes.io/name: fixture-bad } }
+  template:
+    metadata: { labels: { app.kubernetes.io/name: fixture-bad } }
+    spec:
+      hostNetwork: true
+      tolerations:
+        - { key: node.kubernetes.io/disk-pressure, operator: Exists, effect: NoSchedule }
+      containers:
+        - name: bad
+          image: registry.example.invalid/fixture-bad:latest
+          ports: [{ containerPort: 8080, hostPort: 8080 }]
+          env:
+            - name: FIXTURE
+              valueFrom: { secretKeyRef: { name: fixture-unknown-secret, key: value } }
+          securityContext:
+            privileged: true
+            capabilities: { add: ["NET_ADMIN"] }
+          volumeMounts:
+            - { name: host, mountPath: /host }
+            - { name: scratch, mountPath: /scratch }
+      volumes:
+        - name: host
+          hostPath: { path: /var/lib/fixture }
+        - name: scratch
+          emptyDir: {}
