@@ -8,10 +8,12 @@ jazzer = "0.24.0"
 netty = "4.1.139.Final"
 # Control plane (ARCHITECTURE.md §3.2): the neXus ui2 versions; the Spring Boot BOM manages jOOQ, Flyway, HikariCP and
 # UnboundID, and the three overrides below are the neXus security floors above the BOM's managed versions.
-# Spring Boot 4.0.8 manages Spring Framework 7.0.9, the only open-source fix for CVE-2026-47884 and CVE-2026-47890
-# (spring-webmvc 6.2.x has none; PO decision 2026-10-30, as neXus did on 2026-10-15).
-springboot = "4.0.8"
-# Security floor above Spring Boot 4.0.8's managed Tomcat 11.0.24 (open advisories); the neXus floor.
+# Spring Boot 4.1.1 (2026-08-20) manages Spring Framework 7.0.9, the only open-source fix for CVE-2026-47884 and
+# CVE-2026-47890 (spring-webmvc 6.2.x has none). The newest 4.1.x published at least two weeks earlier (4.1.2 is from
+# 2026-10-22); neXus is on 4.0.8 (PO_DECISION_RECORD_2026_10_30_SPRING_BOOT_4).
+springboot = "4.1.1"
+# Security floor above Spring Boot 4.1.1's managed Tomcat 11.0.24 (open advisories); 11.0.27 is the neXus floor
+# (2026-10-12).
 tomcat = "11.0.27"
 jackson = "2.21.7"
 postgresql = "42.7.13"

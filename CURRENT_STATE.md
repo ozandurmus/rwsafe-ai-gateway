@@ -103,8 +103,8 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
   address column; findings are class + count, digest column reserved). Trigger-enforced audit ledger (C7): a mutation of
   an audited table without the `app.*` audit context is refused, the ledger is append-only (update, delete, truncate
   refused). Local break-glass accounts (BCrypt hash only). Tests on an embedded PostgreSQL 16 (no container runtime).
-- `java/control` (Spring Boot 4.0.8 with Spring Framework 7.0.9 and Spring Security 7, the neXus versions, no Boot
-  plugin; HTTP JSON on Jackson 2): `POST /internal/v1/verdict-events` on its own
+- `java/control` (Spring Boot 4.1.1 with Spring Framework 7.0.9 and Spring Security 7.1.1, PO decision record
+  `PO_DECISION_RECORD_2026_10_30_SPRING_BOOT_4`; neXus is on 4.0.8; no Boot plugin; HTTP JSON on Jackson 2): `POST /internal/v1/verdict-events` on its own
   connector (8092; the admin port answers 404 for it and vice versa; 2 MiB cap checked before reading) with the exact
   contract (unknown or missing fields refuse the batch, values never echoed), idempotent on `eventId`; the identity claim
   becomes `USR-<10 hex>` and the client address a /24 label in 240/4 under rwsafe's own HMAC key before persistence, 503
