@@ -3,6 +3,7 @@ package io.rwsafe.control.identity;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.rwsafe.control.api.ApiError;
 import io.rwsafe.control.config.ControlProperties;
+import io.rwsafe.control.config.InternalConnector;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import org.springframework.context.annotation.Bean;
@@ -44,6 +45,25 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/internal/v1/policy/snapshot").permitAll()
                 .anyRequest().denyAll())
             .csrf(c -> c.ignoringRequestMatchers("/internal/**"))
+            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .requestCache(c -> c.disable())
+            .formLogin(f -> f.disable())
+            .httpBasic(b -> b.disable())
+            .logout(l -> l.disable());
+        return http.build();
+    }
+
+    /**
+     * The metrics listener's one route (PORTS_AND_RESOURCES §3: 9400), confined to its port by the connector filter:
+     * stateless, no session, no CSRF cookie; anything but {@code GET /metrics} is refused.
+     */
+    @Bean
+    @Order(0)
+    SecurityFilterChain metricsChain(HttpSecurity http) throws Exception {
+        http.securityMatcher(InternalConnector.METRICS_PATH)
+            .authorizeHttpRequests(a -> a.requestMatchers(HttpMethod.GET, InternalConnector.METRICS_PATH).permitAll()
+                .anyRequest().denyAll())
+            .csrf(c -> c.disable())
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .requestCache(c -> c.disable())
             .formLogin(f -> f.disable())

@@ -201,6 +201,26 @@ class ControlPlaneIntegrationTest {
         assertEquals(404, internalClient().get("/api/v1/overview").status());
     }
 
+    /** PORTS_AND_RESOURCES §3: the Prometheus text on the metrics listener (9400) only, without a session. */
+    @Test
+    void metricsAnswerOnTheMetricsListenerOnly() throws Exception {
+        HttpResponse<String> r = HttpClient.newHttpClient().send(HttpRequest.newBuilder(
+                URI.create("http://127.0.0.1:" + internal.metricsPort() + "/metrics")).GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, r.statusCode());
+        String type = r.headers().firstValue("Content-Type").orElse("").replace(" ", "");
+        assertTrue(type.startsWith("text/plain;") && type.contains("version=0.0.4"), type);
+        assertTrue(r.headers().allValues("Set-Cookie").isEmpty(), "no session and no CSRF cookie");
+        ApiClient metrics = new ApiClient(internal.metricsPort());
+        assertEquals(404, metrics.get("/readyz").status(), "nothing else on the metrics port");
+        assertEquals(404, metrics.get("/api/v1/auth/csrf").status());
+        assertEquals(404, metrics.get("/internal/v1/policy/snapshot").status());
+        assertTrue(metrics.post("/metrics", "[]", false).status() >= 400, "GET only");
+        assertEquals(404, admin().get("/metrics").status(), "never on the admin listener behind the ingress");
+        assertEquals(404, internalClient().get("/metrics").status(), "not on the capture sink");
+        assertEquals(404, new ApiClient(internal.snapshotPort()).get("/metrics").status(), "not on the snapshot feed");
+    }
+
     @Test
     void readsNeedASessionAndLoginNeedsCsrf() throws Exception {
         ApiClient.Response anonymous = admin().get("/api/v1/overview");

@@ -280,6 +280,36 @@ class Mutations(unittest.TestCase):
         policy["spec"]["egress"][-1]["to"][0]["ipBlock"]["cidr"] = "0.0.0.0/0"
         self.assertFails(objects, "ipBlock 0.0.0.0/0 is every address")
 
+    # Deploy wiring 2: the directory and the SIEM each have their own placeholder (the estate patch replaces by text).
+    def test_shared_documentation_placeholder_fails(self):
+        objects = compliant()
+        policy = next(o for o in objects if o["kind"] == "NetworkPolicy" and o["metadata"]["name"] == "fixture-app")
+        policy["spec"]["egress"].append({"to": [{"ipBlock": {"cidr": "192.0.2.0/24"}}],
+                                         "ports": [{"protocol": "TCP", "port": 636}]})
+        second = copy.deepcopy(policy)
+        second["metadata"]["name"] = "fixture-app-to-siem"
+        second["spec"]["egress"] = [policy["spec"]["egress"][-1]]
+        objects.append(second)
+        self.assertFails(objects, "documentation-range placeholder 192.0.2.0/24 is shared by")
+        second["spec"]["egress"][0] = {"to": [{"ipBlock": {"cidr": "198.51.100.0/24"}}],
+                                       "ports": [{"protocol": "TCP", "port": 6514}]}
+        failures, _ = mc.check(objects, CONTRACTS)
+        self.assertEqual(failures, [])
+
+    def test_claimed_pvc_must_be_rendered_and_within_the_limitrange(self):
+        objects = compliant()
+        pod(objects)["volumes"].append({"name": "store", "persistentVolumeClaim": {"claimName": "fixture-store"}})
+        self.assertFails(objects, "claims PVC fixture-store, which the render does not hold")
+        objects.append({"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+                        "metadata": {"name": "fixture-store", "namespace": "fixture"},
+                        "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "1Gi"}}}})
+        limitrange = next(o for o in objects if o["kind"] == "LimitRange")
+        limitrange["spec"]["limits"].append({"type": "PersistentVolumeClaim", "max": {"storage": "1Gi"}})
+        failures, _ = mc.check(objects, CONTRACTS)
+        self.assertEqual(failures, [])
+        objects[-1]["spec"]["resources"]["requests"]["storage"] = "2Gi"
+        self.assertFails(objects, "requests.storage 2Gi above LimitRange PVC max 1Gi")
+
     def test_default_deny_with_rules_does_not_count(self):
         objects = compliant()
         deny = next(o for o in objects if o["kind"] == "NetworkPolicy" and o["metadata"]["name"] == "default-deny")
@@ -317,6 +347,9 @@ class CommittedOverlay(unittest.TestCase):
             rc = mc.main(["--release"])
         self.assertEqual(rc, 1)
         self.assertIn("placeholder digest in a release render", out.getvalue())
+        for policy in ("rwsafe-control-to-directory", "rwsafe-control-to-siem"):
+            self.assertIn(f"NetworkPolicy/rwsafe/{policy}: egress ipBlock is a documentation-range placeholder in a "
+                          f"release render", out.getvalue())
 
 
 if __name__ == "__main__":

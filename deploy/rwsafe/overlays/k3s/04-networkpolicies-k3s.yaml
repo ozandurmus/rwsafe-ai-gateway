@@ -121,3 +121,51 @@ spec:
       ports:
         - { protocol: TCP, port: 636 }
         - { protocol: TCP, port: 389 }
+---
+# The SIEM receivers (syslog over TLS and Splunk HEC over HTTPS, LOCAL_RUN.md "SIEM export") by address only, like the
+# directory. The committed CIDR is a second RFC 5737 documentation placeholder (198.51.100.0/24, distinct from the
+# directory's so each estate value replaces exactly one rule) that reaches nothing; the deploy's transient estate patch
+# (DEPLOY_AND_SHARED_HOST_RUNBOOK §2, §7.4) replaces it in memory with `siem-cidr` from `rwsafe-siem-destination`, and
+# `manifest_check.py --release` refuses a render that still holds a documentation range. Ports: 6514 (RFC 5425
+# syslog-TLS, the exporter's default) and 8088 (Splunk HEC's default); a receiver on another port is a committed change
+# here (a port is not an estate name). No UDP and no plain TCP exist (SR-SIEM-3).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-control-to-siem
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-control }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 198.51.100.0/24
+      ports:
+        - { protocol: TCP, port: 6514 }
+        - { protocol: TCP, port: 8088 }
+---
+# PORTS_AND_RESOURCES §3: the control plane's metrics port (9400, GET /metrics only) from the metrics scraper only, by
+# the same namespace label as the ICAP pods' 9401 (no namespace carries it until the PO labels the scraper's, so until
+# then nothing is admitted). Nothing else listens on 9400.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-control-metrics-from-scraper
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-control }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-control
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              rwsafe.io/metrics-scraper: "true"
+      ports:
+        - { protocol: TCP, port: 9400 }

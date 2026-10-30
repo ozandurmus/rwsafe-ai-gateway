@@ -31,6 +31,11 @@
     "rwsafe-siem-credentials": {
       "keys": ["hec-token"],
       "purpose": "the Splunk HEC token, mounted as a file for RWSAFE_SIEM_HEC_TOKEN_FILE (LOCAL_RUN.md SIEM export); absent when only syslog is used"
+    },
+    "rwsafe-capture-key": {
+      "keys": ["active", "shredded"],
+      "keyPatterns": ["<key id>.key"],
+      "purpose": "ADR-009 C3 capture keys, never the privacy key: one <key id>.key per key (base64 of 32 random bytes), `active` naming the key new material is wrapped under, `shredded` listing destroyed key ids one per line (may be empty); mounted whole at RWSAFE_CAPTURE_KEY_DIR (LOCAL_RUN.md Redacted capture, DEPLOY_AND_SHARED_HOST_RUNBOOK section 7.5)"
     }
   },
   "configMaps": {
@@ -44,7 +49,11 @@
     },
     "rwsafe-siem-destination": {
       "keys": ["enabled", "syslog-host", "syslog-port", "syslog-format", "hec-url", "hec-index", "ca.crt", "siem-cidr"],
-      "purpose": "real SIEM destinations: RWSAFE_SIEM_ENABLED, the syslog receiver (host, port, cef or leef), the HEC URL and index, the PEM CA bundle mounted for RWSAFE_SIEM_SYSLOG_CA_FILE and RWSAFE_SIEM_HEC_CA_FILE, and the SIEM CIDR for the egress NetworkPolicy the deploy lane adds (LOCAL_RUN.md SIEM export)"
+      "purpose": "real SIEM destinations: RWSAFE_SIEM_ENABLED, the syslog receiver (host, port, cef or leef), the HEC URL and index, the PEM CA bundle mounted for RWSAFE_SIEM_SYSLOG_CA_FILE and RWSAFE_SIEM_HEC_CA_FILE, and the SIEM receivers' CIDR that the deploy's in-memory patch puts into NetworkPolicy rwsafe-control-to-siem (LOCAL_RUN.md SIEM export, DEPLOY_AND_SHARED_HOST_RUNBOOK section 7.4)"
+    },
+    "rwsafe-enduser": {
+      "keys": ["controller-name", "dpo-contact", "policy-link", "retention-metadata", "retention-redacted", "retention-raw"],
+      "purpose": "the end-user texts' configured values (docs/i18n/README.md placeholders) as RWSAFE_ENDUSER_CONTROLLER_NAME, _DPO_CONTACT, _POLICY_LINK, _RETENTION_METADATA, _RETENTION_REDACTED, _RETENTION_RAW (retention figures in whole days) for the data plane's pages and the control plane's notice; while one is missing the notice has no version and capture stays off"
     }
   }
 }

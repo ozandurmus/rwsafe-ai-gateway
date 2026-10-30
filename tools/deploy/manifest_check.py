@@ -11,8 +11,9 @@ cluster), and asserts the shared-host rules on every object:
     capability dropped and none added; runAsNonRoot, no fixed runAsUser or runAsGroup (arbitrary-UID images, ADR-001
     §6), seccomp RuntimeDefault only; read-only root filesystem
   - requests and limits for CPU and memory on every container, within the LimitRange maximum; the namespace's workloads
-    (init containers and volumeClaimTemplates included, and one rolling-update surge pod per Deployment) fit the
-    ResourceQuota; every rendered namespace has a ResourceQuota and a LimitRange
+    (init containers and volumeClaimTemplates included, and one rolling-update surge pod per Deployment) and its PVCs
+    fit the ResourceQuota; every PVC is within the LimitRange's PVC maximum and every claimed PVC is rendered; every
+    rendered namespace has a ResourceQuota and a LimitRange
   - every Namespace enforces PSA `restricted` (only `rwsafe-build` may enforce `baseline`) and audits and warns at
     `restricted`
   - images pinned by digest, never `latest`; with --release the all-zero placeholder digest is refused too
@@ -20,7 +21,7 @@ cluster), and asserts the shared-host rules on every object:
     ServiceAccount token is never mounted, and every ServiceAccount sets automountServiceAccountToken false
   - a default-deny NetworkPolicy per namespace and a NetworkPolicy selecting every workload; every egress rule names its
     destination, no ipBlock is 0.0.0.0/0, and with --release no ipBlock is an RFC 5737 documentation placeholder; no
-    NodePort Service
+    placeholder is shared by two NetworkPolicies (the estate patch replaces each by one value); no NodePort Service
   - a PodDisruptionBudget for every multi-replica workload, keeping at least one pod and allowing at least one eviction
   - no Secret is ever rendered; every referenced Secret or uncommitted ConfigMap key is in the runtime contract
   - nothing anywhere in any object (keys, values, tokens of names, URLs and selectors) names a `ui2*` or `nexus-ui2`
@@ -210,6 +211,11 @@ def pod_resources(spec: dict) -> dict[str, float]:
     return out
 
 
+def documentation_range(net) -> bool:
+    """True for an RFC 5737 documentation network: the committed placeholder of an estate address."""
+    return any(net.version == d.version and net.subnet_of(d) for d in DOCUMENTATION_NETS)
+
+
 def pdb_count(value, replicas: int, round_up: bool) -> int:
     """A PDB's minAvailable or maxUnavailable as a pod count."""
     if isinstance(value, str) and value.endswith("%"):
@@ -249,6 +255,8 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
     rendered_configmaps = {
         (o["metadata"].get("namespace"), o["metadata"]["name"]): set((o.get("data") or {}) | (o.get("binaryData") or {}))
         for o in objects if o.get("kind") == "ConfigMap"}
+    rendered_claims = {(o["metadata"].get("namespace"), o["metadata"]["name"])
+                       for o in objects if o.get("kind") == "PersistentVolumeClaim"}
 
     # neXus's objects are out of bounds (ADR-001 §7, NS-1): the whole object, keys and values (PR 18 review D-04).
     for obj in objects:
@@ -350,6 +358,10 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
                 src = vol["configMap"]
                 check_ref(obj, fail, "ConfigMap", src.get("name"), [i["key"] for i in src.get("items") or []],
                           configmap_contract, rendered_configmaps, ns, src.get("optional"))
+            if "persistentVolumeClaim" in vol:
+                claim = (vol["persistentVolumeClaim"] or {}).get("claimName")
+                if (ns, claim) not in rendered_claims:
+                    fail(obj, f"volume {vol.get('name')} claims PVC {claim}, which the render does not hold")
             for proj in (vol.get("projected") or {}).get("sources", []):
                 if "serviceAccountToken" in proj:
                     fail(obj, f"volume {vol.get('name')} projects a ServiceAccount token")
@@ -434,12 +446,26 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
                     net = ipaddress.ip_network(cidr, strict=False)
                     if net.prefixlen == 0:
                         fail(p, f"{direction} ipBlock {cidr} is every address")
-                    elif any(net.version == d.version and net.subnet_of(d) for d in DOCUMENTATION_NETS):
+                    elif documentation_range(net):
                         if release:
                             fail(p, f"{direction} ipBlock is a documentation-range placeholder in a release render")
                         else:
                             notes.append(f"{ident(p)}: {direction} ipBlock is a documentation-range placeholder "
                                          f"(the deploy's estate patch sets the real addresses)")
+    # The deploy's estate patch replaces each placeholder by text (DEPLOY_AND_SHARED_HOST_RUNBOOK §7.4), so one
+    # placeholder in two policies would give two destinations (the directory, the SIEM) one estate value.
+    placeholder_users: dict[str, set[str]] = {}
+    for p in policies:
+        for direction, peers_key in (("ingress", "from"), ("egress", "to")):
+            for rule in p["spec"].get(direction) or []:
+                for peer in rule.get(peers_key) or []:
+                    cidr = (peer.get("ipBlock") or {}).get("cidr")
+                    if cidr and documentation_range(ipaddress.ip_network(cidr, strict=False)):
+                        placeholder_users.setdefault(cidr, set()).add(ident(p))
+    for cidr, users in sorted(placeholder_users.items()):
+        if len(users) > 1:
+            failures.append(f"documentation-range placeholder {cidr} is shared by {', '.join(sorted(users))}; each "
+                            f"estate value needs its own placeholder")
     for obj, labels, _ in workloads:
         ns = obj["metadata"].get("namespace")
         own = [p for p in policies if p["metadata"].get("namespace") == ns and (p["spec"].get("podSelector") or {})
@@ -487,6 +513,14 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
     for lr in (o for o in objects if o.get("kind") == "LimitRange"):
         ns = lr["metadata"].get("namespace")
         for limit in lr["spec"].get("limits", []):
+            if limit.get("type") == "PersistentVolumeClaim" and (limit.get("max") or {}).get("storage"):
+                mx = limit["max"]["storage"]
+                for pvc in (o for o in objects if o.get("kind") == "PersistentVolumeClaim"
+                            and o["metadata"].get("namespace") == ns):
+                    storage = pvc["spec"].get("resources", {}).get("requests", {}).get("storage", "0")
+                    if quantity(storage) > quantity(mx):
+                        fail(pvc, f"requests.storage {storage} above LimitRange PVC max {mx}")
+                continue
             if limit.get("type") != "Container" or not limit.get("max"):
                 continue
             for obj, _, spec in workloads:
