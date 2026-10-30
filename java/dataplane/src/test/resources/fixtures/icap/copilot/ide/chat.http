@@ -1,0 +1,8 @@
+POST /chat/completions HTTP/1.1
+Host: api.githubcopilot.com
+Content-Type: application/json
+Accept: application/json
+User-Agent: GitHubCopilotChat/0.22 vscode/1.95 (synthetic fixture)
+Content-Length: {{LEN}}
+
+{"model":"synthetic","stream":true,"messages":[{"role":"system","content":"synthetic system prompt"},{"role":"user","content":"{{PROMPT}}"}]}

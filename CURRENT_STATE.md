@@ -83,11 +83,27 @@ procurement (Q-34). Approvers and DPO identity (Q-5). Governance is settled: pul
 authorisation) amended; the Git-authority decision record RATIFIED; `main` requires a pull request and zero approving
 reviews.
 
+## Done (MVP data plane, slice 1: ICAP engine)
+
+`java/dataplane` serves ICAP/1.0 on Netty: OPTIONS, REQMOD and RESPMOD with Preview, `ieof`, `100 Continue` and the
+RFC 3507 204 rule; strict head, `Encapsulated` and chunked parsing with the ICAP spec §3 limits; every JSON string leaf
+normalised and scanned (OFF2-6); Tier-1 detectors in `java/detect` (secret shapes, TCKN and TR IBAN with checksums,
+payment cards with Luhn; RE2/J only); REDACT rewrites JSON leaves in place with class tokens and recomputes
+`Content-Length`; BLOCK answers a Turkish HTML page or a JSON error; oversize, malformed, encoded and slow bodies are
+non-verdicts that block on the fail-closed AI flow; streamed RESPMOD is relayed with one window of delay and aborted
+before a leaking window leaves. Verdict events (metadata only) go through a bounded queue to
+`POST /internal/v1/verdict-events`. Policy is the built-in development snapshot (`java/policy`). Jazzer targets for the
+ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Local run and synthetic replay:
+`docs/operations/LOCAL_RUN.md`.
+
 ## Not done
 
+ICAP engine, later slices: Secure ICAP with mTLS, the signed snapshot pull, per-identity caps and the body semaphore,
+the drain window, the verdict spool, decompression and base64 layers, the file pipeline, login-step tenant rules, flow
+shape fingerprints, metrics (`docs/operations/LOCAL_RUN.md` lists them).
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
 neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); `frontend/` (and with it Semgrep TypeScript); the
-real Jazzer targets for the ICAP and HTTP decoders (they arrive with the decoders); Trivy image scanning and SBOM (with
+Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with them); Trivy image scanning and SBOM (with
 the first image, ship pipeline).
 
 ## Next (ROADMAP phase 0, in this order)

@@ -12,6 +12,8 @@ dependencies {
 
     testImplementation(libs.archunit.junit5)
     testImplementation(libs.slf4j.api)
+    // Fixture for the Netty-future clause of the request-thread fence (PR 11 review D-11).
+    testImplementation(libs.netty.handler)
 }
 
 // The fences import exactly the classes the product modules compile (PR 7 review D-05): each module's build directory,

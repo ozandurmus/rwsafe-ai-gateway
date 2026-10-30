@@ -124,6 +124,19 @@ final class Fences {
             .allowEmptyShould(true);
     }
 
+    /**
+     * AGENTS.md 4.14, PR 11 review D-11: the packages that parse or scan request and response content (the ICAP codec, the
+     * inspectors, the detectors, the connection handler) neither log, meter, trace nor print, whether or not a class
+     * there carries {@link BodyBearing}.
+     */
+    static ArchRule contentPackagesDoNotLog(String... contentPackages) {
+        return noClasses().that().resideInAnyPackage(contentPackages)
+            .should().dependOnClassesThat().resideInAnyPackage(TELEMETRY_APIS)
+            .orShould().dependOnClassesThat().belongToAnyOf(System.Logger.class)
+            .orShould(ACCESS_STANDARD_STREAMS)
+            .because("code that parses or scans content must not be able to leak it into telemetry (AGENTS.md 4.14)");
+    }
+
     /** AGENTS.md 4.14: a class that reads raw content, or holds it, neither logs, meters, traces nor prints. */
     static ArchRule contentHoldersAndReadersDoNotLog(String... productPackages) {
         return noClasses().that().resideInAnyPackage(productPackages).and(holdOrReadContent())
@@ -245,6 +258,8 @@ final class Fences {
             || (owner.isAssignableTo(Semaphore.class) && name.startsWith("acquire"))
             || (owner.isAssignableTo(BlockingQueue.class) && Set.of("put", "take").contains(name))
             || (owner.isAssignableTo(Process.class) && name.equals("waitFor"))
+            || (owner.isAssignableTo("io.netty.util.concurrent.Future")
+                && Set.of("sync", "syncUninterruptibly", "await", "awaitUninterruptibly", "get").contains(name))
             || (owner.isEquivalentTo(URL.class) && Set.of("openConnection", "openStream", "getContent").contains(name))
             || (owner.isAssignableTo(InetAddress.class) && Set.of("getByName", "getAllByName", "getLocalHost",
                 "getHostName", "getCanonicalHostName").contains(name));

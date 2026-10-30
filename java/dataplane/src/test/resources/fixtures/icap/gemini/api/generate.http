@@ -1,0 +1,8 @@
+POST /v1beta/models/synthetic:generateContent HTTP/1.1
+Host: generativelanguage.googleapis.com
+Content-Type: application/json
+Accept: application/json
+User-Agent: node-fetch (synthetic fixture)
+Content-Length: {{LEN}}
+
+{"contents":[{"role":"user","parts":[{"text":"{{PROMPT}}"}]}],"generationConfig":{"synthetic":true}}

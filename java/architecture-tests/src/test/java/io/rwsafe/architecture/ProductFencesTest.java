@@ -42,6 +42,10 @@ class ProductFencesTest {
         "worker", Set.of("platform", "detect", "policy", "persistence"),
         "cli", Set.of("platform"));
     static final String[] PRODUCT = {"io.rwsafe.."};
+    /** Packages that parse or scan content (PR 11 review D-11). */
+    static final String[] CONTENT_PACKAGES = {
+        "io.rwsafe.detect..", "io.rwsafe.dataplane.icap..", "io.rwsafe.dataplane.inspect..", "io.rwsafe.dataplane.server..",
+    };
     static final String[] SERVER = {
         "io.rwsafe.platform..", "io.rwsafe.detect..", "io.rwsafe.policy..", "io.rwsafe.dataplane..",
         "io.rwsafe.persistence..", "io.rwsafe.control..", "io.rwsafe.worker..",
@@ -95,32 +99,38 @@ class ProductFencesTest {
 
     @Test
     void inlinePathUsesNoBacktrackingRegex() {
-        Fences.noBacktrackingRegex(INLINE).check(PRODUCT_CLASSES);
+        Fences.noBacktrackingRegex(INLINE).allowEmptyShould(false).check(PRODUCT_CLASSES);
     }
 
     @Test
     void inlinePathHasNoDatabaseOrControlPlaneModule() {
-        Fences.noDatabaseOrControlPlaneModule(INLINE, CONTROL_PLANE_MODULES).check(PRODUCT_CLASSES);
+        Fences.noDatabaseOrControlPlaneModule(INLINE, CONTROL_PLANE_MODULES).allowEmptyShould(false).check(PRODUCT_CLASSES);
     }
 
     @Test
     void requestThreadsDoNoBlockingIo() {
-        Fences.noBlockingIoOnRequestThreads(REQUEST_THREAD, REQUEST_THREAD_EXEMPT).check(PRODUCT_CLASSES);
+        Fences.noBlockingIoOnRequestThreads(REQUEST_THREAD, REQUEST_THREAD_EXEMPT).allowEmptyShould(false).check(PRODUCT_CLASSES);
     }
 
     @Test
     void contentHoldersAndReadersDoNotLog() {
-        Fences.contentHoldersAndReadersDoNotLog(PRODUCT).check(PRODUCT_CLASSES);
+        Fences.contentHoldersAndReadersDoNotLog(PRODUCT).allowEmptyShould(false).check(PRODUCT_CLASSES);
     }
 
     @Test
     void bodyContentAccessorsLiveOnBodyBearingTypes() {
-        Fences.bodyContentAccessorsLiveOnBodyBearingTypes(PRODUCT).check(PRODUCT_CLASSES);
+        Fences.bodyContentAccessorsLiveOnBodyBearingTypes(PRODUCT).allowEmptyShould(false).check(PRODUCT_CLASSES);
     }
 
     @Test
     void bodyBearingTypesPrintNoContent() {
-        Fences.bodyBearingTypesPrintNoContent(PRODUCT).check(PRODUCT_CLASSES);
+        Fences.bodyBearingTypesPrintNoContent(PRODUCT).allowEmptyShould(false).check(PRODUCT_CLASSES);
+    }
+
+    /** The product has request-thread and content classes now, so an empty rule here would mean a broken import. */
+    @Test
+    void contentPackagesDoNotLog() {
+        Fences.contentPackagesDoNotLog(CONTENT_PACKAGES).allowEmptyShould(false).check(PRODUCT_CLASSES);
     }
 
     @Test
