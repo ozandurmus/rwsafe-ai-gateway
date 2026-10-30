@@ -548,7 +548,8 @@ class PolicyRegistryIntegrationTest {
         // Identifier-shaped values are built at runtime (AGENTS.md 4.5).
         for (String reason : new String[] {"moved, see 192.0.2.10",
             "contact " + String.join("@", "synthetic.person", "example.com"),
-            "card " + SyntheticCard.luhnValid()}) {
+            "card " + SyntheticCard.luhnValid(), "asked by Ayşe Yılmaz", "Mehmet'in talebi",
+            "moved to node7.example.com", "ticket ref" + "7341029"}) {
             ApiClient.Response r = admin.post(retire, JSON.createObjectNode().put("reason", reason).toString(), true);
             assertEquals(400, r.status(), reason);
             assertEquals("REASON_HOLDS_IDENTIFIER", r.body().get("reason").asText(), reason);

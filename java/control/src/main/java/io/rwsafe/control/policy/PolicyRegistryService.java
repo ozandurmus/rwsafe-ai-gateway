@@ -380,9 +380,10 @@ public class PolicyRegistryService {
 
     /**
      * A free-text reason (retirement, withdrawal): 1 to 500 characters on one line, and no identifier (PR 21 review
-     * D-06): nothing a Tier-1 detector finds (secret shapes, TCKN, IBAN, payment cards), nothing the masking layers would
-     * change (e-mail and IP addresses, phone numbers) and no estate-dictionary term, because unmasked roles read it in
-     * full on the row and in the ledger. The refusal never echoes the text.
+     * D-06): nothing a Tier-1 detector finds (secret shapes, TCKN, IBAN, payment cards), nothing the free-text masking
+     * layers would change (e-mail and IP addresses, phone numbers, domain accounts, host names, numbers glued to letters,
+     * a Turkish person's name) and no estate-dictionary term, because unmasked roles read it in full on the row and in
+     * the ledger. The refusal never echoes the text.
      */
     String reasonText(String raw, String invalidReason, String what) {
         String reason = raw == null ? "" : raw.strip();
@@ -398,7 +399,7 @@ public class PolicyRegistryService {
             throw new RegistryRefusal(HttpStatus.SERVICE_UNAVAILABLE, "MASKING_UNAVAILABLE",
                 "The reason cannot be checked for identifiers without the masking key and dictionary; nothing changed.");
         }
-        if (!REASON_DETECTORS.scan(reason).isEmpty() || !masking.masker().mask(reason).equals(reason)) {
+        if (!REASON_DETECTORS.scan(reason).isEmpty() || !masking.masker().maskFreeText(reason).equals(reason)) {
             throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "REASON_HOLDS_IDENTIFIER",
                 "The reason holds an identifier (an address, a number or a name the masking rules recognise); describe "
                     + "the reason without it.");

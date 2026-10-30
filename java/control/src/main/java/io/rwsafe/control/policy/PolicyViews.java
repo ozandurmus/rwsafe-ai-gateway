@@ -73,9 +73,9 @@ public final class PolicyViews {
             return new VersionView(m.mask(ruleId), version, action, enforceFailClosed, mask(m, hostSuffixes),
                 mask(m, apiHosts), mask(m, loginHosts), mode, rolloutStage, scope.masked(m), status, source, author,
                 m.mask(reasonCode), createdAt, activatedAt, supersededAt, retirement == null ? null
-                    : new RetirementView(retirement.retiredAt(), retirement.retiredBy(), m.mask(retirement.reason())),
+                    : new RetirementView(retirement.retiredAt(), retirement.retiredBy(), m.maskFreeText(retirement.reason())),
                 withdrawal == null ? null : new WithdrawalView(withdrawal.withdrawsVersion(),
-                    withdrawal.reason() == null ? null : m.mask(withdrawal.reason()), withdrawal.withdrawnAt()),
+                    withdrawal.reason() == null ? null : m.maskFreeText(withdrawal.reason()), withdrawal.withdrawnAt()),
                 approvals, inSnapshot);
         }
     }

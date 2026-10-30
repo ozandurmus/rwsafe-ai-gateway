@@ -112,7 +112,7 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
   break-glass account (owner-only initial password file, ledgered), every sign-in ledgered under a pseudonym, login
   throttling per name and client, request bodies bounded as read, session + CSRF cookies, roles
   `security_admin`, `viewer`, `replay_viewer` (read-only, masked). The masking funnel (`ResponseBodyAdvice`) serves the
-  masked role (exclusive, read-only) only `MaskedView` bodies through the `rwmask-v1-slice1` text layers, with
+  masked role (exclusive, read-only) only `MaskedView` bodies through the text layers (now `rwmask-v2`), with
   `X-RWSAFE-Masked`, and 503
   `MASKING_UNAVAILABLE` without the key or the estate dictionary; `FunnelCoverageTest` proves every API route has a masked
   projection. Read API: overview, traffic (keyset pages, pseudonym-only user filter), event detail, platforms, health
@@ -228,6 +228,27 @@ Nothing applied; build and apply commands in `DEPLOY_AND_SHARED_HOST_RUNBOOK.md`
 - Open: the banner and IDE first-run surfaces that show the notice and post the acknowledgement, the directory import
   job, the `RWSAFE_ENDUSER_*` ConfigMap contract in `deploy/rwsafe/contracts`, a call site for the coaching page, and
   the data plane reasons `PLATFORM_NOT_ALLOWED`, `VENDOR_INSTRUMENT_MISSING` and `PERSONAL_ACCOUNT` (their pages exist).
+
+## Done (masking layers 4 and 5, branch `feature/masking-layers-4-5`)
+
+- Rule set `rwmask-v2` (`TextMasker.RULE_SET`, header `X-RWSAFE-Mask-Rules` on every masked page). Layer 4: a committed
+  Turkish name dictionary (`java/control/src/main/resources/io/rwsafe/control/privacy/names/`: given names, family
+  names, and an allow list of names that are everyday words; source and licence in its README, PO decision Q-23).
+  Matching folds NFC, case, every i form and the Turkish diacritics, takes case endings with or without an apostrophe
+  (`Ayşe'nin`, `Mehmete`), whole words only, plain linear scans. A given name with a family name (also two given names
+  and a family name, either order) is one `NAME-<4 hex>` token in every masked field; a lone given name is masked only
+  in free text; an allow-listed word is never masked alone and counts in a pair only when capitalised or next to a name
+  that is not on the list. A missing dictionary makes masking unavailable (503, fail closed).
+- Layer 5 (`TextMasker.maskFreeText`, free text only): `DOMAIN\user` accounts (the user column's `USR-` pseudonym),
+  IBAN-shaped groups of any country (`IBAN-`, a valid TR IBAN keeps `IBAN-TR-`), IPv4 glued to letters, digit runs of
+  six or more glued to letters (`NUM-`; a glued valid TCKN or Turkish mobile number becomes `TCKN-`/`TEL-` in every
+  field), host-shaped dotted labels (`HST-`). Tokens the masker wrote are never re-masked. The Tier-1 detector pass
+  scans long texts in 8 KB pieces and withholds a piece that reaches the finding limit (`[REDACTED:OVER_LIMIT]`).
+- Applied to the free-text fields the masked role sees: error messages, health details, platform retirement and
+  withdrawal reasons. The retirement and withdrawal reasons that unmasked roles read in clear are refused when the
+  free-text layers would change them, so a person's name, host or glued number never reaches the row or the ledger.
+- Not in `rwmask-v2`: the keyword-following word, project code names and user-directory paths of B2 layer 5, the PO's
+  customer-number formats (Q-23), the `NAME-<WORD>` form of B2 (tokens are 4 hex like the other classes).
 
 ## Not done
 
