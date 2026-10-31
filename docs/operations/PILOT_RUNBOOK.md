@@ -53,6 +53,7 @@ that the root filesystem is below 85 % used (`df -h /`; 69 % on 2026-10-31, HOST
 | H1 | 2 | namespaces `${PRODUCT}`, `${PRODUCT}-build`, `${PRODUCT}-security`; PriorityClasses `${PRODUCT}-dataplane`, `-control`, `-batch`; three ResourceQuotas and LimitRanges | step 18 |
 | H2 | 3 | three ConfigMaps in `${PRODUCT}-build` (build tag, CA bundle, proxy settings without credentials) | deleted with the namespace |
 | H3 | 4 | build context PVC (1Gi) and a short-lived loader pod in `${PRODUCT}-build` | deleted with the namespace |
+| H3b | 4b | the pinned base images pushed into the in-cluster registry as repositories `${PRODUCT}-mirror/ubi9/*` (from the workstation export; digests verified) | step 18 note |
 | H4 | 5 | the data plane image built and pushed to the in-cluster registry as repository `${PRODUCT}-dataplane` | step 18 note |
 | H5 | 6 | the control image, repository `${PRODUCT}-control` | step 18 note |
 | H6 | 7 | four Secrets/ConfigMaps of generated values plus the estate dictionary ConfigMap in `${PRODUCT}` | deleted with the namespace |
@@ -139,8 +140,15 @@ kubectl -n "${PRODUCT}-build" wait --for=condition=Ready "pod/${PRODUCT}-build-c
 # the CA bundle for Gradle inside the build stage (deploy/images/ca/, git-ignored): the same host bundle
 kubectl -n "${PRODUCT}-build" exec -i "${PRODUCT}-build-context-loader" -- \
   sh -c 'cat > /workspace/src/deploy/images/ca/host-bundle.pem' < /etc/ssl/certs/ca-certificates.crt
+# the pinned Gradle distribution (the host cannot follow services.gradle.org's redirect, 2026-10-31): fetched on the
+# workstation, its SHA-256 compared with distributionSha256Sum in java/gradle/wrapper/gradle-wrapper.properties, copied to
+# the host as ~/pilot/gradle-8.14.3-bin.zip; the wrapper checks the sum again inside the build
+sum="$(sed -n 's/^distributionSha256Sum=//p' java/gradle/wrapper/gradle-wrapper.properties)"
+echo "${sum}  ${HOME}/pilot/gradle-8.14.3-bin.zip" | sha256sum -c --quiet && echo "gradle distribution: sum ok"
+kubectl -n "${PRODUCT}-build" exec -i "${PRODUCT}-build-context-loader" -- \
+  sh -c 'cat > /workspace/src/deploy/images/gradle-dist/gradle-8.14.3-bin.zip' < ~/pilot/gradle-8.14.3-bin.zip
 kubectl -n "${PRODUCT}-build" exec "${PRODUCT}-build-context-loader" -- \
-  sh -c 'ls /workspace/src/java/gradlew /workspace/src/deploy/images/dataplane.Containerfile /workspace/src/deploy/images/ca/host-bundle.pem | wc -l'
+  sh -c 'ls /workspace/src/java/gradlew /workspace/src/deploy/images/dataplane.Containerfile /workspace/src/deploy/images/ca/host-bundle.pem /workspace/src/deploy/images/gradle-dist/gradle-8.14.3-bin.zip | wc -l'
 kubectl -n "${PRODUCT}-build" delete pod "${PRODUCT}-build-context-loader" --wait=true
 ```
 
@@ -496,7 +504,7 @@ find "${HOME}/.config/${PRODUCT}/pilot" -type f -exec shred -u {} + 2>/dev/null;
 
 Expected: the namespaces gone (`kubectl get namespace -l "app.kubernetes.io/part-of=${PRODUCT}"` prints nothing), the
 three PriorityClasses deleted, the table deleted, `ss -ltn 'sport = :1344'` shows nothing. What stays: the two image
-repositories `${PRODUCT}-dataplane` and `${PRODUCT}-control` in the shared in-cluster registry (no registry content of
+repositories `${PRODUCT}-dataplane`, `${PRODUCT}-control` and `${PRODUCT}-mirror/ubi9/*` in the shared in-cluster registry (no registry content of
 neXus is touched; they go with the registry GC of SHIP_PIPELINE_PLAN §4, or stay for the next attempt).
 
 ## 19. What the pilot does not cover
