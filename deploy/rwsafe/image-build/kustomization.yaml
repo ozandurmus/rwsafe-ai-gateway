@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# The in-cluster image build for the pilot (DEPLOY_AND_SHARED_HOST_RUNBOOK §7.3, docs/operations/PILOT_RUNBOOK.md steps
+# 3-6), modelled on neXus's kaniko build on the same host: a context PVC filled from `git archive` of the commit being
+# built through a short-lived loader pod, then one kaniko Job per image, run one at a time (the rwsafe-build quota holds
+# one 3-CPU build), each pushing to the in-cluster registry and writing the pushed digest to its termination message.
+# Rendered by tools/pilot/render.py --target build, which applies the product name (deploy/rwsafe/product.env).
+#
+# No Secret, no credential and no estate value is here. The corporate proxy (needed for the base-image pulls and for
+# Gradle's downloads) and the CA bundle come from uncommitted ConfigMaps named in
+# ../contracts/runtime-contracts.json ("build"), created on the host from the host's own values.
+#
+# The namespace, its quota, LimitRange and the PriorityClass rwsafe-batch come from the k3s overlay (applied first). The
+# build namespace has no NetworkPolicy: kaniko reaches the corporate proxy and the registry, and its PSA level is
+# `baseline` (kaniko unpacks image layers as root; the one documented relaxation, PLAT-F6).
+resources:
+  - 10-context.yaml
+  - 20-build-jobs.yaml

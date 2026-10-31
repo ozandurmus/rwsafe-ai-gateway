@@ -538,7 +538,7 @@ the orchestrator's interim Q-41 decision (two approvals) in `docs/reviews/PR21_2
   `ui2*`/`nexus*` token (PriorityClass descriptions made product-neutral for it), a LoadBalancer port in use on the host,
   neXus's cluster ports and a foreign in-cluster registry repository. `.rwsafe-delivery.json` (ship pipeline) still
   names rwsafe.
-- `deploy/rwsafe/build`: kaniko Jobs per image (the executor digest neXus pins), context PVC and loader, proxy and CA from
+- `deploy/rwsafe/image-build`: kaniko Jobs per image (the executor digest neXus pins), context PVC and loader, proxy and CA from
   uncommitted ConfigMaps (contract section `build`); both Containerfiles take optional CA anchors from
   `deploy/images/ca/` in the build stage only.
 - `tools/pilot/bootstrap_secrets.sh`, `fetch_break_glass.sh`, `check_pilot.sh`; `docs/operations/PILOT_RUNBOOK.md`

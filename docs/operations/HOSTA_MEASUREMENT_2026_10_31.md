@@ -13,7 +13,7 @@ through a PO decision record, so where the two disagree this record is the newer
 | Kubernetes | k3s v1.36.4, single node, containerd | same | none |
 | Root filesystem (the one filesystem every PVC, image and backup shares) | **69 % used, 305 GiB free** of 1005 GiB | 80 % used, 189 GiB free | the 25 % headroom rule of AGENTS.md section 8 holds again; the storage budget below is raised |
 | Node ports 1344 and 11344 | not in use | not in use | the pilot's ICAP ServiceLB port 1344 does not collide |
-| In-cluster registry | a Service `registry` in `kube-system`, port 80 to 5000 | same | rwsafe images are pushed there by the build Jobs (`deploy/rwsafe/build`) |
+| In-cluster registry | a Service `registry` in `kube-system`, port 80 to 5000 | same | rwsafe images are pushed there by the build Jobs (`deploy/rwsafe/image-build`) |
 | How the other product builds images | kaniko Jobs in its own build namespace pushing to that registry; a build-cache repository exists | not recorded | the pilot's build follows the same pattern in `<product>-build`, with its own repositories `<product>-dataplane`, `<product>-control` and no cache repository |
 | Ingress | Traefik is the LoadBalancer for 80/443 through ServiceLB | same | the pilot adds no Ingress; the admin UI is reached by `kubectl port-forward` |
 | rwsafe namespaces | none (`rwsafe*` absent) | none | the pilot starts from nothing |

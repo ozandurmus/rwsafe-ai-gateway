@@ -2,7 +2,7 @@
 # docs/operations/LOCAL_RUN.md and DataPlaneApplication.
 #
 # Build context: the repository root (only java/ and the optional CA directory deploy/images/ca/ are copied).
-# Built by the kaniko Job in rwsafe-build (deploy/rwsafe/build, SHIP_PIPELINE_PLAN.md), never on a workstation
+# Built by the kaniko Job in rwsafe-build (deploy/rwsafe/image-build, SHIP_PIPELINE_PLAN.md), never on a workstation
 # for a release. Locally, for a smoke check only:
 #   podman build -f deploy/images/dataplane.Containerfile -t rwsafe-dataplane:dev .
 #

@@ -1,0 +1,171 @@
+# One kaniko Job per image (DEPLOY_AND_SHARED_HOST_RUNBOOK §7.3). Each builds its Containerfile from the context PVC,
+# pushes `<registry>/rwsafe-<image>:<image-tag>` to the in-cluster registry (plain HTTP inside the cluster, the way
+# neXus's builds push) and writes the pushed digest (`sha256:...`) to the container's termination message, where
+# `kubectl get pod -o jsonpath` reads it; the deploy references that digest, never the tag.
+#
+# The executor image is digest-pinned: the digest neXus's build pins on the same host (read from the neXus repository on
+# 2026-10-31), so the node already holds it. Kaniko runs as root with a writable root filesystem (it unpacks the base
+# image into its own filesystem): the PSA `baseline` exception of the build namespace (PLAT-F6). No ServiceAccount
+# token, no Secret: the in-cluster registry takes pushes without credentials.
+#
+# From uncommitted ConfigMaps (../contracts/runtime-contracts.json, "build"), created on the host:
+#   rwsafe-build-config  image-tag (the short commit id being built; one tag per filesystem)
+#   rwsafe-build-proxy   HTTP_PROXY, HTTPS_PROXY, NO_PROXY and GRADLE_OPTS (the corporate proxy, never with credentials:
+#                        tools/pilot/build_config.sh refuses userinfo). Required: kaniko reads them from its own
+#                        environment for the base-image pulls, and passes them to the Containerfile's `AS build` stage
+#                        only as `--build-arg=KEY=$(KEY)` (PR 33 review D-03: kaniko's RUN steps see the stage's ARG and
+#                        ENV, not the executor's environment). The stage declares them as ARG, never ENV, and the runtime
+#                        stage declares none, so no proxy setting reaches a layer or the history of the pushed image.
+#                        On a network without a proxy the four keys are present and empty
+#   rwsafe-build-ca      ca-certificates.crt: the CA bundle kaniko trusts for registry and proxy TLS (the host's own
+#                        bundle); required, because an absent ConfigMap would mount an empty directory over kaniko's
+#                        built-in bundle
+# The build stage's own Gradle downloads trust deploy/images/ca/*.pem from the context (the same host bundle copied in
+# by the runbook; git-ignored, never committed).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rwsafe-build-dataplane
+  namespace: rwsafe-build
+  labels:
+    app.kubernetes.io/part-of: rwsafe
+    app.kubernetes.io/component: image-build
+    app.kubernetes.io/name: rwsafe-build-dataplane
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: rwsafe
+        app.kubernetes.io/component: image-build
+        app.kubernetes.io/name: rwsafe-build-dataplane
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      priorityClassName: rwsafe-batch
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
+          args:
+            - --context=dir:///workspace/src
+            - --dockerfile=/workspace/src/deploy/images/dataplane.Containerfile
+            - --destination=registry.kube-system.svc.cluster.local/rwsafe-dataplane:$(IMAGE_TAG)
+            - --digest-file=/dev/termination-log
+            - --insecure-registry=registry.kube-system.svc.cluster.local
+            - --cache=false
+            - --image-download-retry=5
+            - --snapshot-mode=redo
+            - --log-format=text
+            - --verbosity=info
+            - --build-arg=HTTP_PROXY=$(HTTP_PROXY)
+            - --build-arg=HTTPS_PROXY=$(HTTPS_PROXY)
+            - --build-arg=NO_PROXY=$(NO_PROXY)
+            - --build-arg=GRADLE_OPTS=$(GRADLE_OPTS)
+          env:
+            - name: IMAGE_TAG
+              valueFrom: { configMapKeyRef: { name: rwsafe-build-config, key: image-tag } }
+          envFrom:
+            - configMapRef: { name: rwsafe-build-proxy }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests: { cpu: 500m, memory: 1Gi, ephemeral-storage: 2Gi }
+            limits: { cpu: "3", memory: 4Gi, ephemeral-storage: 8Gi }
+          volumeMounts:
+            - name: context
+              mountPath: /workspace
+              readOnly: true
+            - name: ca
+              mountPath: /kaniko/ssl/certs
+              readOnly: true
+      volumes:
+        - name: context
+          persistentVolumeClaim:
+            claimName: rwsafe-build-context
+        - name: ca
+          configMap:
+            name: rwsafe-build-ca
+            items:
+              - { key: ca-certificates.crt, path: ca-certificates.crt }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rwsafe-build-control
+  namespace: rwsafe-build
+  labels:
+    app.kubernetes.io/part-of: rwsafe
+    app.kubernetes.io/component: image-build
+    app.kubernetes.io/name: rwsafe-build-control
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: rwsafe
+        app.kubernetes.io/component: image-build
+        app.kubernetes.io/name: rwsafe-build-control
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      priorityClassName: rwsafe-batch
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
+          args:
+            - --context=dir:///workspace/src
+            - --dockerfile=/workspace/src/deploy/images/control.Containerfile
+            - --destination=registry.kube-system.svc.cluster.local/rwsafe-control:$(IMAGE_TAG)
+            - --digest-file=/dev/termination-log
+            - --insecure-registry=registry.kube-system.svc.cluster.local
+            - --cache=false
+            - --image-download-retry=5
+            - --snapshot-mode=redo
+            - --log-format=text
+            - --verbosity=info
+            - --build-arg=HTTP_PROXY=$(HTTP_PROXY)
+            - --build-arg=HTTPS_PROXY=$(HTTPS_PROXY)
+            - --build-arg=NO_PROXY=$(NO_PROXY)
+            - --build-arg=GRADLE_OPTS=$(GRADLE_OPTS)
+          env:
+            - name: IMAGE_TAG
+              valueFrom: { configMapKeyRef: { name: rwsafe-build-config, key: image-tag } }
+          envFrom:
+            - configMapRef: { name: rwsafe-build-proxy }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests: { cpu: 500m, memory: 1Gi, ephemeral-storage: 2Gi }
+            limits: { cpu: "3", memory: 4Gi, ephemeral-storage: 8Gi }
+          volumeMounts:
+            - name: context
+              mountPath: /workspace
+              readOnly: true
+            - name: ca
+              mountPath: /kaniko/ssl/certs
+              readOnly: true
+      volumes:
+        - name: context
+          persistentVolumeClaim:
+            claimName: rwsafe-build-context
+        - name: ca
+          configMap:
+            name: rwsafe-build-ca
+            items:
+              - { key: ca-certificates.crt, path: ca-certificates.crt }
