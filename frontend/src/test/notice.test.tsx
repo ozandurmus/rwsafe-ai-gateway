@@ -17,8 +17,8 @@ const masked = { displayName: 'masked session', roles: ['replay_viewer'], masked
 
 const NOTICE = {
   title: 'Yapay zekâ kullanımı aydınlatma metni',
-  catalogueVersion: 'tr-2',
-  currentVersion: 'tr-2+0a1b2c3d',
+  catalogueVersion: 'tr-3',
+  currentVersion: 'tr-3+0a1b2c3d',
   complete: true,
   missingParameters: [],
   rejectedParameters: [],
@@ -31,11 +31,11 @@ const NOTICE = {
 
 const ACKS = {
   user: 'USR-0123456789',
-  currentVersion: 'tr-2+0a1b2c3d',
+  currentVersion: 'tr-3+0a1b2c3d',
   currentAcknowledged: true,
   records: [
     {
-      noticeVersion: 'tr-2+0a1b2c3d',
+      noticeVersion: 'tr-3+0a1b2c3d',
       acknowledgedAt: '2026-10-30T09:15:00Z',
       source: 'banner',
       recordedAt: '2026-10-30T09:15:02Z',
@@ -51,7 +51,7 @@ describe('notice screen', () => {
       'GET /api/v1/notice': () => ({ status: 200, body: NOTICE }),
     });
     renderApp('/notice');
-    expect(await screen.findByText('tr-2+0a1b2c3d')).toBeInTheDocument();
+    expect(await screen.findByText('tr-3+0a1b2c3d')).toBeInTheDocument();
     expect(screen.getByText('1.234')).toBeInTheDocument();
     expect(screen.getByText('Evet')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Neyi inceliyoruz' })).toBeInTheDocument();
@@ -66,7 +66,7 @@ describe('notice screen', () => {
       'GET /api/v1/notice': () => ({ status: 200, body: { ...NOTICE, sections: null } }),
     });
     renderApp('/notice');
-    expect(await screen.findByText('tr-2+0a1b2c3d')).toBeInTheDocument();
+    expect(await screen.findByText('tr-3+0a1b2c3d')).toBeInTheDocument();
     expect(screen.getByText(/Metnin kendisi maskeli görünümde gösterilmez/)).toBeInTheDocument();
     expect(screen.queryByText('Neyi inceliyoruz')).toBeNull();
   });
@@ -124,7 +124,7 @@ describe('notice screen', () => {
     await userEvent.clear(field);
     await userEvent.type(field, 'USR-0123456789');
     await userEvent.click(button);
-    expect(await screen.findByText(/USR-0123456789, güncel sürümü \(tr-2\+0a1b2c3d\) onayladı/)).toBeInTheDocument();
+    expect(await screen.findByText(/USR-0123456789, güncel sürümü \(tr-3\+0a1b2c3d\) onayladı/)).toBeInTheDocument();
     const call = s.calls.find((c) => c.url.pathname === '/api/v1/notice/acknowledgements');
     expect(call?.url.searchParams.get('user')).toBe('USR-0123456789');
     const table = screen.getByRole('table', { name: 'Onaylar' });

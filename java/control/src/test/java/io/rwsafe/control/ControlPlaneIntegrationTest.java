@@ -373,7 +373,7 @@ class ControlPlaneIntegrationTest {
     void withoutTheConfiguredNoticeValuesNothingCanBeAcknowledged() throws Exception {
         // PR 22 review D-03: this context configures no RWSAFE_ENDUSER_ value, so no notice was shown.
         ApiClient.Response r = internalClient().post("/internal/v1/notice-acknowledgements",
-            "[{\"userClaim\":\"SYNTHETIC\\\\user-x\",\"noticeVersion\":\"tr-2-0a1b2c3d\",\"acknowledgedAt\":\""
+            "[{\"userClaim\":\"SYNTHETIC\\\\user-x\",\"noticeVersion\":\"tr-3-0a1b2c3d\",\"acknowledgedAt\":\""
                 + java.time.Instant.now() + "\",\"source\":\"directory_attribute\"}]", false);
         assertEquals(400, r.status());
         assertEquals("NOTICE_INCOMPLETE", r.body().get("reason").asText());

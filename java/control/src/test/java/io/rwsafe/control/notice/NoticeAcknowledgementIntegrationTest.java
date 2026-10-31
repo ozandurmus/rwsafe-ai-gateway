@@ -54,7 +54,6 @@ class NoticeAcknowledgementIntegrationTest {
         r.add("RWSAFE_ENDUSER_POLICY_LINK", () -> "https://intranet.synthetic.example.test/politika");
         r.add("RWSAFE_ENDUSER_RETENTION_METADATA", () -> "400");
         r.add("RWSAFE_ENDUSER_RETENTION_REDACTED", () -> "90");
-        r.add("RWSAFE_ENDUSER_RETENTION_RAW", () -> "30");
     }
 
     @LocalServerPort
@@ -164,7 +163,7 @@ class NoticeAcknowledgementIntegrationTest {
         assertEquals(200, n.status(), String.valueOf(n.body()));
         assertTrue(n.body().get("complete").asBoolean());
         String version = n.body().get("currentVersion").asText();
-        assertTrue(version.startsWith("tr-2-"), version);
+        assertTrue(version.startsWith("tr-3-"), version);
         assertEquals(0, n.body().get("missingParameters").size());
         assertTrue(n.raw().body().contains(CONTROLLER));
         assertTrue(n.raw().body().contains("sürüm " + version));

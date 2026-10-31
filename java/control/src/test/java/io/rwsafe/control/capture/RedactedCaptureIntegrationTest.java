@@ -82,7 +82,6 @@ class RedactedCaptureIntegrationTest {
         r.add("RWSAFE_ENDUSER_POLICY_LINK", () -> "https://intranet.synthetic.example.test/politika");
         r.add("RWSAFE_ENDUSER_RETENTION_METADATA", () -> "400");
         r.add("RWSAFE_ENDUSER_RETENTION_REDACTED", () -> "90");
-        r.add("RWSAFE_ENDUSER_RETENTION_RAW", () -> "30");
     }
 
     /** The store volume's fill level, set by each test. */

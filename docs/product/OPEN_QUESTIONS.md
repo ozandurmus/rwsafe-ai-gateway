@@ -25,6 +25,7 @@ to the "Decided" table. Chat answers in Turkish are quoted in the record; the qu
 
 | Id | Decision record | Date |
 |---|---|---|
+| LR-1..LR-7 | `PO_DECISION_RECORD_2026_10_31_END_USER_NOTICE_LEGAL_REVIEW.md`: end-user notice texts approved; full-text tier text and the objection sentence removed, catalogue `tr-3` | 2026-10-31 |
 | Q-39 | `PO_DECISION_RECORD_2026_10_30_POLICY_SCOPE_AND_PLATFORM_RETIREMENT.md`: every rule version has a source scope (ANY or directory groups); no mandatory staging | 2026-10-30 |
 | Q-40 | `PO_DECISION_RECORD_2026_10_30_POLICY_SCOPE_AND_PLATFORM_RETIREMENT.md`: a security_admin alone retires a platform row, audited, history kept | 2026-10-30 |
 | Q-38 | `PO_DECISION_RECORD_2026_10_30_ADMIN_UI_LANGUAGE.md`: admin UI TR/EN selectable, Turkish by default | 2026-10-30 |

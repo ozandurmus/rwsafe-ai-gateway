@@ -33,7 +33,7 @@ class PrivacyKeyMissingIntegrationTest {
     void acknowledgementsAreRefusedWith503AndNothingIsStored() throws Exception {
         // PR 22 review D-08, AGENTS.md 4.10: no pseudonym can be computed, so nothing is stored.
         ApiClient.Response r = new ApiClient(internal.port()).post("/internal/v1/notice-acknowledgements",
-            "[{\"userClaim\":\"SYNTHETIC\\\\user-y\",\"noticeVersion\":\"tr-2-0a1b2c3d\",\"acknowledgedAt\":\""
+            "[{\"userClaim\":\"SYNTHETIC\\\\user-y\",\"noticeVersion\":\"tr-3-0a1b2c3d\",\"acknowledgedAt\":\""
                 + java.time.Instant.now() + "\",\"source\":\"banner\"}]", false);
         assertEquals(503, r.status());
         assertEquals("PRIVACY_KEY_UNAVAILABLE", r.body().get("reason").asText());

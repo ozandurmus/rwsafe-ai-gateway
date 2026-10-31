@@ -95,7 +95,6 @@ class MaskedRoleLeakProbeTest {
         r.add("RWSAFE_ENDUSER_POLICY_LINK", () -> canaries.noticePolicyLink);
         r.add("RWSAFE_ENDUSER_RETENTION_METADATA", () -> "400");
         r.add("RWSAFE_ENDUSER_RETENTION_REDACTED", () -> "90");
-        r.add("RWSAFE_ENDUSER_RETENTION_RAW", () -> "30");
         ControlTestEnvironment.addUser(canaries.admin.login(), "security_admin");
         ControlTestEnvironment.addUser(canaries.adminTwo.login(), "security_admin");
         ControlTestEnvironment.addUser(canaries.officer.login(), "privacy_officer");
