@@ -1,7 +1,8 @@
 # rwsafe-control: the Spring Boot control plane (admin API, capture sink, policy snapshot feed). Runtime contract:
 # deploy/rwsafe/base/40-control.yaml; environment in docs/operations/LOCAL_RUN.md and application.yaml.
 #
-# Build context: the repository root (only java/ and the optional CA directory deploy/images/ca/ are copied).
+# Build context: the repository root (only java/, the admin UI's sources in frontend/ and the optional build-context
+# directories deploy/images/ca/ and deploy/images/gradle-dist/ are copied).
 # Built by the kaniko Job in rwsafe-build (deploy/rwsafe/image-build, SHIP_PIPELINE_PLAN.md), never on a workstation
 # for a release. Locally, for a smoke check only:
 #   podman build -f deploy/images/control.Containerfile -t rwsafe-control:dev .
@@ -14,6 +15,40 @@
 # the multi-platform lists), so the pilot's mirror (tools/pilot/mirror_images.py) can hold them byte for byte. Re-resolve
 # them before a release with `skopeo inspect --raw docker://registry.access.redhat.com/ubi9/<image>:<tag>` (the amd64
 # entry's digest) and record the new digest here. JRE 21, the Gradle toolchain's language version.
+#
+# The admin UI (frontend/, ARCHITECTURE.md §3.4) is built in its own stage on Red Hat's UBI 9 Node.js 22 builder image
+# (the frontend's engines field: ^22.12.0), pinned the same way: tag `1` resolved on 2026-10-31 to its linux/amd64 image
+# manifest (release 1793254256, built 2026-10-29), read from registry.access.redhat.com's manifest list with the
+# registry API; tools/pilot/mirror_images.py mirrors it with the two above. The stage installs exactly the committed
+# lockfile (`npm ci`) from registry.npmjs.org and runs `npm run build` (tsc, then vite); only dist/ leaves it.
+
+# ---- ui: the admin SPA from the committed lockfile -------------------------------------------------------------------
+FROM registry.access.redhat.com/ubi9/nodejs-22@sha256:035c84d0c14ec83531136770605fce0741136cbb726a40e26ddcd7aee5176d89 AS ui
+USER 0
+# The corporate proxy, as in the build stage below: build arguments of this stage only, never ENV (npm reads them from
+# the environment of its RUN step).
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+WORKDIR /ui
+COPY deploy/images/ca/ /tmp/corp-ca/
+COPY frontend/package.json frontend/package-lock.json /ui/
+# --ignore-scripts: no dependency runs an install script. The lockfile's only two (esbuild's postinstall, which only
+# checks its binary, and fsevents, macOS only) are not needed: esbuild resolves its platform package
+# (@esbuild/linux-x64, in the lockfile) at run time. NODE_EXTRA_CA_CERTS: Node keeps its own CA list, so the optional
+# CA anchors of a TLS-intercepting proxy are added for this step only. The files are joined with a newline after each
+# (PR 39 review D-03), so a file without a final newline cannot glue its END line to the next BEGIN line, which would
+# make Node drop that certificate; tools/pilot/test_render.py runs this join on such files.
+RUN if ls /tmp/corp-ca/*.pem >/dev/null 2>&1; then \
+      for pem in /tmp/corp-ca/*.pem; do cat "${pem}"; echo; done > /tmp/corp-ca.bundle; \
+      export NODE_EXTRA_CA_CERTS=/tmp/corp-ca.bundle; fi; \
+    npm ci --ignore-scripts --no-audit --no-fund --cache /tmp/npm-cache \
+ && rm -rf /tmp/npm-cache /tmp/corp-ca.bundle
+COPY frontend/index.html frontend/tsconfig.json frontend/vite.config.ts /ui/
+COPY frontend/src/ /ui/src/
+RUN npm run build \
+ && mkdir -p /out \
+ && cp -R dist /out/ui
 
 # ---- build: Gradle with the committed lockfiles and verification metadata --------------------------------------------
 FROM registry.access.redhat.com/ubi9/openjdk-21@sha256:e951a00f457675ece98d132ef08a94421cb030ec59e307163e671bf11516715d AS build
@@ -46,17 +81,21 @@ RUN name="$(sed -n 's#^distributionUrl=.*/\(gradle-[0-9][0-9.]*-bin\.zip\)$#\1#p
     fi
 # The wrapper fetches the pinned Gradle distribution and every artifact is checked against
 # gradle/verification-metadata.xml. No test runs here: CI ran them on the same commit.
+# The admin UI joins the application tree here, so the runtime stage still copies one tree from one stage.
+COPY --from=ui /out/ui/ /out/app/ui/
 RUN ./java/gradlew -p java --no-daemon --console=plain --dependency-verification strict :control:imageDist \
  && mkdir -p /out/app/lib \
  && cp java/control/build/image/lib/*.jar /out/app/lib/ \
- && chmod 0755 /out/app /out/app/lib \
- && chmod 0644 /out/app/lib/*.jar
+ && test -f /out/app/ui/index.html \
+ && find /out/app -type d -exec chmod 0755 {} + \
+ && find /out/app -type f -exec chmod 0644 {} +
 
 # ---- runtime: JRE only, no build tool, no shell entry point ------------------------------------------------------------
 FROM registry.access.redhat.com/ubi9/openjdk-21-runtime@sha256:4c654beca849328155fd790bf5e0b01fb079ef2295b7b22dba429f0f8169711e
 USER 0
 # Owned by root with group 0 and read-only for the process: the image runs under any UID with GID 0 and with
-# readOnlyRootFilesystem. The only writable path (/tmp, Tomcat's work directory) is an emptyDir mount in the pod.
+# readOnlyRootFilesystem. /app/ui is the built admin UI (rwsafe.ui.dir's default; AdminUi serves it on 8080 only). The
+# only writable path (/tmp, Tomcat's work directory) is an emptyDir mount in the pod.
 COPY --from=build --chown=0:0 /out/app/ /app/
 WORKDIR /app
 ENV HOME=/tmp \

@@ -300,15 +300,26 @@ class BuildTarget(unittest.TestCase):
                 self.assertNotEqual(render.check_build(objects, "acme", _CONTRACTS["acme"]), [])
 
     # PR 33 review D-03: the proxy reaches only the build stage, as build arguments, never a runtime layer.
+    # The control image also builds the admin UI in an `AS ui` stage first, whose output the Gradle stage copies into
+    # /out/app/ui/; the runtime stage still copies one tree from the `build` stage only.
     def test_containerfiles_keep_the_proxy_in_the_build_stage(self):
-        for name in ("dataplane", "control"):
+        for name, stages in (("dataplane", ["build"]), ("control", ["ui", "build"])):
             with self.subTest(name):
                 lines = [line.strip() for line in (mc.REPO_ROOT / f"deploy/images/{name}.Containerfile")
                          .read_text().splitlines() if line.strip() and not line.strip().startswith("#")]
                 froms = [i for i, line in enumerate(lines) if line.startswith("FROM ")]
-                self.assertEqual(len(froms), 2)
-                self.assertTrue(lines[froms[0]].endswith(" AS build"))
-                build, runtime = lines[froms[0]:froms[1]], lines[froms[1]:]
+                self.assertEqual(len(froms), len(stages) + 1)
+                for i, stage in enumerate(stages):
+                    self.assertTrue(lines[froms[i]].endswith(f" AS {stage}"), lines[froms[i]])
+                build, runtime = lines[froms[len(stages) - 1]:froms[-1]], lines[froms[-1]:]
+                if "ui" in stages:
+                    ui = lines[froms[0]:froms[1]]
+                    for key in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"):
+                        self.assertIn(f"ARG {key}", ui)
+                    self.assertEqual([line for line in build if line.startswith("COPY --from=")],
+                                     ["COPY --from=ui /out/ui/ /out/app/ui/"])
+                    self.assertTrue(any("npm ci --ignore-scripts" in line for line in ui), "npm ci, lockfile only")
+                    self.assertFalse(any(line.startswith("RUN npm install") for line in ui), "never npm install")
                 for key in render.PROXY_ARGS:
                     self.assertIn(f"ARG {key}", build)
                     self.assertFalse(any(key in line for line in runtime), f"{key} in the runtime stage")
@@ -317,6 +328,27 @@ class BuildTarget(unittest.TestCase):
                                  ["COPY --from=build --chown=0:0 /out/app/ /app/"])
                 self.assertFalse(any(line.startswith(("ARG", "ENV HTTP", "ENV HTTPS", "ENV NO_PROXY"))
                                      for line in lines[:froms[0]]))
+
+    # PR 39 review D-03: the ui stage's CA join keeps every BEGIN line on a line of its own, even when a file lacks its
+    # final newline (synthetic text, no certificate material).
+    def test_the_ui_stage_joins_ca_files_with_a_newline(self):
+        import subprocess
+        text = (mc.REPO_ROOT / "deploy/images/control.Containerfile").read_text()
+        joins = [line.strip().rstrip("\\").strip().rstrip(";") for line in text.splitlines()
+                 if "> /tmp/corp-ca.bundle" in line]
+        self.assertEqual(len(joins), 1, joins)
+        self.assertTrue(joins[0].startswith("for pem in /tmp/corp-ca/*.pem;"), joins[0])
+        begin, end = "-----BEGIN " + "CERTIFICATE-----", "-----END " + "CERTIFICATE-----"
+        with tempfile.TemporaryDirectory() as tmp:
+            ca = Path(tmp) / "corp-ca"
+            ca.mkdir()
+            (ca / "a.pem").write_text(f"{begin}\nsynthetic-a\n{end}")
+            (ca / "b.pem").write_text(f"{begin}\nsynthetic-b\n{end}\n")
+            bundle = Path(tmp) / "bundle"
+            command = joins[0].replace("/tmp/corp-ca/", f"{ca}/").replace("/tmp/corp-ca.bundle", str(bundle))
+            subprocess.run(["sh", "-c", command], check=True)
+            lines = bundle.read_text().splitlines()
+        self.assertEqual([line for line in lines if "BEGIN" in line or "END" in line], [begin, end, begin, end])
 
     def test_build_jobs_pass_the_proxy_only_as_build_arguments(self):
         for j in (o for o in _BUILD["acme"] if o["kind"] == "Job"):

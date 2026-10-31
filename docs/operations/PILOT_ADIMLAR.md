@@ -70,7 +70,7 @@ anahtarın adını söyler, değeri asla göstermez.
 python3 -B tools/pilot/render.py --target build --product "${PRODUCT}" --output ~/pilot/build.json
 kubectl apply --server-side -f ~/pilot/build.json -l "app.kubernetes.io/name in (${PRODUCT}-build-context,${PRODUCT}-build-context-loader)"
 kubectl -n "${PRODUCT}-build" wait --for=condition=Ready "pod/${PRODUCT}-build-context-loader" --timeout=180s
-git archive --format=tar HEAD java deploy/images | kubectl -n "${PRODUCT}-build" exec -i "${PRODUCT}-build-context-loader" -- sh -c 'rm -rf /workspace/src && mkdir /workspace/src && tar -xf - -C /workspace/src --no-same-owner'
+git archive --format=tar HEAD java frontend deploy/images | kubectl -n "${PRODUCT}-build" exec -i "${PRODUCT}-build-context-loader" -- sh -c 'rm -rf /workspace/src && mkdir /workspace/src && tar -xf - -C /workspace/src --no-same-owner'
 kubectl -n "${PRODUCT}-build" exec -i "${PRODUCT}-build-context-loader" -- sh -c 'cat > /workspace/src/deploy/images/ca/host-bundle.pem' < /etc/ssl/certs/ca-certificates.crt
 kubectl -n "${PRODUCT}-build" delete pod "${PRODUCT}-build-context-loader" --wait=true
 ```
@@ -210,7 +210,9 @@ kubectl -n "${PRODUCT}" port-forward "svc/${PRODUCT}-control" 18080:8080 --addre
 Kendi bilgisayarınızda: `ssh -N -L 18080:127.0.0.1:18080 <yönetici-hesabı>@<sunucu-adresi>`, sonra tarayıcıda
 `http://localhost:18080` adresini açıp `breakglass` ile girin. Görmeniz gereken: Politikalar ekranında tohum kuralları
 (gizli anahtar engelle; kimlik numarası, IBAN ve kart numarası maskele; zorlama kipi) ve Sağlık ekranında bileşenlerin
-çalıştığı.
+çalıştığı. Chrome, Edge veya Firefox kullanın ve adres olarak `127.0.0.1` değil `localhost` yazın (oturum çerezi
+`Secure`). `ssh -L` "administratively prohibited" derse ya da `GET /` yalnızca `NOT_FOUND` içeren bir JSON döndürürse
+durun ve bildirin (ayrıntı: `PILOT_RUNBOOK.md` adım 14).
 
 ## 15. VEKİL DEĞİŞİKLİĞİ (yalnızca siz, ProxySG konsolu): ICAP hizmeti
 

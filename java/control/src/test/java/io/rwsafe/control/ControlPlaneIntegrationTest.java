@@ -100,6 +100,14 @@ class ControlPlaneIntegrationTest {
         assertEquals(404, new ApiClient(internal.snapshotPort()).get("/readyz").status(), "not on the snapshot feed");
     }
 
+    /** Without a frontend build in rwsafe.ui.dir (a local run) the root is the API's JSON 404, never an empty page. */
+    @Test
+    void withoutABuiltUiTheRootIsTheApiNotFound() throws Exception {
+        ApiClient.Response root = admin().get("/");
+        assertEquals(404, root.status());
+        assertEquals("NOT_FOUND", root.body().get("reason").asText());
+    }
+
     @Test
     void sampleEventsPassTheRealIngestionPath() {
         java.time.Instant now = java.time.Instant.now();

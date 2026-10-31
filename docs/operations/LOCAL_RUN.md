@@ -121,6 +121,20 @@ Policies, Platforms and Health. The UI is Turkish by default; the user menu swit
 for that user in this browser (PO decision Q-38). Signed in as `synthetic-aiview`, every page carries the masked-view chip
 and passes the masking funnel.
 
+The built UI as the image serves it (the control plane itself, no Vite): build it once and point the runner at it.
+
+```bash
+npm --prefix frontend ci --ignore-scripts && npm --prefix frontend run build
+RWSAFE_UI_DIR="$PWD/frontend/dist" ./java/gradlew -p java :control:runDev
+```
+
+Then open `http://127.0.0.1:8080`. The control plane serves `rwsafe.ui.dir` (`RWSAFE_UI_DIR`; `/app/ui` in the image) on
+the admin port only: `/assets/*` cached for a year, `index.html` and every client route (`/traffic/<id>`, ...) with
+`no-store`, under the admin chain's CSP and headers; `/api/**` never falls back to the SPA. Without an `index.html` in
+that directory only the API answers (`GET /` is the JSON 404). The development runner uses plain-http cookies
+(`rwsafe.identity.cookie-secure=false`, session cookie `rwsafe-session`); any deploy keeps `RWSAFE_COOKIE_SECURE=true`
+and `__Host-rwsafe-session`, and the control plane refuses to start on a mix of the two (`CookiePolicy`).
+
 The policy registry by hand: sign in as `synthetic-admin`, open Policies, select a class (for example TCKN), submit a new
 version (a fail-closed class is never offered Allow or Warn) and approve it as security administrator; then sign in as
 `synthetic-officer` in another browser profile and give the privacy officer approval. The second approval activates the
