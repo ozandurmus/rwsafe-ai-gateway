@@ -393,24 +393,26 @@ public class PolicyRegistryService {
     }
 
     /**
-     * Requests the withdrawal of an active group-scoped class version (PR 21 Q-41): its groups fall back to the
-     * {@code ANY} baseline once the request has the same two approvals as an activation (removing a stricter group rule
-     * loosens policy). A security administrator requests it with a reason; the approvals use the normal approval route
-     * on the request's version.
+     * Withdraws an active group-scoped class version (PO decision Q-41, 2026-10-31): one {@code security_admin}'s action
+     * with a reason, no second approval, effective at once. The version becomes {@code withdrawn} (kept, never deleted),
+     * leaves the next snapshot, and its groups fall back to the {@code ANY} baseline. Removing a stricter group rule
+     * loosens policy for that group with one person; the PO accepted that, the reason being checked as a retirement's
+     * (no identifier, no estate term) and the ledger, exported to the SIEM, naming the administrator and the reason.
      */
-    public PolicyRuleVersion requestWithdrawal(String ruleId, int version, RetireRequest body, String loginName,
-                                               Set<String> sessionRoles) {
+    public PolicyRuleVersion withdrawScope(String ruleId, int version, RetireRequest body, String loginName,
+                                           Set<String> sessionRoles) {
         requireSecurityAdmin(sessionRoles, "WITHDRAW_ROLE_MISSING",
-            "Only a security administrator requests a withdrawal.");
+            "Only a security administrator withdraws a group-scoped version.");
         if (!RegistryVocabulary.KIND_CLASS.equals(RegistryVocabulary.kindOf(ruleId))) {
             throw new RegistryRefusal(HttpStatus.NOT_FOUND, "UNKNOWN_RULE",
                 "Only a group-scoped DLP class version is withdrawn.");
         }
         String reason = reasonText(body == null ? null : body.reason(), "INVALID_WITHDRAWAL", "withdrawal");
-        String author = pseudonym(loginName);
+        String admin = pseudonym(loginName);
         try {
-            return database.policyRegistry().requestWithdrawal(ruleId, version, reason, author,
-                new AuditContext(author, "policy.withdraw_request", reason, UUID.randomUUID().toString()));
+            return database.policyRegistry().withdrawScope(ruleId, version, admin, reason,
+                new AuditContext(admin, "policy.scope_withdraw", reason, UUID.randomUUID().toString()),
+                this::checkWithdrawal);
         } catch (RegistryConflict e) {
             throw conflict(e);
         }
@@ -474,6 +476,16 @@ public class PolicyRegistryService {
         }
         return host -> exact.contains(host)
             || suffixes.stream().anyMatch(s -> host.equals(s) || host.endsWith("." + s));
+    }
+
+    /** The registry left by a withdrawal must still compile (the ANY baselines stay, so it always should). */
+    void checkWithdrawal(List<PolicyRuleVersion> active) {
+        try {
+            compiler.compile(active);
+        } catch (RegistryRefusal e) {
+            throw new RegistryRefusal(HttpStatus.CONFLICT, "WITHDRAW_WOULD_NOT_COMPILE",
+                "This withdrawal would leave a registry that does not compile (" + e.reason() + "); nothing changed.");
+        }
     }
 
     /** The registry left by a retirement must still compile (every class, the flow, at least one platform row). */

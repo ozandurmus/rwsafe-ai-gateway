@@ -15,16 +15,16 @@ to the "Decided" table. Chat answers in Turkish are quoted in the record; the qu
 |---|---|---|---|---|
 | Q-17 | ARK naming and branching conventions: please supply the document so repository, branch and namespace names can follow it | — | adopt what is compatible with GitHub and k3s now; record deviations; working assumption ratified 2026-10-30, information pending (`PO_DECISION_RECORD_2026_10_30_REMAINING_OPEN_QUESTIONS.md`) | stack matrix |
 | Q-23 | Customer-number formats and the Turkish name dictionary source | formats: the PO supplies regex-shaped rules (no samples); names: a public list | as stated; working assumption ratified 2026-10-30, information pending (`PO_DECISION_RECORD_2026_10_30_REMAINING_OPEN_QUESTIONS.md`) | detector library, masking layer 4 |
-| Q-42 | The FROZEN `DEPLOY_AND_SHARED_HOST_RUNBOOK.md` gained section 7 (build, apply and first-run steps: PR 18, PR 27) without a PO decision record; ratify it | (a) ratify section 7 as written; (b) move it to a separate operations guide and keep the runbook frozen as it was | (a): the steps are the PO's own apply procedure and match the manifests; the PO runs every step | apply procedure |
 | Q-43 | HOST-A disk is 80 % used (measured), above the 25 % headroom rule regardless of rwsafe; redacted capture is capped at 32 GiB / 40Gi claim until decided | (a) reclaim space on the host before enabling capture; (b) add a disk; (c) keep capture off | (a) or (b) before capture is turned on; capture stays off meanwhile | enabling redacted capture |
-| Q-41 | Withdrawing a group-scoped rule: two approvals (implemented, PR 21) or one administrator | (a) two approvals by two people; (b) one security_admin with a reason | (a): removing a stricter rule loosens policy | none (implemented as (a); PO may revisit) |
-| Q-44 | Masked class tokens (`TCKN-`, `TEL-`, `NUM-`, `HST-`…) are 4 hex as the FROZEN masking design says; without its B3 pseudonym registry two values can share a token (about even odds at 300 values per class) | (a) build the B3 registry next (collision-free, a database write the first time a value is seen); (b) amend the design to 8-hex tokens now | (a) next slice; a shared token confuses an auditor but leaks nothing | masked-view accuracy |
 | Q-25 | Which XDR product runs on the endpoints (for agent coexistence) | — | name it when the agent phase starts; working assumption ratified 2026-10-30, information pending (`PO_DECISION_RECORD_2026_10_30_REMAINING_OPEN_QUESTIONS.md`) | ADR-006 |
 
 ## C. Decided
 
 | Id | Decision record | Date |
 |---|---|---|
+| Q-41 | `PO_DECISION_RECORD_2026_10_31_Q41_Q42_Q44.md`: one security_admin withdraws a group-scoped version with a reason, at once, ledgered, history kept (not two approvals) | 2026-10-31 |
+| Q-42 | `PO_DECISION_RECORD_2026_10_31_Q41_Q42_Q44.md`: runbook section 7 ratified as part of the frozen runbook | 2026-10-31 |
+| Q-44 | `PO_DECISION_RECORD_2026_10_31_Q41_Q42_Q44.md`: build the B3 pseudonym registry next; token formats unchanged | 2026-10-31 |
 | LR-1..LR-7 | `PO_DECISION_RECORD_2026_10_31_END_USER_NOTICE_LEGAL_REVIEW.md`: end-user notice texts approved; full-text tier text and the objection sentence removed, catalogue `tr-3` | 2026-10-31 |
 | Q-39 | `PO_DECISION_RECORD_2026_10_30_POLICY_SCOPE_AND_PLATFORM_RETIREMENT.md`: every rule version has a source scope (ANY or directory groups); no mandatory staging | 2026-10-30 |
 | Q-40 | `PO_DECISION_RECORD_2026_10_30_POLICY_SCOPE_AND_PLATFORM_RETIREMENT.md`: a security_admin alone retires a platform row, audited, history kept | 2026-10-30 |

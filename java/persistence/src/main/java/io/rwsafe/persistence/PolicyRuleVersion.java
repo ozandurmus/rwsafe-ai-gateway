@@ -8,10 +8,12 @@ import java.util.List;
  * {@code class_action}, {@code platform} or {@code flow}; {@code mode} {@code monitor} or {@code enforce};
  * {@code rolloutStage} {@code all} (the percentage stages {@code pilot}, {@code pct25}, {@code pct50} survive on old rows
  * only, PO decision Q-39); {@code status} {@code pending}, {@code active}, {@code superseded}, {@code retired} (a
- * platform row only, Q-40) or {@code withdrawn} (a group-scoped class version, Q-41); {@code source} {@code seed} (the
+ * platform row only, Q-40) or {@code withdrawn} (a group-scoped class version, Q-41: one administrator's action with
+ * a reason, {@code withdrawnBy} and {@code withdrawalReason}); {@code source} {@code seed} (the
  * committed fixture) or {@code registry}; {@code scopeKind} {@code ANY} (everyone) or {@code GROUPS} with 1 to 32
  * directory group names in {@code scopeGroups} (runtime data typed by the operator: never logged, never a metrics label).
- * A withdrawal request names the version it withdraws in {@code withdrawsVersion}, with its reason; it is never compiled.
+ * A V3 withdrawal request (history only since V9) names the version it withdrew in {@code withdrawsVersion}, with its
+ * reason; it is never compiled.
  * Fields that do not belong to the kind are null.
  */
 public record PolicyRuleVersion(String ruleId, int version, String kind, String dataClass, String action,
@@ -21,7 +23,7 @@ public record PolicyRuleVersion(String ruleId, int version, String kind, String 
                                 Instant createdAt, Instant activatedAt, Instant supersededAt,
                                 List<PolicyApproval> approvals, String scopeKind, List<String> scopeGroups,
                                 Retirement retirement, Integer withdrawsVersion, String withdrawalReason,
-                                Instant withdrawnAt) {
+                                Instant withdrawnAt, String withdrawnBy) {
 
     /** A version that is not a withdrawal request and was not withdrawn. */
     public PolicyRuleVersion(String ruleId, int version, String kind, String dataClass, String action,
@@ -33,10 +35,10 @@ public record PolicyRuleVersion(String ruleId, int version, String kind, String 
                              Retirement retirement) {
         this(ruleId, version, kind, dataClass, action, platformId, hostSuffixes, apiHosts, loginHosts, enforceFailClosed,
             mode, rolloutStage, status, source, authorFingerprint, reasonCode, createdAt, activatedAt, supersededAt,
-            approvals, scopeKind, scopeGroups, retirement, null, null, null);
+            approvals, scopeKind, scopeGroups, retirement, null, null, null, null);
     }
 
-    /** True for a withdrawal request (Q-41): it names a version to withdraw and is never compiled. */
+    /** True for a V3 withdrawal request (history only since V9): it names the version it withdrew and is never compiled. */
     public boolean withdrawalRequest() {
         return withdrawsVersion != null;
     }
@@ -62,7 +64,7 @@ public record PolicyRuleVersion(String ruleId, int version, String kind, String 
                              List<PolicyApproval> approvals) {
         this(ruleId, version, kind, dataClass, action, platformId, hostSuffixes, apiHosts, loginHosts, enforceFailClosed,
             mode, rolloutStage, status, source, authorFingerprint, reasonCode, createdAt, activatedAt, supersededAt,
-            approvals, SCOPE_ANY, List.of(), null, null, null, null);
+            approvals, SCOPE_ANY, List.of(), null, null, null, null, null);
     }
 
     /** {@code rule@vN}: the ledger's row key and the snapshot's rule-version reference. */

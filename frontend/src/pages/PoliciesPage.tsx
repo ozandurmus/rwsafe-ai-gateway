@@ -67,8 +67,8 @@ export function baseline(rule: Rule): RuleVersion | undefined {
 }
 
 /**
- * The active group-scoped versions (snapshot scopedRules, enforce and monitor), oldest first. An active withdrawal
- * request only marks a withdrawn scope (its groups follow everyone's rule) and is left out.
+ * The active group-scoped versions (snapshot scopedRules, enforce and monitor), oldest first. A withdrawn version is not
+ * active; an active V3 withdrawal request kept as history only marks a withdrawn scope and is left out.
  */
 export function scopedVersions(rule: Rule): RuleVersion[] {
   return rule.versions
@@ -76,7 +76,7 @@ export function scopedVersions(rule: Rule): RuleVersion[] {
     .reverse();
 }
 
-/** PR 21 Q-41: a version that asks to withdraw another (it names the version it withdraws). */
+/** A V3 withdrawal request kept as history (it names the version it withdrew); none is created since PO decision Q-41. */
 export function isWithdrawalRequest(v: RuleVersion): boolean {
   return v.withdrawal?.withdrawsVersion != null;
 }
@@ -272,7 +272,7 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
   const { me } = useAuth();
   const canDraft = !!me && !me.masked && me.roles.includes('security_admin');
   const [withdrawing, setWithdrawing] = useState<number | null>(null);
-  const [withdrawSent, setWithdrawSent] = useState<number | null>(null);
+  const [withdrawn, setWithdrawn] = useState<number | null>(null);
   // Q-41: drafts for different scopes may wait side by side; each has its own approval steps.
   const pendings = rule.versions.filter((v) => v.status === 'pending');
   const newestPending = pendings[0];
@@ -283,9 +283,9 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
           <Typography variant="h6" component="h2" gutterBottom>
             {ruleName(i18n, rule)} · {t('policies.versions')}
           </Typography>
-          {withdrawSent !== null && (
-            <Alert severity="success" sx={{ mb: 1 }} onClose={() => setWithdrawSent(null)}>
-              {t('policies.withdrawSent', { version: withdrawSent })}
+          {withdrawn !== null && (
+            <Alert severity="success" sx={{ mb: 1 }} onClose={() => setWithdrawn(null)}>
+              {t('policies.withdrawDone', { version: withdrawn })}
             </Alert>
           )}
           <Box component="ul" sx={{ m: 0, pl: 2.5, display: 'grid', gap: 0.5 }}>
@@ -316,6 +316,16 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
                     />
                   )}
                   {v.inSnapshot && <Chip size="small" sx={{ ml: 1 }} label={t('policies.inSnapshot')} />}
+                  {v.status === 'withdrawn' && v.withdrawal?.withdrawnBy && (
+                    <>
+                      <br />
+                      {t('policies.withdrawnLine', {
+                        time: i18n.fmt.time(v.withdrawal.withdrawnAt),
+                        who: v.withdrawal.withdrawnBy,
+                        reason: v.withdrawal.reason ?? '—',
+                      })}
+                    </>
+                  )}
                   {canDraft &&
                     v.status === 'active' &&
                     v.scope.kind === 'GROUPS' &&
@@ -326,7 +336,7 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
                         color="warning"
                         sx={{ ml: 1 }}
                         onClick={() => {
-                          setWithdrawSent(null);
+                          setWithdrawn(null);
                           setWithdrawing(v.version);
                         }}
                       >
@@ -338,9 +348,9 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
                   <WithdrawForm
                     version={v}
                     onCancel={() => setWithdrawing(null)}
-                    onSent={(request) => {
+                    onDone={(done) => {
                       setWithdrawing(null);
-                      setWithdrawSent(request);
+                      setWithdrawn(done);
                       onChanged();
                     }}
                   />
@@ -362,17 +372,18 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
 }
 
 /**
- * PR 21 Q-41: the request to withdraw an active group-scoped version, with a required reason and a confirmation step in
- * the page. The request then waits for the same two approvals as an activation; until then the version keeps applying.
+ * PO decision Q-41: one security administrator withdraws an active group-scoped version, with a required reason and a
+ * confirmation step in the page. It takes effect at once (no approvals): the groups follow everyone's rule from the next
+ * snapshot; the version and its history stay.
  */
 function WithdrawForm({
   version,
   onCancel,
-  onSent,
+  onDone,
 }: {
   version: RuleVersion;
   onCancel: () => void;
-  onSent: (requestVersion: number) => void;
+  onDone: (withdrawnVersion: number) => void;
 }) {
   const { t } = useI18n();
   const [reason, setReason] = useState('');
@@ -386,8 +397,8 @@ function WithdrawForm({
     setBusy(true);
     setError(null);
     try {
-      const request = await api.requestWithdrawal(version.ruleId, version.version, trimmed);
-      onSent(request.version);
+      const done = await api.withdrawScope(version.ruleId, version.version, trimmed);
+      onDone(done.version);
     } catch (e) {
       setError(e);
       setConfirming(false);
@@ -499,18 +510,12 @@ function ApprovalSteps({ version, onChanged }: { version: RuleVersion | undefine
           {t('approval.title')}
         </Typography>
         <Typography variant="body2" color="text.secondary" gutterBottom>
-          {isWithdrawalRequest(version)
-            ? t('approval.forWithdrawal', {
-                version: version.version,
-                target: version.withdrawal?.withdrawsVersion ?? '—',
-                scope: scopeText(i18n, version.scope),
-              })
-            : t('approval.forVersion', {
-                version: version.version,
-                action: valueOf(i18n, version),
-                mode: modeLabel(i18n, version.mode),
-                scope: scopeText(i18n, version.scope),
-              })}
+          {t('approval.forVersion', {
+            version: version.version,
+            action: valueOf(i18n, version),
+            mode: modeLabel(i18n, version.mode),
+            scope: scopeText(i18n, version.scope),
+          })}
         </Typography>
         {error !== null && <ErrorPanel error={error} />}
         <Stepper activeStep={activeStep} orientation="vertical" aria-label={t('approval.title')}>

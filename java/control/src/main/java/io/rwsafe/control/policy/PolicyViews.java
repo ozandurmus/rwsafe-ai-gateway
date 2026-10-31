@@ -48,9 +48,10 @@ public final class PolicyViews {
     }
 
     /**
-     * A withdrawal (PR 21 Q-41): on a request, the version it withdraws and the reason; on a withdrawn version, when.
+     * A withdrawal (PO decision Q-41): on a withdrawn version, when, the administrator's pseudonym and the reason given;
+     * on a V3 withdrawal request (history only), the version it withdrew and its reason.
      */
-    public record WithdrawalView(Integer withdrawsVersion, String reason, Instant withdrawnAt) {
+    public record WithdrawalView(Integer withdrawsVersion, String reason, Instant withdrawnAt, String withdrawnBy) {
     }
 
     /** One rule version; {@code inSnapshot} is true when the latest issued snapshot compiled it. */
@@ -65,7 +66,7 @@ public final class PolicyViews {
         static VersionView of(PolicyRuleVersion v, Set<String> inSnapshot) {
             PolicyRuleVersion.Retirement r = v.retirement();
             WithdrawalView w = v.withdrawsVersion() == null && v.withdrawnAt() == null ? null
-                : new WithdrawalView(v.withdrawsVersion(), v.withdrawalReason(), v.withdrawnAt());
+                : new WithdrawalView(v.withdrawsVersion(), v.withdrawalReason(), v.withdrawnAt(), v.withdrawnBy());
             return new VersionView(v.ruleId(), v.version(), v.action(), v.enforceFailClosed(), v.hostSuffixes(),
                 v.apiHosts(), v.loginHosts(), v.mode(), v.rolloutStage(), new ScopeView(v.scopeKind(), v.scopeGroups()),
                 v.status(), v.source(), v.authorFingerprint(), v.reasonCode(), v.createdAt(), v.activatedAt(),
@@ -82,7 +83,7 @@ public final class PolicyViews {
                 m.mask(reasonCode), createdAt, activatedAt, supersededAt, retirement == null ? null
                     : new RetirementView(retirement.retiredAt(), retirement.retiredBy(), withheld(retirement.reason())),
                 withdrawal == null ? null : new WithdrawalView(withdrawal.withdrawsVersion(),
-                    withheld(withdrawal.reason()), withdrawal.withdrawnAt()),
+                    withheld(withdrawal.reason()), withdrawal.withdrawnAt(), withdrawal.withdrawnBy()),
                 approvals, inSnapshot);
         }
     }

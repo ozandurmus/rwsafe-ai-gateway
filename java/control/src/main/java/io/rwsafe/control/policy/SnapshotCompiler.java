@@ -48,8 +48,8 @@ public final class SnapshotCompiler implements PolicySnapshotStore.Compiler {
             .filter(v -> "active".equals(v.status()) && "enforce".equals(v.mode()) && "all".equals(v.rolloutStage())
                 && !v.scopedToGroups() && !v.withdrawalRequest())
             .sorted(Comparator.comparing(PolicyRuleVersion::ruleId)).toList();
-        // A withdrawal request (Q-41) is the marker of a withdrawn scope: it is never compiled, so those groups follow
-        // the ANY baseline.
+        // A withdrawn version (Q-41) is not active and never compiled, so its groups follow the ANY baseline; a V3
+        // withdrawal request kept as history is never compiled either.
         List<PolicyRuleVersion> scoped = active.stream()
             .filter(v -> "active".equals(v.status()) && "all".equals(v.rolloutStage()) && v.scopedToGroups()
                 && !v.withdrawalRequest())
