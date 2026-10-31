@@ -32,6 +32,10 @@ spring:
       fail-on-null-for-primitives: true
   mvc:
     throw-exception-if-no-handler-found: true
+  # No classpath static content: the admin SPA is served only from rwsafe.ui.dir (AdminUi).
+  web:
+    resources:
+      add-mappings: false
 
 server:
   port: ${RWSAFE_HTTP_PORT:8080}
@@ -84,7 +88,13 @@ rwsafe:
   privacy:
     hmac-key-file: ${RWSAFE_PRIVACY_HMAC_KEY_FILE:/run/secrets/rwsafe-privacy-hmac-key/key}
     estate-dictionary-file: ${RWSAFE_ESTATE_DICTIONARY_FILE:/etc/rwsafe/estate-dictionary.txt}
+  # The built admin SPA (AdminUi): the control image puts it in /app/ui; a local run points RWSAFE_UI_DIR at
+  # frontend/dist or serves no UI (the API answers either way).
+  ui:
+    dir: ${RWSAFE_UI_DIR:/app/ui}
   identity:
+    # Secure session and CSRF cookies (the default, and the only deploy setting). `false` is for a plain-http local run
+    # only and needs a session cookie name without the __Host-/__Secure- prefix; CookiePolicy refuses any other mix.
     cookie-secure: ${RWSAFE_COOKIE_SECURE:true}
     break-glass:
       enabled: ${RWSAFE_BREAK_GLASS_ENABLED:false}

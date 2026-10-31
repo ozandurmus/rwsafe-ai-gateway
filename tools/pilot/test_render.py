@@ -300,15 +300,26 @@ class BuildTarget(unittest.TestCase):
                 self.assertNotEqual(render.check_build(objects, "acme", _CONTRACTS["acme"]), [])
 
     # PR 33 review D-03: the proxy reaches only the build stage, as build arguments, never a runtime layer.
+    # The control image also builds the admin UI in an `AS ui` stage first, whose output the Gradle stage copies into
+    # /out/app/ui/; the runtime stage still copies one tree from the `build` stage only.
     def test_containerfiles_keep_the_proxy_in_the_build_stage(self):
-        for name in ("dataplane", "control"):
+        for name, stages in (("dataplane", ["build"]), ("control", ["ui", "build"])):
             with self.subTest(name):
                 lines = [line.strip() for line in (mc.REPO_ROOT / f"deploy/images/{name}.Containerfile")
                          .read_text().splitlines() if line.strip() and not line.strip().startswith("#")]
                 froms = [i for i, line in enumerate(lines) if line.startswith("FROM ")]
-                self.assertEqual(len(froms), 2)
-                self.assertTrue(lines[froms[0]].endswith(" AS build"))
-                build, runtime = lines[froms[0]:froms[1]], lines[froms[1]:]
+                self.assertEqual(len(froms), len(stages) + 1)
+                for i, stage in enumerate(stages):
+                    self.assertTrue(lines[froms[i]].endswith(f" AS {stage}"), lines[froms[i]])
+                build, runtime = lines[froms[len(stages) - 1]:froms[-1]], lines[froms[-1]:]
+                if "ui" in stages:
+                    ui = lines[froms[0]:froms[1]]
+                    for key in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"):
+                        self.assertIn(f"ARG {key}", ui)
+                    self.assertEqual([line for line in build if line.startswith("COPY --from=")],
+                                     ["COPY --from=ui /out/ui/ /out/app/ui/"])
+                    self.assertTrue(any("npm ci --ignore-scripts" in line for line in ui), "npm ci, lockfile only")
+                    self.assertFalse(any(line.startswith("RUN npm install") for line in ui), "never npm install")
                 for key in render.PROXY_ARGS:
                     self.assertIn(f"ARG {key}", build)
                     self.assertFalse(any(key in line for line in runtime), f"{key} in the runtime stage")
