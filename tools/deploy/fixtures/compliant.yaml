@@ -94,6 +94,49 @@ spec:
     - to: [{ podSelector: { matchLabels: { app.kubernetes.io/name: fixture-app } } }]
       ports: [{ protocol: TCP, port: 8080 }]
 ---
+# A probe CronJob (the pilot's synthetic ICAP probe has this shape): its pod follows every pod rule and counts in the
+# quota (one pod per run, parallelism 1).
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: fixture-probe, namespace: fixture }
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        metadata: { labels: { app.kubernetes.io/name: fixture-probe } }
+        spec:
+          serviceAccountName: fixture-app
+          priorityClassName: fixture-class
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+          containers:
+            - name: probe
+              image: registry.example.invalid/fixture-app@sha256:1111111111111111111111111111111111111111111111111111111111111111
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { cpu: 200m, memory: 128Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: fixture-probe, namespace: fixture }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: fixture-probe } }
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to: [{ podSelector: { matchLabels: { app.kubernetes.io/name: fixture-app } } }]
+      ports: [{ protocol: TCP, port: 8080 }]
+---
 apiVersion: v1
 kind: ResourceQuota
 metadata: { name: fixture-quota, namespace: fixture }

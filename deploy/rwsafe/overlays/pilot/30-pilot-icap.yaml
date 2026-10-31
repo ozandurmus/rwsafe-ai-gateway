@@ -46,11 +46,15 @@ metadata:
   name: rwsafe-icap
   namespace: rwsafe
 spec:
+  # In-cluster ICAP on 1344 from the ICAP e2e Job and the synthetic probe (60-icap-probe.yaml) only.
   ingress:
     - from:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: rwsafe-icap-e2e
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rwsafe-icap-probe
       ports:
         - { protocol: TCP, port: 1344 }
 ---

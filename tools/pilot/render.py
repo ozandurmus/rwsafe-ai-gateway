@@ -21,7 +21,7 @@ Standard library only; needs kubectl (or kustomize) on PATH.
 
 Usage: python3 -B tools/pilot/render.py [--target pilot|k3s|build] [--product NAME]
            [--dataplane-digest sha256:<64 hex>] [--control-digest sha256:<64 hex>] [--kinds Kind,Kind]
-           [--phase all|control|icap] [--output FILE]
+           [--phase all|control|icap|servicelb] [--output FILE]
        exit 0 rendered, 1 refused (the reason is printed on stderr), 2 usage
 """
 from __future__ import annotations
@@ -50,27 +50,37 @@ class Refused(Exception):
     pass
 
 
+def load_balancer(obj: dict) -> bool:
+    return obj.get("kind") == "Service" and (obj.get("spec") or {}).get("type") == "LoadBalancer"
+
+
 def icap_object(obj: dict, product: str) -> bool:
-    """True for an object of the ICAP step (PILOT_RUNBOOK.md step 12): the ICAP engine's Deployment, Services, PDB,
-    ConfigMap, ServiceAccount and NetworkPolicies, and every LoadBalancer Service (the one that opens 1344 on the node).
-    PR 33 review D-05: the control step (9) applies everything else, before the firewall rule of step 11 exists."""
+    """True for an object of the ICAP steps (PILOT_RUNBOOK.md steps 9b and 12): the ICAP engine's Deployment, Services,
+    PDB, ConfigMap, ServiceAccount and NetworkPolicies, the synthetic probe (`<product>-icap-probe`), and every
+    LoadBalancer Service (the one that opens 1344 on the node). PR 33 review D-05: the control step (9) applies
+    everything else, before the firewall rule of step 11 exists."""
     md = obj.get("metadata") or {}
     labels = md.get("labels") or {}
     return (labels.get("app.kubernetes.io/component") == "icap"
             or str(labels.get("app.kubernetes.io/name", "")).startswith(f"{product}-icap")
             or str(md.get("name", "")).startswith(f"{product}-icap")
-            or (obj.get("kind") == "Service" and (obj.get("spec") or {}).get("type") == "LoadBalancer"))
+            or load_balancer(obj))
 
 
 def select_phase(objects: list[dict], product: str, phase: str) -> list[dict]:
-    """`control`: every object but the ICAP step's; `icap`: only those; `all`: everything."""
+    """`control`: every object but the ICAP steps' (step 9); `icap`: the ICAP engine, its ClusterIP Service and the
+    synthetic probe, without any LoadBalancer Service, so 1344 stays closed on the node (step 9b); `servicelb`: only the
+    LoadBalancer Services, which open 1344 on the node once the firewall rule of step 11 is verified (step 12); `all`:
+    everything. The three phases are disjoint and together are `all` (tools/pilot/test_render.py)."""
     if phase == "control":
         out = [o for o in objects if not icap_object(o, product)]
-        if any(o.get("kind") == "Service" and (o.get("spec") or {}).get("type") == "LoadBalancer" for o in out):
+        if any(load_balancer(o) for o in out):
             raise Refused("the control phase would hold a LoadBalancer Service")
         return out
     if phase == "icap":
-        return [o for o in objects if icap_object(o, product)]
+        return [o for o in objects if icap_object(o, product) and not load_balancer(o)]
+    if phase == "servicelb":
+        return [o for o in objects if load_balancer(o)]
     return objects
 
 
@@ -295,8 +305,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dataplane-digest")
     ap.add_argument("--control-digest")
     ap.add_argument("--kinds", help="comma-separated kinds to keep (default: every object)")
-    ap.add_argument("--phase", choices=("all", "control", "icap"), default="all",
-                    help="pilot and k3s only: `control` leaves out the ICAP step's objects (PILOT_RUNBOOK.md step 9)")
+    ap.add_argument("--phase", choices=("all", "control", "icap", "servicelb"), default="all",
+                    help="pilot and k3s only: `control` leaves out the ICAP objects (PILOT_RUNBOOK.md step 9), `icap` "
+                         "is them without the LoadBalancer (step 9b), `servicelb` the LoadBalancer only (step 12)")
     ap.add_argument("--output", type=Path, help="write here instead of stdout")
     args = ap.parse_args(argv)
     product = args.product or mc.default_product()

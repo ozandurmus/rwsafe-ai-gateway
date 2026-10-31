@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import io
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -22,6 +23,7 @@ CONTRACTS = {"secrets": {"fixture-secret": {"keys": ["value"]}},
              "configMaps": {"fixture-estate": {"keys": ["names"]}}}
 _COMPLIANT = mc.to_objects((FIXTURES / "compliant.yaml").read_text())
 _VIOLATING = mc.to_objects((FIXTURES / "violating.yaml").read_text())
+CONTRACTS_FILE_JSON = json.loads(mc.DEFAULT_CONTRACTS.read_text())
 
 
 def compliant() -> list[dict]:
@@ -38,6 +40,18 @@ def pod(objects: list[dict]) -> dict:
 
 def container(objects: list[dict]) -> dict:
     return pod(objects)["containers"][0]
+
+
+def cronjob(objects: list[dict]) -> dict:
+    return next(o for o in objects if o["kind"] == "CronJob")
+
+
+def probe_pod(objects: list[dict]) -> dict:
+    return mc.pod_template(cronjob(objects))[1]
+
+
+def probe_container(objects: list[dict]) -> dict:
+    return probe_pod(objects)["containers"][0]
 
 
 class CompliantFixture(unittest.TestCase):
@@ -114,8 +128,32 @@ class Mutations(unittest.TestCase):
 
     def test_quota_counts_the_surge_pod(self):
         objects = compliant()
-        container(objects)["resources"]["limits"]["cpu"] = "700m"  # 3 pods x 700m = 2.1 > 2
+        container(objects)["resources"]["limits"]["cpu"] = "700m"  # 3 pods x 700m + the probe's 200m = 2.3 > 2
+        self.assertFails(objects, "limits.cpu needs 2.3")
+
+    def test_cronjob_pod_counts_in_the_quota(self):
+        objects = compliant()
+        self.assertEqual(mc.check(objects, CONTRACTS)[0], [])
+        probe_container(objects)["resources"]["limits"]["cpu"] = "600m"  # 3 x 500m + 600m = 2.1 > 2
         self.assertFails(objects, "limits.cpu needs 2.1")
+
+    def test_cronjob_pod_follows_the_pod_rules(self):
+        for mutate, fragment in (
+                (lambda o: probe_pod(o).pop("priorityClassName"), "no priorityClassName"),
+                (lambda o: probe_pod(o).update(automountServiceAccountToken=True), "automountServiceAccountToken"),
+                (lambda o: probe_container(o)["securityContext"].update(readOnlyRootFilesystem=False),
+                 "readOnlyRootFilesystem is not true"),
+                (lambda o: probe_container(o)["resources"].pop("limits"), "no limits.cpu"),
+                (lambda o: probe_container(o).update(image="registry.example.invalid/fixture-app:1.0"),
+                 "not pinned by digest"),
+                (lambda o: probe_pod(o).update(securityContext={"runAsNonRoot": True}),
+                 "seccomp profile is not RuntimeDefault"),
+                (lambda o: cronjob(o)["spec"]["jobTemplate"]["spec"]["template"]["metadata"]["labels"].update(
+                    {"app.kubernetes.io/name": "fixture-other"}), "no NetworkPolicy selects this workload's pods")):
+            with self.subTest(fragment):
+                objects = compliant()
+                mutate(objects)
+                self.assertFails(objects, fragment)
 
     def test_limitrange_maximum(self):
         objects = compliant()
@@ -199,7 +237,7 @@ class Mutations(unittest.TestCase):
         pod(objects)["initContainers"] = [dict(copy.deepcopy(container(objects)), name="init",
                                                resources={"requests": {"cpu": "400m", "memory": "128Mi"},
                                                           "limits": {"cpu": "700m", "memory": "512Mi"}})]
-        self.assertFails(objects, "limits.cpu needs 2.1")
+        self.assertFails(objects, "limits.cpu needs 2.3")
 
     def test_volume_claim_templates_count_in_the_quota(self):
         objects = compliant()
@@ -615,15 +653,33 @@ class CommittedOverlay(unittest.TestCase):
                 self.assertIn("product acme", out.getvalue())
                 self.assertNotIn("NetworkPolicy/rwsafe/", out.getvalue())
 
-    # The pilot needs no directory or SIEM placeholder: with --release only the two image digests remain.
+    # The pilot needs no directory or SIEM placeholder: with --release only the image digests remain (the control
+    # plane, the ICAP engine and the synthetic probe, which runs the data plane image).
     def test_pilot_overlay_release_fails_only_on_the_image_digests(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             rc = mc.main(["--overlay", str(mc.REPO_ROOT / "deploy/rwsafe/overlays/pilot"), "--release"])
         self.assertEqual(rc, 1)
         fails = [line for line in out.getvalue().splitlines() if line.startswith("FAIL")]
-        self.assertEqual(len(fails), 2, fails)
+        self.assertEqual(len(fails), 3, fails)
         self.assertTrue(all("placeholder digest in a release render" in f for f in fails), fails)
+        self.assertTrue(any("CronJob/rwsafe/rwsafe-icap-probe" in f for f in fails), fails)
+
+    # The synthetic probe is inside the pilot quota under both product names: it passes as committed, and a probe
+    # whose CPU limit no longer fits beside the workloads and their surge pods fails the quota rule.
+    def test_pilot_quota_counts_the_probe_under_both_names(self):
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays/pilot")
+                objects = mc.rename_objects(mc.to_objects(text), product)
+                contracts = mc.rename_contracts(CONTRACTS_FILE_JSON, product)
+                failures, _ = mc.check(objects, contracts, product=product)
+                self.assertEqual(failures, [])
+                probe = next(o for o in objects if mc.ident(o) == f"CronJob/{product}/{product}-icap-probe")
+                mc.containers(mc.pod_template(probe)[1])[0]["resources"]["limits"]["cpu"] = "1"
+                failures, _ = mc.check(objects, contracts, product=product)
+                self.assertTrue(any(f.startswith(f"ResourceQuota/{product}/{product}-compute: limits.cpu needs")
+                                    for f in failures), failures)
 
 
 if __name__ == "__main__":
