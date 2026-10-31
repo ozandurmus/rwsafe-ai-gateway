@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -145,19 +146,20 @@ public final class IcapProbe {
         String report = env.getOrDefault("RWSAFE_PROBE_REPORT", DEFAULT_REPORT);
         StringBuilder out = new StringBuilder();
         int code;
-        try {
-            URI target = URI.create(env.getOrDefault("RWSAFE_PROBE_TARGET", DEFAULT_TARGET));
-            if (!"icap".equals(target.getScheme()) || target.getHost() == null) {
-                throw new IllegalArgumentException("RWSAFE_PROBE_TARGET is not icap://<host>:<port>");
-            }
-            int port = target.getPort() > 0 ? target.getPort() : 1344;
-            int timeout = Integer.parseInt(env.getOrDefault("RWSAFE_PROBE_TIMEOUT_MILLIS", "10000"));
-            List<Result> results = run(target.getHost(), port, timeout, new Random());
+        URI target = target(env.getOrDefault("RWSAFE_PROBE_TARGET", DEFAULT_TARGET));
+        int timeout = timeout(env.getOrDefault("RWSAFE_PROBE_TIMEOUT_MILLIS", "10000"));
+        // PR 40 review D-03: a refusal names a fixed reason token, never the configured value or an exception text.
+        if (target == null) {
+            out.append("probe result: FAIL (configuration: invalid_target)\n");
+            code = 1;
+        } else if (timeout <= 0) {
+            out.append("probe result: FAIL (configuration: invalid_timeout)\n");
+            code = 1;
+        } else {
+            List<Result> results = run(target.getHost(), target.getPort() > 0 ? target.getPort() : 1344, timeout,
+                new Random());
             out.append(report(results));
             code = results.stream().allMatch(Result::passed) ? 0 : 1;
-        } catch (IllegalArgumentException e) {
-            out.append("probe result: FAIL (configuration: ").append(e.getMessage()).append(")\n");
-            code = 1;
         }
         try {
             Files.writeString(Path.of(report), out.toString(), StandardCharsets.UTF_8);
@@ -165,6 +167,28 @@ public final class IcapProbe {
             code = 1;
         }
         return code;
+    }
+
+    /** {@code icap://<host>[:<port>]}, or null for anything else (the value itself is never reported). */
+    static URI target(String value) {
+        try {
+            URI u = new URI(value);
+            boolean ok = "icap".equals(u.getScheme()) && u.getHost() != null && u.getPort() <= 65535
+                && u.getUserInfo() == null && u.getQuery() == null && u.getFragment() == null;
+            return ok ? u : null;
+        } catch (URISyntaxException e) {
+            return null;
+        }
+    }
+
+    /** The per-connection timeout in milliseconds, 1 to 60000, or -1 for anything else. */
+    static int timeout(String value) {
+        try {
+            int t = Integer.parseInt(value.strip());
+            return t >= 1 && t <= 60_000 ? t : -1;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     /** OPTIONS, then every scenario on its own connection; a connection failure is an ERROR result, never a throw. */
@@ -369,7 +393,7 @@ public final class IcapProbe {
             if (offset < 0 || offset > MAX_HEAD) {
                 throw new IOException("encapsulated head out of bounds");
             }
-            String httpHead = new String(in.readNBytes(offset), StandardCharsets.ISO_8859_1);
+            String httpHead = new String(exactly(offset), StandardCharsets.ISO_8859_1);
             if (last.startsWith("null-body")) {
                 return new Response(status, head, httpHead, new byte[0]);
             }
@@ -385,9 +409,18 @@ public final class IcapProbe {
                 if (n < 0 || body.size() + n > MAX_BODY) {
                     throw new IOException("encapsulated body out of bounds");
                 }
-                body.writeBytes(in.readNBytes(n));
+                body.writeBytes(exactly(n));
                 line(false);
             }
+        }
+
+        /** Exactly {@code n} bytes; a short read (the engine closed early) is an error, never a truncated answer. */
+        private byte[] exactly(int n) throws IOException {
+            byte[] b = in.readNBytes(n);
+            if (b.length != n) {
+                throw new IOException("unexpected end of stream");
+            }
+            return b;
         }
 
         /** A CRLF-terminated line, or with {@code head} the whole head up to and including the empty line. */

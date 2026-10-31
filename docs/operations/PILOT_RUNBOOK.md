@@ -3,7 +3,7 @@
 **Status:** DRAFT operator procedure (2026-10-31) for the first pilot. It applies the ratified
 `DEPLOY_AND_SHARED_HOST_RUNBOOK.md` (sections 1-4 and 7) to the pilot overlay; where it differs, the difference is named.
 The Turkish copy-paste checklist of the Product Owner's remaining steps (10 if not yet done, 11 with its one-line check,
-15-17, the one-step undo, and what to tell the orchestrator after each) is `PILOT_ADIMLAR.md`; step numbers match.
+14 (the admin UI, with the probe's pseudonym), 15-17, the one-step undo, and what to tell the orchestrator after each) is `PILOT_ADIMLAR.md`; step numbers match.
 
 **Scope.** The corporate web proxy (Broadcom ProxySG, SGOS 7.4.15.x, three appliances, PHASE0_PROXYSG_RECORD F-1)
 sends the AI-category requests of **one test user** to the ICAP engine over **plain ICAP on 1344** (decision Q-28,
@@ -363,9 +363,20 @@ worth keeping, so step 18 and a fresh install is the reset (a password-reset com
 
 ServiceLB answers on the node's 1344 for every source, and plain ICAP has no peer authentication, so the ProxySG
 allowlist (H-1) must be in place before step 12. The rule lives in its **own** nftables table; neXus's table
-`inet nexus_host` is neither read nor changed. Fill the three addresses on the host only:
+`inet nexus_host` is neither read nor changed. Fill the three addresses on the host only; nothing else in the block is
+edited. The block derives the product name itself from `~/rwsafe/deploy/rwsafe/product.env` and runs in a subshell
+with `set -euo pipefail` (PR 40 review D-04): it refuses to run when `~/rwsafe` or the name is missing or the name is not
+a product name (an empty name would otherwise create a table `inet _pilot`), and stops at the first failing command
+without closing the PO's terminal.
 
 ```bash
+(
+set -euo pipefail
+cd ~/rwsafe
+PRODUCT="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)"
+case "${PRODUCT}" in
+  ""|*[!a-z0-9-]*) echo "stopped: no valid PRODUCT in ~/rwsafe/deploy/rwsafe/product.env"; exit 1 ;;
+esac
 T="${PRODUCT//-/_}_pilot"   # nftables names take no hyphen: rwsafe_pilot
 sudo nft -f - <<EOF
 table inet ${T} {}
@@ -383,24 +394,35 @@ table inet ${T} {
   }
 }
 EOF
-sudo nft -j list table inet "${T}" | tools/pilot/verify_firewall.sh --table
+echo "table ${T} written"
+)
 ```
 
-Expected: no output from the first command; then (counts only, never an address):
+The one-line check (read only; it derives the name the same way and may be run again at any time):
+
+```bash
+(set -euo pipefail; cd ~/rwsafe; P="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)"; test -n "${P}"; sudo nft -j list table inet "${P//-/_}_pilot" | tools/pilot/verify_firewall.sh --table)
+```
+
+Expected: `table rwsafe_pilot written` from the block; then from the check (counts only, never an address):
 
 ```text
 firewall table check, product rwsafe
-table          ok   inet rwsafe_pilot present
-set            ok   icap_clients: type ipv4_addr, 3 element(s) (values not shown; the pilot expects 3)
-chain          ok   prerouting: type filter, hook prerouting, priority -150, policy accept
-rules          ok   2 rule(s) in prerouting; 1344 drop to local addresses: IPv4 outside @icap_clients 1, IPv6 1 (expected 1, 1)
+objects        ok   0 object(s) of another kind than table, set, chain, rule
+table          ok   inet rwsafe_pilot: 1 table(s) in the input, exactly 1 expected
+set            ok   icap_clients: 1 set(s), 3 element(s), all single addresses (values not shown; exactly 3 single IPv4 addresses expected)
+chain          ok   1 chain(s); exactly 1 expected: prerouting, type filter, hook prerouting, priority -150, policy accept
+rules          ok   2 rule(s); exactly 2 expected, each equal to step 11 in every field and operator: IPv4 1, IPv6 1, other 0
 result: PASS
 ```
 
-Running the first command again replaces the table's content (the empty `table` line and `flush` make it idempotent; no
-duplicate rules). The check reads the table as JSON and fails loudly on a shape it does not recognise (UNVERIFIED
-2026-10-31 on HOST-A's nft release; an `unrecognised nft JSON` line means: stop and report, never edit the rule to fit).
-The PO tells the orchestrator only the `result:` line and the element count.
+Running the block again replaces the table's content (the empty `table` line and `flush` make it idempotent; no
+duplicate rules). The check passes only the exact table above (PR 40 review D-02): exactly three single IPv4 addresses
+(no prefix or range), the one chain, and exactly the two rules with every field, expression and operator as written
+(every match `==`, `ct state new` printed by nft as `in`; the only negation is the designed `ip saddr != @icap_clients`);
+an extra object, chain, rule, expression or field fails, and so does a shape it does not recognise (UNVERIFIED
+2026-10-31 on HOST-A's nft release; an `unrecognised nft JSON` or `other 1` line means: stop and report, never edit the
+rule to fit). The PO tells the orchestrator only the `result:` line and the element count.
 
 **11.3 (the orchestrator) Verify that pod traffic still flows and 1344 is still closed.** Right after the PO's check,
 with the ICAP engine and the probe of step 9b in place:
@@ -416,7 +438,7 @@ Expected:
 firewall verification, product rwsafe
 table          not read here (root only): the PO's one-line check of step 11 (--table) proves it
 icap pods      ok   2/2 ready
-through svc    ok   probe Job (now, Complete): PASS (7/7 as expected)
+through svc    ok   probe Job (now), Job Complete: PASS (7/7 as expected)
 node 1344      ok   no LoadBalancer Service, no ServiceLB pod, no listening socket
 node 1344      ok   a connection from this host to the node address on 1344 is refused (nothing serves it yet)
 result: PASS
@@ -424,8 +446,9 @@ result: PASS
 
 `through svc` is a pod reaching the ClusterIP Service on 1344 through the prerouting hook the rule sits on: if the rule
 also matched pod or Service traffic (for example with Service addresses bound to a local interface), the probe fails
-here, before any proxy traffic. Then delete the table (`sudo nft delete table inet "${T}"`, the PO) and report. With
-`--latest`, use a probe run that started after the PO's check (the line shows its time). Optional cross-check by the PO
+here, before any proxy traffic. Then the PO deletes the table (the undo below) and reports. `--latest` judges the newest
+probe Job by creation time whatever its outcome (PR 40 review D-01): a Failed or unfinished newest Job is a FAIL, never
+hidden by an older PASS; use it only when that Job was created after the PO's check (the line shows its time). Optional cross-check by the PO
 from the workstation (not a ProxySG appliance): `nc -vz -w 3 <node-address> 1344` must **time out** (dropped by the
 rule); "connection refused" means the rule does not match on this host: stop.
 
@@ -446,7 +469,8 @@ Why exactly this rule (PR 33 review D-01, P0):
 The rule is not persistent: **after a host reboot run this step again before the proxy sends traffic** (until then:
 `kubectl -n "${PRODUCT}" scale deploy "${PRODUCT}-icap" --replicas=0`, and the proxy denies the test user's AI requests,
 fail-closed). UNVERIFIED (2026-10-31) on HOST-A's kernel and k3s release, proved by step 11.3 and step 13 in both
-directions. Undo: `sudo nft delete table inet "${T}"`.
+directions. Undo (the PO; it derives the name the same way):
+`(set -euo pipefail; cd ~/rwsafe; P="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)"; test -n "${P}"; sudo nft delete table inet "${P//-/_}_pilot")`.
 
 ## 12. HOST CHANGE H9: the ServiceLB Service (opens 1344 on the node)
 
@@ -499,7 +523,7 @@ Then prove the firewall of step 11 in both directions (PR 33 review D-01):
    (`tools/pilot/verify_firewall.sh --latest`), the `icap pod` lines above count `/ready 200`, and after step 15 the
    proxy's health check is healthy: the ProxySG reaches the engine only through the ServiceLB pod's forward to an ICAP pod on 1344, a
    pod-to-pod packet through the same prerouting hook. If the proxy's health check fails while the ICAP pods are ready,
-   delete the table (`sudo nft delete table inet "${T}"`) and report: the rule caught pod traffic.
+   delete the table (the undo of step 11) and report: the rule caught pod traffic.
 
 The ICAP OPTIONS line above is sent from the host itself, which the prerouting rule does not filter. UNVERIFIED (2026-10-31): the database pod's local `psql` access the events line uses;
 if that line says the query failed, the transactions counts of the ICAP pods and the Traffic screen (step 14) are the
@@ -602,8 +626,10 @@ rule, so nobody else's traffic changes.
    The test user sends a prompt that contains it. **Pass:** the browser shows the product's Turkish block page and the
    AI site never receives the request.
 4. **Events in the admin UI.** In the Traffic screen (step 14): one `REDACT` and one `BLOCK` event, platform `openai` or
-   `claude`, the user shown as a pseudonym `USR-...` (never the name); `tools/pilot/check_pilot.sh` now counts them in
-   its `events` line and the ICAP pods' transaction counts rose.
+   `claude`, the user shown as a pseudonym `USR-...` (never the name). That pseudonym must be the test user's, **not**
+   the probe's of step 9b (PR 40 review D-04): the probe also writes `claude` REDACT and `openai` BLOCK events every 15
+   minutes, so filter the user column by the other pseudonym, or check the two events' time against the trial.
+   `tools/pilot/check_pilot.sh` counts every event, the probe's included, in its `events` line.
 5. **neXus untouched.** Every applied object is in `${PRODUCT}`, `${PRODUCT}-build` or `${PRODUCT}-security`, or is a
    PriorityClass named `${PRODUCT}-*` (`kubectl get priorityclass -l "app.kubernetes.io/part-of=${PRODUCT}" --no-headers
    | wc -l` says `3`); the only host change is the table `<product>_pilot`; neXus's UI works as before (open it as you

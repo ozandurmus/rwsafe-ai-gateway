@@ -5,21 +5,26 @@
 #
 # Two parts, because reading nftables needs root and the orchestrator never holds sudo (AGENTS.md section 8):
 #
-#   --table        the PO's one-line check (root): reads `nft -j list table inet <product>_pilot` on stdin and proves
-#                  the table holds the set icap_clients with N elements (counted, never printed), the prerouting chain
-#                  (filter hook, priority -150, policy accept) and the two drop rules for new TCP 1344 connections to the
-#                  node's own addresses (IPv4 from outside @icap_clients; IPv6 from anywhere). A shape it does not
-#                  recognise fails loudly (AGENTS.md section 7), it is never guessed.
-#                    T="${PRODUCT//-/_}_pilot"; sudo nft -j list table inet "${T}" | tools/pilot/verify_firewall.sh --table
+#   --table        the PO's one-line check (root): reads `nft -j list table inet <product>_pilot` on stdin and passes
+#                  only the exact table of step 11 (PR 40 review D-02): one table, one set icap_clients of type
+#                  ipv4_addr with flags interval and exactly three single IPv4 addresses (counted, never printed; no
+#                  prefix or range), one chain prerouting (filter hook, priority -150, policy accept) and exactly two
+#                  rules whose every field and expression equals step 11's, operators included: every match is `==`
+#                  (`ct state new` is nft's `in`), the one negation is the designed `ip saddr != @icap_clients`. Any
+#                  other object, field, expression or rule fails, and so does a shape it does not recognise (AGENTS.md
+#                  section 7): nothing is guessed.
+#                    (set -euo pipefail; cd ~/rwsafe; P="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)";
+#                     test -n "${P}"; sudo nft -j list table inet "${P//-/_}_pilot" | tools/pilot/verify_firewall.sh --table)
 #
 #   (default)      the orchestrator, as the host user without root:
 #     icap pods    ready / total of the ICAP engine
 #     through svc  one run of the synthetic probe (a Job created from the CronJob <product>-icap-probe, removed by its
 #                  TTL a day later): ICAP OPTIONS and six REQMOD scenarios from a pod to the ClusterIP Service on 1344.
-#                  PASS proves pod traffic to 1344 still flows through the prerouting hook the rule sits on (a rule that
-#                  also matched pod or Service traffic, for example with Service addresses bound locally, drops it here).
-#                  This creates one Job in the product's namespace: a host change, confirmed on its own (Q-45);
-#                  `--latest` reads the newest finished probe Job instead and changes nothing.
+#                  PASS (the Job Complete and its report PASS) proves pod traffic to 1344 still flows through the
+#                  prerouting hook the rule sits on (a rule that also matched pod or Service traffic, for example with
+#                  Service addresses bound locally, drops it here). This creates one Job in the product's namespace: a
+#                  host change, confirmed on its own (Q-45). `--latest` changes nothing: it judges the newest probe Job
+#                  by creation time whatever its outcome (PR 40 review D-01): Failed or not finished is a FAIL.
 #     node 1344    not served yet: no LoadBalancer Service in the namespace, no ServiceLB pod for <product>-icap-lb, no
 #                  listening socket on 1344, and a TCP connection from this host to the node's own address on 1344 is
 #                  refused (the host's own traffic is not filtered by the prerouting rule, so refused means nothing
@@ -46,20 +51,9 @@ good() { say "$1" "ok   $2"; }
 check_table() {
   # The inner program prints one status line per check and exits 1 when any fails; it never prints a set element.
   python3 -I -c '
-import json, sys
+import ipaddress, json, sys
 
 table = sys.argv[1]
-try:
-    doc = json.load(sys.stdin)
-except ValueError:
-    print("table          FAIL the input is not nft JSON (run: sudo nft -j list table inet %s | ...)" % table)
-    print("result: FAIL (see the lines marked FAIL)")
-    sys.exit(1)
-items = doc.get("nftables") if isinstance(doc, dict) else None
-if not isinstance(items, list):
-    print("table          FAIL unrecognised nft JSON (no nftables list): protocol drift, stop and report")
-    print("result: FAIL (see the lines marked FAIL)")
-    sys.exit(1)
 failed = False
 
 def say(name, ok, text):
@@ -67,78 +61,89 @@ def say(name, ok, text):
     failed = failed or not ok
     print("%-14s %s %s" % (name, "ok  " if ok else "FAIL", text))
 
-def objs(kind):
-    return [i[kind] for i in items if isinstance(i, dict) and isinstance(i.get(kind), dict)
-            and i[kind].get("table", table) == table and i[kind].get("family", "inet") == "inet"]
+def finish():
+    print("result: %s" % ("FAIL (see the lines marked FAIL)" if failed else "PASS"))
+    sys.exit(1 if failed else 0)
 
-tables = [t for t in objs("table") if t.get("name") == table]
-say("table", bool(tables), "inet %s %s" % (table, "present" if tables else "missing"))
-others = [t for t in objs("table") if t.get("name") != table]
-if others:
-    say("table", False, "%d other table(s) in the input: list only the pilot table" % len(others))
+try:
+    doc = json.load(sys.stdin)
+except ValueError:
+    say("table", False, "the input is not nft JSON (run: sudo nft -j list table inet %s | ...)" % table)
+    finish()
+items = doc.get("nftables") if isinstance(doc, dict) else None
+if not isinstance(items, list) or not all(isinstance(i, dict) and len(i) == 1 for i in items):
+    say("table", False, "unrecognised nft JSON (no nftables list of single objects): protocol drift, stop and report")
+    finish()
 
-sets = [s for s in objs("set") if s.get("name") == "icap_clients"]
-elements = len((sets[0].get("elem") or [])) if sets else 0
-say("set", bool(sets) and sets[0].get("type") == "ipv4_addr" and elements > 0,
-    "icap_clients: %s, %d element(s) (values not shown; the pilot expects 3)" % (
-        "type " + str(sets[0].get("type")) if sets else "missing", elements))
+KINDS = ("metainfo", "table", "set", "chain", "rule")
+other = [k for i in items for k in i if k not in KINDS]
+say("objects", not other, "%d object(s) of another kind than table, set, chain, rule" % len(other))
+of = {k: [i[k] for i in items if k in i and isinstance(i[k], dict)] for k in KINDS}
 
-chains = [c for c in objs("chain") if c.get("name") == "prerouting"]
-chain_ok = bool(chains) and chains[0].get("type") == "filter" and chains[0].get("hook") == "prerouting" \
-    and chains[0].get("prio") == -150 and chains[0].get("policy") == "accept"
-say("chain", chain_ok, "prerouting: %s" % (
-    "type %s, hook %s, priority %s, policy %s" % tuple(chains[0].get(k) for k in ("type", "hook", "prio", "policy"))
-    if chains else "missing"))
+def fields(obj, expected):
+    """True when the object carries exactly these fields (the handle aside) with these values."""
+    return set(obj) - {"handle"} == set(expected) and all(obj.get(k) == v for k, v in expected.items())
 
-def matches(expr, left_key, test):
-    for e in expr:
+tables = of["table"]
+say("table", len(tables) == 1 and fields(tables[0], {"family": "inet", "name": table}),
+    "inet %s: %d table(s) in the input, exactly 1 expected" % (table, len(tables)))
+
+sets = of["set"]
+elem = sets[0].get("elem") if len(sets) == 1 else None
+def host_v4(e):
+    try:
+        return isinstance(e, str) and ipaddress.ip_address(e).version == 4
+    except ValueError:
+        return False
+plain = isinstance(elem, list) and all(host_v4(e) for e in elem)
+set_ok = len(sets) == 1 and set(sets[0]) - {"handle"} == {"family", "table", "name", "type", "flags", "elem"} \
+    and fields({k: v for k, v in sets[0].items() if k != "elem"},
+               {"family": "inet", "table": table, "name": "icap_clients", "type": "ipv4_addr", "flags": ["interval"]}) \
+    and plain and len(elem) == 3
+say("set", set_ok, "icap_clients: %d set(s), %d element(s), %s (values not shown; exactly 3 single IPv4 addresses "
+    "expected)" % (len(sets), len(elem) if isinstance(elem, list) else 0,
+                   "all single addresses" if plain else "not all single addresses"))
+
+chains = of["chain"]
+say("chain", len(chains) == 1 and fields(chains[0], {"family": "inet", "table": table, "name": "prerouting",
+                                                     "type": "filter", "hook": "prerouting", "prio": -150,
+                                                     "policy": "accept"}),
+    "%d chain(s); exactly 1 expected: prerouting, type filter, hook prerouting, priority -150, policy accept"
+    % len(chains))
+
+def match(op, left, right):
+    return {"match": {"op": op, "left": left, "right": right}}
+
+LOCAL = match("==", {"fib": {"result": "type", "flags": ["daddr"]}}, "local")
+DPORT = match("==", {"payload": {"protocol": "tcp", "field": "dport"}}, 1344)
+CT_NEW = match("in", {"ct": {"key": "state"}}, "new")
+NOT_CLIENTS = match("!=", {"payload": {"protocol": "ip", "field": "saddr"}}, "@icap_clients")
+IPV6 = match("==", {"meta": {"key": "nfproto"}}, "ipv6")
+DROP = {"drop": None}
+EXPECTED = {"IPv4": [LOCAL, DPORT, CT_NEW, NOT_CLIENTS, DROP], "IPv6": [LOCAL, IPV6, DPORT, DROP]}
+
+def canonical(expr):
+    """`ct state new` is printed with op `in` (a bitmask) or `==` by nft releases; both mean the same, nothing else is
+    rewritten."""
+    out = []
+    for e in expr if isinstance(expr, list) else []:
         m = e.get("match") if isinstance(e, dict) else None
-        if isinstance(m, dict) and isinstance(m.get("left"), dict) and left_key(m["left"]) and test(m):
-            return True
-    return False
+        if isinstance(m, dict) and m.get("left") == {"ct": {"key": "state"}} and m.get("op") in ("==", "in") \
+                and m.get("right") in ("new", ["new"]):
+            e = CT_NEW
+        out.append(e)
+    return out
 
-def local_daddr(left):
-    f = left.get("fib")
-    return isinstance(f, dict) and "daddr" in (f.get("flags") or []) and f.get("result") == "type"
-
-def is_local(m):
-    r = m.get("right")
-    return m.get("op") in ("==", "in") and (r == "local" or r == ["local"] or (isinstance(r, dict) and "local" in json.dumps(r)))
-
-def tcp_dport(left):
-    p = left.get("payload")
-    return isinstance(p, dict) and p.get("protocol") == "tcp" and p.get("field") == "dport"
-
-def ct_state(left):
-    c = left.get("ct")
-    return isinstance(c, dict) and c.get("key") == "state"
-
-def ip_saddr(left):
-    p = left.get("payload")
-    return isinstance(p, dict) and p.get("protocol") == "ip" and p.get("field") == "saddr"
-
-def nfproto(left):
-    m = left.get("meta")
-    return isinstance(m, dict) and m.get("key") == "nfproto"
-
-rules = [r for r in objs("rule") if r.get("chain") == "prerouting"]
-v4 = v6 = 0
+rules = of["rule"]
+found = []
 for r in rules:
-    expr = r.get("expr") or []
-    if not any(isinstance(e, dict) and "drop" in e for e in expr):
-        continue
-    if not (matches(expr, local_daddr, is_local) and matches(expr, tcp_dport, lambda m: m.get("right") == 1344)):
-        continue
-    if matches(expr, ip_saddr, lambda m: m.get("op") == "!=" and m.get("right") == "@icap_clients") \
-            and matches(expr, ct_state, lambda m: "new" in json.dumps(m.get("right"))):
-        v4 += 1
-    elif matches(expr, nfproto, lambda m: m.get("right") == "ipv6"):
-        v6 += 1
-say("rules", v4 == 1 and v6 == 1 and len(rules) == 2,
-    "%d rule(s) in prerouting; 1344 drop to local addresses: IPv4 outside @icap_clients %d, IPv6 %d (expected 1, 1)"
-    % (len(rules), v4, v6))
-print("result: %s" % ("FAIL (see the lines marked FAIL)" if failed else "PASS"))
-sys.exit(1 if failed else 0)
+    kind = next((k for k, v in EXPECTED.items() if canonical(r.get("expr")) == v), None)
+    ok = kind is not None and fields(r, {"family": "inet", "table": table, "chain": "prerouting", "expr": r.get("expr")})
+    found.append(kind if ok else None)
+say("rules", sorted(k or "" for k in found) == ["IPv4", "IPv6"],
+    "%d rule(s); exactly 2 expected, each equal to step 11 in every field and operator: IPv4 %d, IPv6 %d, other %d"
+    % (len(rules), found.count("IPv4"), found.count("IPv6"), found.count(None)))
+finish()
 ' "${TABLE}"
 }
 
@@ -155,26 +160,39 @@ check_icap_pods() {
   fi
 }
 
+job_state() {   # job_state <job>: Complete, Failed or running (the Job's terminal condition)
+  local conditions
+  conditions="$(k -n "${NS}" get job "$1" \
+    -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type}{"\n"}{end}' 2>/dev/null)"
+  case "${conditions}" in
+    *Failed*) echo "Failed" ;;
+    *Complete*) echo "Complete" ;;
+    *) echo "running" ;;
+  esac
+}
+
 probe_report() {   # probe_report <job>: the probe's termination message (scenario names, outcomes, statuses only)
   k -n "${NS}" get pods -l "job-name=$1" \
     -o jsonpath='{.items[0].status.containerStatuses[0].state.terminated.message}' 2>/dev/null
 }
 
-judge_probe() {   # judge_probe <report> <where>
-  local verdict mismatches
-  verdict="$(printf '%s\n' "$1" | grep '^probe result:' | tail -n 1)"
-  mismatches="$(printf '%s\n' "$1" | grep -c 'MISMATCH' || true)"
-  case "${verdict}" in
-    "probe result: PASS"*)
-      good "through svc" "$2: ${verdict#probe result: }" ;;
+judge_job() {   # judge_job <job> <where>: PASS only for a Complete Job whose report says PASS
+  local state report verdict mismatches
+  state="$(job_state "$1")"
+  report="$(probe_report "$1")"
+  verdict="$(printf '%s\n' "${report}" | grep '^probe result:' | tail -n 1)"
+  mismatches="$(printf '%s\n' "${report}" | grep -c 'MISMATCH' || true)"
+  case "${state}:${verdict}" in
+    "Complete:probe result: PASS"*)
+      good "through svc" "$2, Job ${state}: ${verdict#probe result: }" ;;
     *)
-      bad "through svc" "$2: ${verdict:-no probe report} (${mismatches} mismatch line(s))"
-      printf '%s\n' "$1" | grep 'MISMATCH' | sed 's/^/               /' ;;
+      bad "through svc" "$2, Job ${state}: ${verdict:-no probe report} (${mismatches} mismatch line(s))"
+      printf '%s\n' "${report}" | grep -E 'MISMATCH|^probe result: FAIL \(' | sed 's/^/               /' ;;
   esac
 }
 
 check_through_service_now() {
-  local job
+  local job i
   job="${PROBE}-fw-$(date +%s)"
   if ! k get cronjob -n "${NS}" "${PROBE}" >/dev/null 2>&1; then
     bad "through svc" "CronJob ${PROBE} not found (apply step 9b first)"
@@ -184,33 +202,26 @@ check_through_service_now() {
     bad "through svc" "could not create the probe Job"
     return
   fi
-  # Complete or failed, whichever comes first; the Job's own deadline is 120 s.
-  local i state=""
+  # Complete or Failed, whichever comes first; the Job's own deadline is 120 s.
   for i in $(seq 1 75); do
-    state="$(k -n "${NS}" get job "${job}" \
-      -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type}{"\n"}{end}' 2>/dev/null)"
-    case "${state}" in *Complete*|*Failed*) break ;; esac
+    [ "$(job_state "${job}")" = running ] || break
     sleep 2
   done
-  judge_probe "$(probe_report "${job}")" "probe Job (now, $(printf '%s' "${state:-no condition}" | head -n 1))"
+  judge_job "${job}" "probe Job (now)"
 }
 
 check_through_service_latest() {
-  local job finished
-  job="$(k -n "${NS}" get jobs -l "app.kubernetes.io/name=${PROBE}" \
-    -o jsonpath='{range .items[?(@.status.completionTime)]}{.status.completionTime}{" "}{.metadata.name}{"\n"}{end}' \
-    2>/dev/null | sort | tail -n 1)"
-  if [ -z "${job}" ]; then
-    # A failed Job has no completionTime; take the newest by start time then.
-    job="$(k -n "${NS}" get jobs -l "app.kubernetes.io/name=${PROBE}" \
-      -o jsonpath='{range .items[*]}{.status.startTime}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null | sort | tail -n 1)"
-  fi
-  if [ -z "${job}" ]; then
+  local newest
+  # PR 40 review D-01: the newest probe Job by creation time, whatever its outcome (a Failed Job has no completionTime,
+  # so selecting by completion would skip it and report an older PASS).
+  newest="$(k -n "${NS}" get jobs -l "app.kubernetes.io/name=${PROBE}" \
+    -o jsonpath='{range .items[*]}{.metadata.creationTimestamp}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+    | sort | tail -n 1)"
+  if [ -z "${newest}" ]; then
     bad "through svc" "no probe Job yet (the CronJob runs every 15 minutes)"
     return
   fi
-  finished="${job%% *}"
-  judge_probe "$(probe_report "${job#* }")" "newest probe Job (started or finished ${finished})"
+  judge_job "${newest#* }" "newest probe Job (created ${newest%% *})"
 }
 
 check_node_port_closed() {

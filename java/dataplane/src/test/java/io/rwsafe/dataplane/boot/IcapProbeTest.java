@@ -2,6 +2,7 @@ package io.rwsafe.dataplane.boot;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.rwsafe.dataplane.events.VerdictEvent;
@@ -13,6 +14,7 @@ import io.rwsafe.platform.verdict.Verdict;
 import io.rwsafe.policy.Action;
 import io.rwsafe.policy.PolicySnapshot;
 import io.rwsafe.policy.Snapshots;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.ServerSocket;
@@ -114,12 +116,32 @@ class IcapProbeTest {
         assertTrue(text.endsWith("probe result: FAIL (0/7 as expected)\n"), text);
     }
 
+    /** PR 40 review D-03: a bad setting is named by a fixed token; the configured value never reaches the report. */
     @Test
-    void aBadTargetIsRefused() throws IOException {
+    void aBadSettingIsRefusedWithAFixedTokenOnly() throws IOException {
         Path report = dir.resolve("report");
-        assertEquals(1, IcapProbe.execute(Map.of("RWSAFE_PROBE_TARGET", "http://127.0.0.1:1344",
-            "RWSAFE_PROBE_REPORT", report.toString())));
-        assertTrue(Files.readString(report).startsWith("probe result: FAIL (configuration:"));
+        for (String target : List.of("http://127.0.0.1:1344", "icap://synthetic-user:pw@127.0.0.1:1344",
+            "icap://[not a host", "icap://127.0.0.1:99999", "icap:///reqmod-ai", "icap://127.0.0.1:1344/?q=synthetic")) {
+            assertEquals(1, IcapProbe.execute(Map.of("RWSAFE_PROBE_TARGET", target,
+                "RWSAFE_PROBE_REPORT", report.toString())), target);
+            assertEquals("probe result: FAIL (configuration: invalid_target)\n", Files.readString(report), target);
+        }
+        for (String timeout : List.of("x", "0", "-5", "600000", "1e3")) {
+            assertEquals(1, IcapProbe.execute(Map.of("RWSAFE_PROBE_TARGET", "icap://127.0.0.1:1344",
+                "RWSAFE_PROBE_TIMEOUT_MILLIS", timeout, "RWSAFE_PROBE_REPORT", report.toString())), timeout);
+            assertEquals("probe result: FAIL (configuration: invalid_timeout)\n", Files.readString(report), timeout);
+        }
+    }
+
+    /** PR 40 review D-03: a response cut short is an error, never a truncated answer that could be classified. */
+    @Test
+    void aTruncatedResponseIsAnError() {
+        String head = "ICAP/1.0 200 OK\r\nEncapsulated: req-hdr=0, null-body=40\r\n\r\n";
+        byte[] cut = (head + "POST /v1 HTTP/1.1\r\n").getBytes(StandardCharsets.ISO_8859_1);
+        assertThrows(IOException.class, () -> new IcapProbe.Reader(new ByteArrayInputStream(cut)).response());
+        String chunked = "ICAP/1.0 200 OK\r\nEncapsulated: req-hdr=0, req-body=4\r\n\r\nPOST10\r\nshort";
+        assertThrows(IOException.class, () -> new IcapProbe.Reader(
+            new ByteArrayInputStream(chunked.getBytes(StandardCharsets.ISO_8859_1))).response());
     }
 
     @Test
