@@ -1,4 +1,5 @@
-# The build context: a PVC holding `git archive` of the commit being built (java/ and deploy/images/ only), streamed in
+# The build context: a PVC holding `git archive` of the commit being built (java/, frontend/ and deploy/images/ only;
+# the control image builds the admin UI from frontend/ with its committed lockfile), streamed in
 # through the loader pod (`kubectl exec -i ... tar -x`). The loader runs unprivileged and sleeps for at most an hour; it
 # is deleted before a build Job starts, because the build namespace's quota holds one 3-CPU build and nothing else.
 apiVersion: v1

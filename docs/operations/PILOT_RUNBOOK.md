@@ -137,7 +137,10 @@ updates the tag).
 python3 -B tools/pilot/render.py --target build --product "${PRODUCT}" --output ~/pilot/build.json
 kubectl apply --server-side -f ~/pilot/build.json -l "app.kubernetes.io/name in (${PRODUCT}-build-context,${PRODUCT}-build-context-loader)"
 kubectl -n "${PRODUCT}-build" wait --for=condition=Ready "pod/${PRODUCT}-build-context-loader" --timeout=180s
-{ git archive --format=tar HEAD java deploy/images 2>/dev/null || tar -cf - java deploy/images; } \
+# java/, the admin UI's sources (frontend/: the control image builds them, npm ci from the committed lockfile) and
+# deploy/images/; a copy without .git leaves out the local node_modules/ and dist/
+{ git archive --format=tar HEAD java frontend deploy/images 2>/dev/null \
+    || tar -cf - --exclude=node_modules --exclude=dist java frontend deploy/images; } \
   | kubectl -n "${PRODUCT}-build" exec -i "${PRODUCT}-build-context-loader" -- \
       sh -c 'rm -rf /workspace/src && mkdir /workspace/src && tar -xf - -C /workspace/src --no-same-owner'
 # the CA bundle for Gradle inside the build stage (deploy/images/ca/, git-ignored): the same host bundle
@@ -151,12 +154,13 @@ echo "${sum}  ${HOME}/pilot/gradle-8.14.3-bin.zip" | sha256sum -c --quiet && ech
 kubectl -n "${PRODUCT}-build" exec -i "${PRODUCT}-build-context-loader" -- \
   sh -c 'cat > /workspace/src/deploy/images/gradle-dist/gradle-8.14.3-bin.zip' < ~/pilot/gradle-8.14.3-bin.zip
 kubectl -n "${PRODUCT}-build" exec "${PRODUCT}-build-context-loader" -- \
-  sh -c 'ls /workspace/src/java/gradlew /workspace/src/deploy/images/dataplane.Containerfile /workspace/src/deploy/images/ca/host-bundle.pem /workspace/src/deploy/images/gradle-dist/gradle-8.14.3-bin.zip | wc -l'
+  sh -c 'ls /workspace/src/java/gradlew /workspace/src/frontend/package-lock.json /workspace/src/deploy/images/dataplane.Containerfile /workspace/src/deploy/images/ca/host-bundle.pem /workspace/src/deploy/images/gradle-dist/gradle-8.14.3-bin.zip | wc -l'
 kubectl -n "${PRODUCT}-build" delete pod "${PRODUCT}-build-context-loader" --wait=true
 ```
 
 Expected: `render: target build, ... 4 objects (2 Job, 1 PersistentVolumeClaim, 1 Pod)`; the PVC and the pod applied;
-`condition met`; `3`; the pod deleted (the build quota holds one 3-CPU build and nothing else, so the loader must be
+`condition met`; `5` (the Gradle wrapper, the UI's lockfile, a Containerfile, the CA bundle, the Gradle distribution);
+the pod deleted (the build quota holds one 3-CPU build and nothing else, so the loader must be
 gone before step 5).
 
 ## 4b. HOST CHANGE H3b: mirror the pinned base images (orchestrator workstation, then the host)
@@ -179,7 +183,9 @@ python3 -I tools/pilot/mirror_images.py --import ~/pilot/mirror --dest http://12
 pkill -u "$(id -u)" -f 'port-forward --address 127.0.0.1 svc/registry 15007:80'; rm -rf ~/pilot/mirror
 ```
 
-Expected: one `pushed ${PRODUCT}-mirror/...` line per manifest and `import done`.
+Expected: one `pushed ${PRODUCT}-mirror/...` line per manifest and `import done`. Three images: `ubi9/openjdk-21`,
+`ubi9/openjdk-21-runtime` and `ubi9/nodejs-22` (the control image's admin UI build stage, about 240 MB compressed); a
+mirror made before the UI stage existed lacks the last one, so re-run this step once.
 
 ## 5. HOST CHANGE H4: build the data plane image
 
@@ -216,6 +222,11 @@ grep -cE '^sha256:[0-9a-f]{64}$' ~/pilot/control.digest
 ```
 
 Expected as in step 5. The digests are not secret (they name image content); they are the only input the render needs.
+The control build first builds the admin UI: `npm ci` fetches the committed lockfile's packages from registry.npmjs.org
+through the same proxy and CA bundle (each package checked against the lockfile's integrity hash, no install script
+run), then `npm run build`. In the error-class grep above, use `job/${PRODUCT}-build-control`; an npm failure also
+shows as `npm error` (count it with `grep -c 'npm error'`): `x509`/`certificate` again means the CA bundle,
+`EINTEGRITY` a lockfile or registry problem (stop and report).
 
 ## 7. HOST CHANGE H6: Secrets and uncommitted ConfigMaps
 
@@ -503,11 +514,33 @@ kubectl -n "${PRODUCT}" port-forward "svc/${PRODUCT}-control" 18080:8080 --addre
 ```
 
 On your workstation: `ssh -N -L 18080:127.0.0.1:18080 <admin-user>@<node-address>`, then open `http://localhost:18080`
-and sign in as `breakglass` with the password from step 10. Check: the Policies screen lists the seeded rules (SECRET
-BLOCK; TCKN, TR_IBAN, PAYMENT_CARD REDACT; mode enforce), Health shows the database, the snapshot feed and ingestion UP.
-The session cookie is `Secure` with the `__Host-` prefix; browsers accept that on `http://localhost` (UNVERIFIED
-2026-10-31 for the PO's browser). If sign-in returns to the sign-in page, try Chrome or Edge on `http://localhost`; if it
-still loops, stop and report (the fix is a committed change, never `kubectl set env`).
+and sign in as `breakglass` with the password from step 10. Step 4b records that HOST-A's sshd allows no port
+forwarding: if this `ssh -L` answers `administratively prohibited` (or the page does not load), stop and report; the way
+to reach the forward is a PO decision (for example forwarding allowed for the admin account, or a browser on a machine
+that holds the cluster's kubeconfig), never a relay improvised on the host (AGENTS.md section 8: HOST-A is never a jump
+server).
+
+What answers on 8080 (and only there; 8091, 8092 and 9400 answer 404 for every UI path): the admin UI built into the
+control image (`/app/ui`, the `ui` stage of `deploy/images/control.Containerfile`). `GET /` and every client route
+(`/traffic`, `/policies`, `/health`, ...) answer the SPA's `index.html` (`Cache-Control: no-store`); `/assets/*` are the
+content-hashed bundles (cached for a year); the UI calls the API same-origin under `/api`, so the session and CSRF
+cookies travel through the forward unchanged. Every response carries the CSP (`default-src 'self'`, `script-src 'self'`,
+`frame-ancestors 'none'`), `nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`. A `GET /` that answers
+the JSON `{"reason":"NOT_FOUND",...}` means the image has no UI: the control image was built from a commit before the UI
+stage (rebuild it, step 6).
+
+Check: the Policies screen lists the seeded rules (SECRET BLOCK; TCKN, TR_IBAN, PAYMENT_CARD REDACT; mode enforce),
+Health shows the database, the snapshot feed and ingestion UP.
+
+Cookies: the session cookie is `__Host-rwsafe-session` and both it and the CSRF cookie are `Secure`
+(`RWSAFE_COOKIE_SECURE=true`, the only deploy setting). Chromium browsers (Chrome, Edge) and Firefox treat
+`http://localhost` as a secure context and keep `Secure` and `__Host-` cookies there; Safari does not (UNVERIFIED
+2026-10-31 for the PO's browser and version; signing in once verifies it). Use `http://localhost:18080`, not
+`http://127.0.0.1:18080` or the node address. If sign-in returns to the sign-in page in Chrome or Edge on
+`http://localhost`, stop and report. A non-Secure setting exists for plain-http local runs only (LOCAL_RUN.md); the control
+plane refuses to start when it is half-applied (`CookiePolicy`: `RWSAFE_COOKIE_SECURE=false` needs a session cookie name
+without the `__Host-` prefix, and a Secure setting needs the `__Host-` name), and using it in the pilot would be a committed overlay change after a PO decision, never
+`kubectl set env`.
 
 ## 15. PROXY CHANGE P1 (the PO, proxy console): the ICAP service
 

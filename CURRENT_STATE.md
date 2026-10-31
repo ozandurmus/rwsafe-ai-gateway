@@ -550,6 +550,30 @@ the orchestrator's interim Q-41 decision (two approvals) in `docs/reviews/PR21_2
   KUBECTL, step 10 PO only, the ICAP LoadBalancer allocates no node port (`externalTrafficPolicy: Cluster`; the check
   refuses node ports), step 9 by `render.py --phase control`. The runbooks follow Q-45 (PO or orchestrator per step).
 
+## Done (control image serves the admin UI, branch `feature/control-serves-ui`, not yet merged)
+
+- `deploy/images/control.Containerfile`: a first `ui` stage on `ubi9/nodejs-22` (tag `1` resolved 2026-10-31 to its
+  linux/amd64 manifest `sha256:035c84d0...`, mirrored with the two OpenJDK images by `tools/pilot/mirror_images.py`,
+  which reads the pins from the Containerfiles) runs `npm ci --ignore-scripts` from the committed lockfile
+  (registry.npmjs.org, the build proxy as ARG, the optional CA anchors as `NODE_EXTRA_CA_CERTS`) and `npm run build`;
+  the Gradle stage copies `dist/` to `/out/app/ui/`, so the runtime stage still copies one tree. The build context
+  now carries `frontend/` (PILOT_RUNBOOK step 4).
+- `AdminUi`: `rwsafe.ui.dir` (`RWSAFE_UI_DIR`, `/app/ui`) on the admin port only (the port filter keeps 8091, 8092 and
+  9400 at 404); `/assets/**` exact and immutable for a year, top-level files and client routes `index.html` with
+  `no-store`, never for `api/`, `internal/` or `assets/` paths; classpath static mappings off. Headers from the admin
+  chain (CSP `default-src 'self'`, `script-src 'self'`, `frame-ancestors 'none'`, nosniff, no-referrer, DENY); the built
+  index.html has no inline script. Without a UI directory `GET /` stays the JSON 404. A file is served only when its
+  real path lies inside the UI directory's real path (no symbolic link leads out).
+- `CookiePolicy`: refuses to start when the session and CSRF `Secure` flags differ, a `__Host-`/`__Secure-` session
+  cookie is not Secure, or a Secure session cookie lacks the `__Host-` prefix. Deploys keep `RWSAFE_COOKIE_SECURE=true`; PILOT_RUNBOOK step 14 uses `http://localhost` (Chromium
+  and Firefox keep Secure cookies there; UNVERIFIED for the PO's browser).
+- Second review (Argon, `docs/reviews/PR39_2026_10_31_ARGON_CONTROL_SERVES_UI.md`, MERGE WITH CORRECTIONS): D-01
+  (symbolic links), D-02 (the `__Host-` prefix when Secure) and D-03 (CA files joined with a newline) fixed; answers in
+  `docs/reviews/PR39_2026_10_31_RESPONSE.md`. The orchestrator built the image on the pilot host (the UI stage installed
+  237 packages).
+- Open: step 14 tunnels with `ssh -L`, but step 4b records that HOST-A's sshd allows no port forwarding; how the PO
+  reaches the forward is a PO decision (the runbook says stop and report).
+
 ## Held (pseudonym registry, Q-44)
 
 The B3 pseudonym registry is built on branch `feature/pseudonym-registry` (V10) and not merged: with the frozen
