@@ -65,7 +65,10 @@ that the root filesystem is below 85 % used (`df -h /`; 69 % on 2026-10-31, HOST
 
 ## 1. Prepare the checkout and the variables (READ)
 
-On HOST-A, in the checkout of the merged `main` (`~/rwsafe` in `.rwsafe-delivery.json`), at the commit to pilot:
+On HOST-A, in the checkout of the merged `main` (`~/rwsafe` in `.rwsafe-delivery.json`), at the commit to pilot. When the
+host cannot reach GitHub (2026-10-31), the orchestrator copies `git archive origin/main` into `~/rwsafe` over SSH and
+writes the full commit id to `~/rwsafe/.pilot-commit`; there is then no `.git`, and the steps below use the copy as is
+(`build_config.sh` reads the tag from `.pilot-commit`; step 4 uses `tar` instead of `git archive`).
 
 ```bash
 cd ~/rwsafe && git fetch -q && git checkout --detach origin/main && git log --oneline -1
@@ -130,7 +133,7 @@ updates the tag).
 python3 -B tools/pilot/render.py --target build --product "${PRODUCT}" --output ~/pilot/build.json
 kubectl apply --server-side -f ~/pilot/build.json -l "app.kubernetes.io/name in (${PRODUCT}-build-context,${PRODUCT}-build-context-loader)"
 kubectl -n "${PRODUCT}-build" wait --for=condition=Ready "pod/${PRODUCT}-build-context-loader" --timeout=180s
-git archive --format=tar HEAD java deploy/images \
+{ git archive --format=tar HEAD java deploy/images 2>/dev/null || tar -cf - java deploy/images; } \
   | kubectl -n "${PRODUCT}-build" exec -i "${PRODUCT}-build-context-loader" -- \
       sh -c 'rm -rf /workspace/src && mkdir /workspace/src && tar -xf - -C /workspace/src --no-same-owner'
 # the CA bundle for Gradle inside the build stage (deploy/images/ca/, git-ignored): the same host bundle
