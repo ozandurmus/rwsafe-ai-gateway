@@ -1,0 +1,32 @@
+// Gradle init script of the local trial (tools/trial/README.md). It adds one task, trialClasspath, to :control and
+// :dataplane that compiles what the dev runners need and writes two files into the directory named by -PtrialOut:
+//   <project>.classpath  the runtime classpath of :control:runDev (test) or :dataplane:runIcap (main)
+//   <project>.java       the Java 21 launcher of the build's toolchain
+// run_trial.sh then starts each JVM directly, so its PID is the server's own and stop_trial.sh stops it cleanly.
+// Nothing in the build files changes.
+allprojects { p ->
+    p.afterEvaluate {
+        if (p.path != ':control' && p.path != ':dataplane') {
+            return
+        }
+        def outDir = p.findProperty('trialOut')
+        if (outDir == null) {
+            return
+        }
+        def sourceSets = p.extensions.getByType(SourceSetContainer)
+        def cp = p.path == ':control' ? sourceSets.getByName('test').runtimeClasspath
+                                      : sourceSets.getByName('main').runtimeClasspath
+        def launcher = p.extensions.getByType(JavaToolchainService)
+            .launcherFor(p.extensions.getByType(JavaPluginExtension).toolchain)
+        def name = p.name
+        p.tasks.register('trialClasspath') {
+            dependsOn cp
+            doLast {
+                def dir = new File(outDir.toString())
+                dir.mkdirs()
+                new File(dir, name + '.classpath').text = cp.asPath
+                new File(dir, name + '.java').text = launcher.get().executablePath.asFile.absolutePath
+            }
+        }
+    }
+}
