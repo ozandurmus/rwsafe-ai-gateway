@@ -25,7 +25,7 @@ public final class EndUserCatalogue {
 
     /** Values the deployment configures (an uncommitted ConfigMap, {@link EndUserParameters}); never a literal here. */
     public static final Set<String> CONFIGURED = Set.of("controller_name", "dpo_contact", "policy_link",
-        "retention_metadata", "retention_redacted", "retention_raw");
+        "retention_metadata", "retention_redacted");
 
     /** Values the product fills: a label, a platform id, a reference id, the notice version. Never content or identity. */
     public static final Set<String> FILLED = Set.of("class", "reason", "platform", "ref", "notice_version");
@@ -185,11 +185,10 @@ public final class EndUserCatalogue {
         }
         k.put("notice.scope.text", none);
         k.put("notice.data.text", none);
-        k.put("notice.raw.text", none);
         k.put("notice.purpose.text", none);
         k.put("notice.basis.text", none);
         k.put("notice.transfer.text", none);
-        k.put("notice.retention.text", Set.of("retention_metadata", "retention_redacted", "retention_raw"));
+        k.put("notice.retention.text", Set.of("retention_metadata", "retention_redacted"));
         k.put("notice.rights.text", Set.of("dpo_contact"));
         k.put("notice.personal.text", none);
         k.put("notice.acknowledge.text", Set.of("notice_version"));

@@ -29,7 +29,6 @@ class EndUserPagesTest {
         v.put("policy_link", "https://intranet.example.test/yapay-zeka-politikasi");
         v.put("retention_metadata", "400");
         v.put("retention_redacted", "90");
-        v.put("retention_raw", "30");
         return v;
     }
 
@@ -109,7 +108,7 @@ class EndUserPagesTest {
 
         EndUserPages complete = pages(configured());
         String version = complete.noticeVersion().orElseThrow();
-        assertTrue(version.startsWith("tr-2-") && version.length() == "tr-2-".length() + 8, version);
+        assertTrue(version.startsWith("tr-3-") && version.length() == "tr-3-".length() + 8, version);
         assertEquals(version, complete.noticeVersion().orElseThrow(), "deterministic");
         assertTrue(complete.noticeHtml().orElseThrow().contains("sürüm " + version));
         assertEquals(Set.of(), complete.noticeMissingParameters());
@@ -148,11 +147,11 @@ class EndUserPagesTest {
     @Test
     void invalidConfiguredValuesAreIgnoredAndNamed() {
         Map<String, String> v = configured();
-        v.put("retention_raw", "otuz");
+        v.put("retention_redacted", "otuz");
         v.put("dpo_contact", "line\nbreak");
         v.put("controller_name", "{{ref}}");
         EndUserParameters p = EndUserParameters.of(v);
-        assertEquals(Set.of("retention_raw", "dpo_contact", "controller_name"), p.rejected());
+        assertEquals(Set.of("retention_redacted", "dpo_contact", "controller_name"), p.rejected());
         assertEquals(Optional.empty(), new EndUserPages(TR, p).noticeVersion());
         assertThrows(IllegalArgumentException.class, () -> EndUserParameters.of(Map.of("ref", "x")));
         assertEquals(Set.of("policy_link"), EndUserParameters.of(Map.of("policy_link",

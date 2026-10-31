@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The review copies under docs/i18n/tr say exactly what the product renders: every catalogue key has one section with
- * the same text, and the legal review items are the same in the catalogue, the copies and the README.
+ * the same text, no open legal review marker remains, and the README records the review decisions.
  */
 class EndUserCatalogueDocsTest {
 
@@ -67,11 +67,14 @@ class EndUserCatalogueDocsTest {
                 catalogueMarkers.add(id(line));
             }
         }
-        assertTrue(catalogueMarkers.size() >= 5);
-        assertEquals(catalogueMarkers, docMarkers, "review items in the catalogue versus docs/i18n/tr");
+        // The PO approved the texts on 2026-10-31: no open review marker in the catalogue or the copies, and the README
+        // records each decision.
+        assertEquals(Set.of(), catalogueMarkers, "open review items in the catalogue");
+        assertEquals(Set.of(), docMarkers, "open review items in docs/i18n/tr");
         String readme = Files.readString(i18n().resolve("README.md"), StandardCharsets.UTF_8);
-        for (String id : catalogueMarkers) {
-            assertTrue(readme.contains("| " + id + " |"), "docs/i18n/README.md lists " + id);
+        assertTrue(readme.contains("## Legal review"), "docs/i18n/README.md has a Legal review section");
+        for (int i = 1; i <= 7; i++) {
+            assertTrue(readme.contains("LR-" + i), "docs/i18n/README.md records LR-" + i);
         }
         assertTrue(readme.contains("`" + tr.version() + "`"), "the README names the catalogue version");
     }

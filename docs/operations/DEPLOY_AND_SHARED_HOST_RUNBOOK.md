@@ -203,8 +203,9 @@ or `base64`, never with a group name), a pull request adds `RWSAFE_GROUP_CLAIM_E
 `rwsafe-icap-config` and §7.4 rolls the ICAP pods. Check: approve a synthetic group-scoped rule in monitor mode, send one
 REQMOD through Secure ICAP with a synthetic group, and see its rule id in the event's `monitorRuleIds` (Traffic screen).
 
-**End-user notice (`rwsafe-enduser`).** Create the ConfigMap from an env file in the operator's store holding the six
-keys of the contract (`controller-name`, `dpo-contact`, `policy-link`, and the retention figures in whole days):
+**End-user notice (`rwsafe-enduser`).** Create the ConfigMap from an env file in the operator's store holding the five
+keys of the contract (`controller-name`, `dpo-contact`, `policy-link`, and the two retention figures in whole days,
+`retention-metadata` and `retention-redacted`):
 
 ```bash
 kubectl -n rwsafe create configmap rwsafe-enduser --from-env-file="${HOME}/.config/rwsafe/enduser.env"

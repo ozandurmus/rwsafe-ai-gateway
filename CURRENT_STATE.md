@@ -300,8 +300,11 @@ Configuration and residuals: `docs/operations/LOCAL_RUN.md` "SIEM export". The r
   the coaching (WARN) page, the stream-termination message and the class and reason labels. Product copy
   `java/platform-core/src/main/resources/io/rwsafe/platform/enduser/end-user-tr.properties`, review copies under
   `docs/i18n/tr` (a test fails when they differ). Configured values (controller name, data protection contact, policy
-  link, retention days) come from `RWSAFE_ENDUSER_*` environment values, never committed. Seven wording items carry
-  `LEGAL-REVIEW LR-1..7` for the PO and the data protection officer (`docs/i18n/README.md`).
+  link, retention days) come from `RWSAFE_ENDUSER_*` environment values, never committed. The seven legal review items
+  LR-1..LR-7 are closed: the PO approved the texts on 2026-10-31
+  (`PO_DECISION_RECORD_2026_10_31_END_USER_NOTICE_LEGAL_REVIEW.md`); the full-text tier text and the objection sentence
+  are removed, `retention_raw` is gone from the configuration, catalogue `tr-3` (every employee acknowledges again). The
+  data protection officer's confirmation is the PO's responsibility.
 - `EndUserPages` (platform-core) renders self-contained UTF-8 pages: every text and value HTML-escaped, a
   Content-Security-Policy that loads nothing, no script, link or external resource, the reference id only. The notice
   version is `catalogue.version` plus 8 hex of the rendered notice, so a text or value change is a new version (PC-1);
@@ -318,8 +321,7 @@ Configuration and residuals: `docs/operations/LOCAL_RUN.md` "SIEM export". The r
   configured values). `NoticeAcknowledgementService.contentCaptureAllowed` is the SR-PRIV-10 gate for the C3 capture
   store (fails closed without the current version's record).
 - Second review (Argon, `docs/reviews/PR22_2026_10_31_ARGON_END_USER_NOTICES.md`): D-01 to D-08 fixed and PO-Q1 to
-  PO-Q3 taken as recommended (`PR22_2026_10_31_RESPONSE.md`); catalogue `tr-2`; the LR markers stay for the PO and the
-  data protection officer.
+  PO-Q3 taken as recommended (`PR22_2026_10_31_RESPONSE.md`); catalogue `tr-2` then, `tr-3` after the PO legal review.
 - Open: the banner and IDE first-run surfaces that show the notice and post the acknowledgement, the directory import
   job, the `RWSAFE_ENDUSER_*` ConfigMap contract in `deploy/rwsafe/contracts`, a call site for the coaching page, and
   the data plane reasons `PLATFORM_NOT_ALLOWED`, `VENDOR_INSTRUMENT_MISSING` and `PERSONAL_ACCOUNT` (their pages exist).
@@ -406,7 +408,7 @@ Product Owner inputs, before the first release or the feature named:
 
 1. The SIEM receivers' CIDR (`siem-cidr`) and the ConfigMap `rwsafe-siem-destination`: §7.4 refuses a release without
    it. The HEC token Secret when HEC is used; confirm the receivers' ports (6514, 8088).
-2. The six notice values in `rwsafe-enduser` (controller name, DPO contact, policy link, three retention figures).
+2. The five notice values in `rwsafe-enduser` (controller name, DPO contact, policy link, two retention figures).
 3. The capture key Secret `rwsafe-capture-key`, and the go-ahead that sets `RWSAFE_CAPTURE_MODE: "redacted"` in both
    ConfigMaps (a pull request).
 4. The proxy's encoding of `X-Authenticated-Groups` (`plain` or `base64`), then a pull request setting

@@ -15,12 +15,12 @@ class NoticeAcknowledgementServiceTest {
     @Test
     void anIncompleteNoticeHasNoVersionAndCapturesNoContent() {
         MockEnvironment env = new MockEnvironment().withProperty("RWSAFE_ENDUSER_CONTROLLER_NAME", "Örnek Kurum A.Ş.")
-            .withProperty("RWSAFE_ENDUSER_RETENTION_RAW", "otuz");
+            .withProperty("RWSAFE_ENDUSER_RETENTION_REDACTED", "otuz");
         NoticeCatalogue notice = new NoticeCatalogue(env);
         assertEquals(Optional.empty(), notice.currentVersion());
         assertTrue(notice.missingParameters().contains("dpo_contact"));
-        assertTrue(notice.missingParameters().contains("retention_raw"));
-        assertTrue(notice.rejectedParameters().contains("retention_raw"));
+        assertTrue(notice.missingParameters().contains("retention_redacted"));
+        assertTrue(notice.rejectedParameters().contains("retention_redacted"));
         assertEquals(Optional.empty(), notice.sections());
         // No database is reached: the incomplete notice already answers no.
         NoticeAcknowledgementService service = new NoticeAcknowledgementService(null, null, null, notice);

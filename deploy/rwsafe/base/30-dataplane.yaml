@@ -79,8 +79,6 @@ spec:
               valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: retention-metadata, optional: true } }
             - name: RWSAFE_ENDUSER_RETENTION_REDACTED
               valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: retention-redacted, optional: true } }
-            - name: RWSAFE_ENDUSER_RETENTION_RAW
-              valueFrom: { configMapKeyRef: { name: rwsafe-enduser, key: retention-raw, optional: true } }
           ports:
             - name: icap
               containerPort: 1344

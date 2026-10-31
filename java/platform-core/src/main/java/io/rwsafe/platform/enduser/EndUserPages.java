@@ -56,7 +56,7 @@ public final class EndUserPages {
     private static final String[][] NOTICE = {
         {null, "notice.intro"},
         {"notice.scope.heading", "notice.scope.text"},
-        {"notice.data.heading", "notice.data.text", "notice.raw.text"},
+        {"notice.data.heading", "notice.data.text"},
         {"notice.purpose.heading", "notice.purpose.text"},
         {"notice.basis.heading", "notice.basis.text"},
         {"notice.transfer.heading", "notice.transfer.text"},

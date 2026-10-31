@@ -28,7 +28,7 @@ class EndUserCatalogueTest {
             assertFalse(TR.text(key).isBlank(), key);
             assertEquals(TR.text(key), TR.text(key).strip(), key + " has surrounding whitespace");
         }
-        assertEquals("tr-2", TR.version());
+        assertEquals("tr-3", TR.version());
     }
 
     @Test
@@ -50,15 +50,13 @@ class EndUserCatalogueTest {
     }
 
     @Test
-    void theResourceHasNoDuplicateKeyAndEveryReviewMarkerPrecedesAKey() throws Exception {
+    void theResourceHasNoDuplicateKeyAndNoOpenReviewMarker() throws Exception {
         List<String> lines = resourceLines();
         Set<String> seen = new HashSet<>();
-        for (int i = 0; i < lines.size(); i++) {
-            String line = lines.get(i);
-            if (line.startsWith("# LEGAL-REVIEW")) {
-                assertTrue(i + 1 < lines.size() && !lines.get(i + 1).startsWith("#") && lines.get(i + 1).contains("="),
-                    "a review marker is followed by its key: " + line);
-            } else if (!line.isEmpty() && !line.startsWith("#")) {
+        for (String line : lines) {
+            // The PO approved the texts on 2026-10-31 (LR-1..LR-7); no open review marker remains.
+            assertFalse(line.contains("LEGAL-REVIEW"), "open review marker: " + line);
+            if (!line.isEmpty() && !line.startsWith("#")) {
                 String key = line.substring(0, line.indexOf('='));
                 assertTrue(seen.add(key), "duplicate key " + key);
                 assertFalse(line.endsWith("\\"), key + " continues on the next line; keep one text per line");
@@ -96,14 +94,17 @@ class EndUserCatalogueTest {
         assertEquals(1, ack.split("onay", -1).length - 1, ack);
         assertTrue(ack.contains("bir onay ya da rıza değildir"));
         assertTrue(ack.contains("okuduğunuz kayda geçtiyse"));
-        // D-02 (AGENTS.md 4.13): the full-text tier is described as redacted, never as unmodified, and has a basis.
+        // PO legal review 2026-10-31 (LR-1, LR-2, LR-4): the full-text tier is not built, so no text names it; never
+        // "unmodified" content either.
         for (String key : TR.keys()) {
             assertFalse(TR.text(key).contains("değiştirilmemiş"), key);
+            assertFalse(TR.text(key).contains("tam met"), key + " names the full-text tier");
         }
-        for (String key : List.of("notice.raw.text", "notice.basis.text", "notice.retention.text")) {
-            assertTrue(TR.text(key).contains("kişisel veriler çıkarıl"), key);
-            assertTrue(TR.text(key).contains("tam met"), key);
-        }
+        assertFalse(TR.keys().contains("notice.raw.text"));
+        // LR-5: the objection sentence (content not stored on objection) is not offered.
+        String rights = TR.text("notice.rights.text");
+        assertFalse(rights.contains("İtiraz etmeniz"), rights);
+        assertTrue(rights.endsWith("{{dpo_contact}} adresine başvurabilirsiniz."), rights);
         // D-04 (PC-5, SR-DLP-1): the no-exception sentence names all four fail-closed categories.
         String noException = TR.text("block.class.noexception");
         for (String category : List.of("müşteri bilgileri", "gizli bilgiler", "özel nitelikli kişisel veriler",
