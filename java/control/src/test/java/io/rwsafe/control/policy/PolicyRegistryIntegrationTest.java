@@ -626,6 +626,15 @@ class PolicyRegistryIntegrationTest {
         assertEquals(2, tckn.get("versions").size(), "the version is kept, never deleted");
         assertEquals("withdrawn", tckn.get("versions").get(0).get("status").asText());
         assertEquals("active", tckn.get("versions").get(1).get("status").asText());
+        // PR 30 review D-02: the masked role reads the withdrawal with its reason withheld, the pseudonym and time kept.
+        ApiClient.Response maskedRules = signedIn("synthetic-aiview").get("/api/v1/policy/rules");
+        assertEquals(200, maskedRules.status());
+        assertFalse(maskedRules.body().toString().contains("Pilot finished"), "the masked role never reads the reason");
+        JsonNode maskedWithdrawal = find(maskedRules.body().get("rules"), "class.TCKN").get("versions").get(0)
+            .get("withdrawal");
+        assertEquals(PolicyViews.FREE_TEXT_WITHHELD, maskedWithdrawal.get("reason").asText());
+        assertEquals(by, maskedWithdrawal.get("withdrawnBy").asText());
+        assertFalse(maskedWithdrawal.get("withdrawnAt").isNull());
         assertEquals(1, new JdbcTemplate(dataSource).queryForObject("SELECT count(*) FROM audit_event WHERE "
             + "table_name = 'policy_rule_version' AND operation = 'UPDATE' AND action_id = 'policy.scope_withdraw' "
             + "AND reason_code = 'Pilot finished' AND actor_fingerprint = ? AND row_key = 'class.TCKN@v2'",

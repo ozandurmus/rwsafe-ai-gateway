@@ -501,7 +501,8 @@ the orchestrator's interim Q-41 decision (two approvals) in `docs/reviews/PR21_2
 
 - Q-41: one `security_admin` withdraws an active group-scoped class version with a reason, effective at once: the
   version becomes `withdrawn` (kept with the time, the administrator's pseudonym and the reason), leaves the next
-  snapshot, and its groups fall back to `ANY`. The reason takes the platform-retirement checks (`IdentifierCheck`, the
+  snapshot, and its groups fall back to `ANY`; a pending draft of the same rule, mode and scope (and any approval it
+  holds) is superseded in the same transaction (PR 30 review D-01). The reason takes the platform-retirement checks (`IdentifierCheck`, the
   free-text layers, the estate dictionary; withheld from the masked role). Ledger action `policy.scope_withdraw`, so the
   SIEM export carries it. The viewer, the privacy officer alone and the masked role get 403. Residual risk accepted by
   the PO: one person can loosen policy for a group.
@@ -519,6 +520,10 @@ the orchestrator's interim Q-41 decision (two approvals) in `docs/reviews/PR21_2
   absent), `PolicyRegistryIntegrationTest` (403 for viewer, officer, masked and dual sessions; reason checks; snapshot
   drops the scope at once; ledger), `MaskedRoleLeakProbeTest` (seeds one withdrawn and one active scoped version and
   walks the withdrawal route), `policies.test.tsx` (withdraw, refusal, no button for viewer, officer, masked).
+- Second review (Argon, `docs/reviews/PR30_2026_10_31_ARGON_SINGLE_ADMIN_WITHDRAWAL.md`, MERGE WITH CORRECTIONS),
+  answered in `docs/reviews/PR30_2026_10_31_RESPONSE.md`: D-01 (drafts of the withdrawn scope superseded; the guard
+  supersedes a pending draft only for a newer draft of its own mode and scope, a withdrawal of it in the same
+  transaction or a retirement) and D-02 (the masked role reads the withdrawal reason withheld).
 
 ## Not done
 

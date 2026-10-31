@@ -499,19 +499,48 @@ class PolicyRegistryStoreTest {
     }
 
     @Test
-    void aWithdrawalLeavesOtherScopesAndPendingDraftsAlone() {
+    void aWithdrawalLeavesOtherScopesAndTheirDraftsAlone() {
         activeGroupVersion();
         registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("grp-beta")), audit(ADMIN, "policy.draft"));
         approve("class.TCKN", 3, "security_admin", ADMIN);
         approve("class.TCKN", 3, "privacy_officer", OFFICER);
-        registry.draft(groupRule("TCKN", "REDACT", "enforce", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
+        registry.draft(groupRule("TCKN", "REDACT", "enforce", List.of("grp-beta")), audit(ADMIN, "policy.draft"));
+        registry.draft(groupRule("TCKN", "REDACT", "monitor", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
         withdraw("class.TCKN", 2, OTHER_ADMIN, "Synthetic");
         assertEquals("withdrawn", status("class.TCKN", 2));
         assertEquals("active", status("class.TCKN", 3), "another group scope keeps applying");
-        assertEquals("pending", status("class.TCKN", 4), "a draft of the scope waits for its two approvals");
+        assertEquals("pending", status("class.TCKN", 4), "a draft of another scope waits for its two approvals");
+        assertEquals("pending", status("class.TCKN", 5), "a draft of another mode waits for its two approvals");
         approve("class.TCKN", 4, "security_admin", ADMIN);
         approve("class.TCKN", 4, "privacy_officer", OFFICER);
         assertEquals("active", status("class.TCKN", 4));
+    }
+
+    // PR 30 review D-01: a draft of the withdrawn scope started before the withdrawal stops counting with its approval.
+
+    @Test
+    void aDraftStartedBeforeAWithdrawalCanNeverBringTheScopeBack() {
+        activeGroupVersion();
+        registry.draft(groupRule("TCKN", "REDACT", "enforce", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
+        approve("class.TCKN", 3, "security_admin", ADMIN);
+        withdraw("class.TCKN", 2, OTHER_ADMIN, "Synthetic");
+        assertEquals("superseded", status("class.TCKN", 3), "superseded in the withdrawal's transaction");
+        assertEquals(1, ledgerRows("policy_rule_version", "UPDATE", "policy.scope_withdraw", "class.TCKN@v3"));
+        assertEquals("POLICY_NOT_PENDING", assertThrows(RegistryConflict.class,
+            () -> approve("class.TCKN", 3, "privacy_officer", OFFICER)).reason(),
+            "the privacy officer alone can never complete the older draft");
+        assertTrue(registry.active().stream().noneMatch(v -> v.scopedToGroups()), "the scope stays withdrawn");
+
+        // The trigger: a pending draft is superseded by a newer draft of its own mode and scope, or by a withdrawal of
+        // its mode and scope in the same transaction; neither a newer draft of another scope nor an old withdrawal does.
+        registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
+        registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("grp-beta")), audit(ADMIN, "policy.draft"));
+        DataAccessException refused = assertThrows(DataAccessException.class, () -> mutate(
+            "UPDATE policy_rule_version SET status = 'superseded', superseded_at = now() WHERE rule_id = 'class.TCKN' "
+                + "AND version = 4"));
+        assertTrue(refused.getMessage().contains("POLICY_NO_REPLACEMENT"), refused.getMessage());
+        assertEquals("pending", status("class.TCKN", 4), "the draft after the withdrawal waits for its two approvals");
+        assertEquals("pending", status("class.TCKN", 5));
     }
 
     @Test

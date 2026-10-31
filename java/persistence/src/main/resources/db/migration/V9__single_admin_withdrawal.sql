@@ -127,12 +127,17 @@ BEGIN
         RAISE EXCEPTION 'POLICY_NO_REPLACEMENT: an active version is superseded only by a newer active one of its scope'
             USING ERRCODE = 'check_violation';
     END IF;
-    -- A pending version is superseded by a newer draft, with its platform's retirement (D-01), or, for a V3 withdrawal
-    -- request, at any time (it never takes effect).
+    -- A pending version is superseded by a newer draft of its own mode and scope, with the withdrawal of its mode and
+    -- scope in the same transaction (PR 30 review D-01; the withdrawal time is the transaction's), with its platform's
+    -- retirement (PR 21 D-01), or, for a V3 withdrawal request, at any time (it never takes effect).
     IF OLD.status = 'pending' AND NEW.status = 'superseded' AND OLD.withdraws_version IS NULL AND NOT EXISTS (
             SELECT 1 FROM policy_rule_version r
-             WHERE r.rule_id = OLD.rule_id AND (r.version > OLD.version OR r.status = 'retired')) THEN
-        RAISE EXCEPTION 'POLICY_NO_REPLACEMENT: a pending version is superseded only by a newer draft or a retirement'
+             WHERE r.rule_id = OLD.rule_id
+               AND ((r.mode = OLD.mode
+                     AND rwsafe_scope_key(r.scope_kind, r.scope_groups) = rwsafe_scope_key(OLD.scope_kind, OLD.scope_groups)
+                     AND (r.version > OLD.version OR (r.status = 'withdrawn' AND r.withdrawn_at = now())))
+                    OR r.status = 'retired')) THEN
+        RAISE EXCEPTION 'POLICY_NO_REPLACEMENT: a pending version is superseded only by a newer draft of its scope, a withdrawal of its scope or a retirement'
             USING ERRCODE = 'check_violation';
     END IF;
     -- Generated keys are computed after BEFORE triggers, so they are left out of the comparison (they follow the key).

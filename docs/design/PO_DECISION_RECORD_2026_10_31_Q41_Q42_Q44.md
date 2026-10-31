@@ -59,7 +59,9 @@ the orchestrating session). The PO's answers, verbatim, with an English gloss:
   policy-change report to the PO after go-live.
 - Implementation (Q-41): Flyway `V9__single_admin_withdrawal.sql` (column `withdrawn_by`, the guard: one administrator's
   withdrawal with the ledger check, no new withdrawal request, a pending V3 request superseded and never activated);
-  `PolicyRegistryStore.withdrawScope`, `PolicyRegistryService.withdrawScope`, `POST
+  `PolicyRegistryStore.withdrawScope` (it also supersedes the pending drafts of the withdrawn rule, mode and scope,
+  with their approvals, in the same transaction: PR 30 review D-01, as PR 21 D-01 for retirement),
+  `PolicyRegistryService.withdrawScope`, `POST
   /api/v1/policy/rules/{ruleId}/versions/{version}/withdrawal` (now returns the withdrawn version, HTTP 200); the
   Policies screen ("Geri çek": reason, in-page confirmation, result; no approval steps for a withdrawal). Tests:
   `PolicyRegistryStoreTest`, `SingleAdminWithdrawalMigrationTest`, `SnapshotCompilerTest`,

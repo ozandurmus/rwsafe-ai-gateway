@@ -164,7 +164,8 @@ reason, press "Devam et", read the consequences and confirm with "Evet, geri çe
 version becomes `withdrawn` at once (it stays listed, greyed, with the time, the administrator's pseudonym and the
 reason), the next snapshot no longer lists the scoped rule, so those groups follow the rule for everyone again, and the
 ledger (`audit_event`, action `policy.scope_withdraw`) names the administrator and carries the reason. Bringing the group
-rule back is a new version under the two approvals. As a request:
+rule back is a new version under the two approvals; a draft of the same scope and mode started before the withdrawal
+is superseded with it (its approvals never count afterwards). As a request:
 `POST /api/v1/policy/rules/class.<CLASS>/versions/<version>/withdrawal` with `{"reason":"..."}` (security administrator
 only; 403 for the viewer, the privacy officer and the masked role); the response is the withdrawn version. Drafts for different scopes (or modes) of one rule
 wait side by side; a new draft replaces only the pending version of its own rule, mode and scope.

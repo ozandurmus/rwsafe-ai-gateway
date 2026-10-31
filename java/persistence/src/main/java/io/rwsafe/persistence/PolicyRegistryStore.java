@@ -121,9 +121,19 @@ public final class PolicyRegistryStore {
                     "Only an active group-scoped class version is withdrawn.");
             }
             audit.apply(tx);
-            tx.update(RULE_VERSION).set(RV_STATUS, "withdrawn").set(RV_WITHDRAWN_AT, Instant.now())
+            // The transaction's time: the guard lets this withdrawal (and no older one) supersede the scope's drafts.
+            Field<Instant> now = DSL.field("now()", RV_WITHDRAWN_AT.getDataType());
+            tx.update(RULE_VERSION).set(RV_STATUS, "withdrawn").set(RV_WITHDRAWN_AT, now)
                 .set(RV_WITHDRAWN_BY, administratorFingerprint).set(RV_WITHDRAWAL_REASON, reason)
                 .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).execute();
+            // PR 30 review D-01 (as PR 21 D-01 for retirement): a pending draft of the withdrawn rule, mode and scope
+            // (and any approval it holds) stops counting, so one approver can never bring the scope back by completing
+            // a draft started before the withdrawal. Drafts of other scopes and modes keep waiting.
+            tx.update(RULE_VERSION).set(RV_STATUS, "superseded").set(RV_SUPERSEDED_AT, now)
+                .where(RV_RULE_ID.eq(ruleId).and(RV_STATUS.eq("pending")).and(RV_MODE.eq(target.mode()))
+                    .and(RV_SCOPE_KEY.eq(tx.select(RV_SCOPE_KEY).from(RULE_VERSION)
+                        .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).fetchOne(RV_SCOPE_KEY))))
+                .execute();
             withdrawCheck.accept(activeIn(tx));
             return read(tx, RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).get(0);
         }));
