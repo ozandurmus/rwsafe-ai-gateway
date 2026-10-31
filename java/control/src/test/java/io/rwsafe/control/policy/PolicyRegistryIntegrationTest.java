@@ -578,10 +578,10 @@ class PolicyRegistryIntegrationTest {
         }
     }
 
-    // PR 21 Q-41: a group-scoped version is withdrawn with a reason and the same two approvals as an activation.
+    // PO decision Q-41 (2026-10-31): one security administrator withdraws a group scope with a reason, at once.
 
     @Test
-    void aGroupScopeIsWithdrawnWithTwoApprovalsAndLeavesTheSnapshot() throws Exception {
+    void oneSecurityAdministratorWithdrawsAGroupScopeWithAReasonAndItLeavesTheSnapshot() throws Exception {
         ApiClient admin = signedIn("synthetic-admin");
         ApiClient officer = signedIn("synthetic-officer");
         String versions = "/api/v1/policy/rules/class.TCKN/versions";
@@ -592,27 +592,57 @@ class PolicyRegistryIntegrationTest {
 
         String withdraw = versions + "/2/withdrawal";
         String reason = JSON.createObjectNode().put("reason", "Pilot finished").toString();
-        for (String login : new String[] {"synthetic-viewer", "synthetic-officer", "synthetic-aiview"}) {
+        for (String login : new String[] {"synthetic-viewer", "synthetic-officer", "synthetic-aiview",
+            "synthetic-dual"}) {
             assertEquals(403, signedIn(login).post(withdraw, reason, true).status(), login);
+        }
+        ApiClient.Response blank = admin.post(withdraw, JSON.createObjectNode().put("reason", " ").toString(), true);
+        assertEquals(400, blank.status());
+        assertEquals("INVALID_WITHDRAWAL", blank.body().get("reason").asText());
+        assertEquals("ESTATE_NAME_REFUSED", admin.post(withdraw, JSON.createObjectNode()
+            .put("reason", "moved to synthetic-estate").toString(), true).body().get("reason").asText());
+        // Identifier-shaped values are built at runtime (AGENTS.md 4.5).
+        for (String bad : new String[] {"asked by Ayşe Yılmaz", "ticket ref" + "7341029", "see 192.0.2.10"}) {
+            ApiClient.Response r = admin.post(withdraw, JSON.createObjectNode().put("reason", bad).toString(), true);
+            assertEquals("REASON_HOLDS_IDENTIFIER", r.body().get("reason").asText(), bad);
         }
         assertEquals("WITHDRAWAL_NOT_APPLICABLE", admin.post(versions + "/1/withdrawal", reason, true).body()
             .get("reason").asText(), "the ANY baseline is never withdrawn");
-        ApiClient.Response request = admin.post(withdraw, reason, true);
-        assertEquals(201, request.status(), String.valueOf(request.body()));
-        assertEquals(3, request.body().get("version").asInt());
-        assertEquals(2, request.body().get("withdrawal").get("withdrawsVersion").asInt());
-        assertEquals("pending", request.body().get("status").asText());
-
-        assertEquals(200, admin.post(versions + "/3/approvals", role("security_admin"), true).status());
+        assertEquals("UNKNOWN_RULE", admin.post("/api/v1/policy/rules/platform.github/versions/1/withdrawal", reason,
+            true).body().get("reason").asText(), "a platform row is retired instead");
         assertEquals(1, verified(snapshot(internal.snapshotPort(), null)).get("scopedRules").size(),
-            "one approval withdraws nothing");
-        assertEquals(200, officer.post(versions + "/3/approvals", role("privacy_officer"), true).status());
+            "a refused withdrawal changes nothing");
+
+        ApiClient.Response done = admin.post(withdraw, reason, true);
+        assertEquals(200, done.status(), String.valueOf(done.body()));
+        assertEquals(2, done.body().get("version").asInt(), "no request version: the version itself is withdrawn");
+        assertEquals("withdrawn", done.body().get("status").asText(), "no second approval");
+        assertEquals("Pilot finished", done.body().get("withdrawal").get("reason").asText());
+        String by = done.body().get("withdrawal").get("withdrawnBy").asText();
+        assertTrue(by.matches("USR-[0-9a-f]{10}"), by);
         JsonNode doc = verified(snapshot(internal.snapshotPort(), null));
-        assertEquals("[]", doc.get("scopedRules").toString(), "the groups fall back to ANY");
+        assertEquals("[]", doc.get("scopedRules").toString(), "the groups fall back to ANY at once");
         JsonNode tckn = find(signedIn("synthetic-viewer").get("/api/v1/policy/rules").body().get("rules"), "class.TCKN");
-        assertEquals("active", tckn.get("versions").get(0).get("status").asText());
-        assertEquals("withdrawn", tckn.get("versions").get(1).get("status").asText());
-        assertEquals(1, ledger("policy_rule_version", "INSERT", "policy.withdraw_request"));
+        assertEquals(2, tckn.get("versions").size(), "the version is kept, never deleted");
+        assertEquals("withdrawn", tckn.get("versions").get(0).get("status").asText());
+        assertEquals("active", tckn.get("versions").get(1).get("status").asText());
+        // PR 30 review D-02: the masked role reads the withdrawal with its reason withheld, the pseudonym and time kept.
+        ApiClient.Response maskedRules = signedIn("synthetic-aiview").get("/api/v1/policy/rules");
+        assertEquals(200, maskedRules.status());
+        assertFalse(maskedRules.body().toString().contains("Pilot finished"), "the masked role never reads the reason");
+        JsonNode maskedWithdrawal = find(maskedRules.body().get("rules"), "class.TCKN").get("versions").get(0)
+            .get("withdrawal");
+        assertEquals(PolicyViews.FREE_TEXT_WITHHELD, maskedWithdrawal.get("reason").asText());
+        assertEquals(by, maskedWithdrawal.get("withdrawnBy").asText());
+        assertFalse(maskedWithdrawal.get("withdrawnAt").isNull());
+        assertEquals(1, new JdbcTemplate(dataSource).queryForObject("SELECT count(*) FROM audit_event WHERE "
+            + "table_name = 'policy_rule_version' AND operation = 'UPDATE' AND action_id = 'policy.scope_withdraw' "
+            + "AND reason_code = 'Pilot finished' AND actor_fingerprint = ? AND row_key = 'class.TCKN@v2'",
+            Integer.class, by));
+        assertEquals(0, ledger("policy_rule_version", "INSERT", "policy.withdraw_request"));
+        ApiClient.Response again = admin.post(withdraw, reason, true);
+        assertEquals(409, again.status());
+        assertEquals("WITHDRAWAL_NOT_APPLICABLE", again.body().get("reason").asText());
     }
 
     @Test

@@ -109,10 +109,16 @@ export interface RuleVersion {
   /** PO decision Q-40: how a platform row left service; null for every other version. */
   retirement: { retiredAt: string; retiredBy: string; reason: string } | null;
   /**
-   * PR 21 Q-41: on a withdrawal request, the version it withdraws and the reason; on a withdrawn version, when (the
-   * other two fields are null). Null for every other version.
+   * PO decision Q-41: on a withdrawn version, when, by which administrator's pseudonym and the reason given
+   * (withdrawsVersion is null); on a V3 withdrawal request kept as history, the version it withdrew and its reason.
+   * Null for every other version.
    */
-  withdrawal: { withdrawsVersion: number | null; reason: string | null; withdrawnAt: string | null } | null;
+  withdrawal: {
+    withdrawsVersion: number | null;
+    reason: string | null;
+    withdrawnAt: string | null;
+    withdrawnBy: string | null;
+  } | null;
   approvals: { role: ApproverRole; approver: string; approvedAt: string }[];
   inSnapshot: boolean;
 }
@@ -375,7 +381,8 @@ export const api = {
       `/api/v1/policy/rules/${encodeURIComponent(ruleId)}/versions/${version}/approvals`,
       { role },
     ),
-  requestWithdrawal: (ruleId: string, version: number, reason: string) =>
+  /** PO decision Q-41: one security administrator withdraws a group-scoped version at once; returns that version. */
+  withdrawScope: (ruleId: string, version: number, reason: string) =>
     request<RuleVersion>(
       'POST',
       `/api/v1/policy/rules/${encodeURIComponent(ruleId)}/versions/${version}/withdrawal`,

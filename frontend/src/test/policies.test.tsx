@@ -336,38 +336,37 @@ describe('group name folding', () => {
 });
 
 describe('withdrawing a group scope', () => {
-  it('sends a withdrawal request with a reason and a confirmation step, then shows its approval steps', async () => {
-    let requested = false;
+  it('withdraws at once with a reason and an in-page confirmation, without approval steps', async () => {
+    let withdrawn = false;
+    const withdrawal = {
+      withdrawsVersion: null,
+      reason: 'Pilot finished',
+      withdrawnAt: '2026-10-31T09:15:00Z',
+      withdrawnBy: 'USR-00000000a1',
+    };
     const server = fakeServer({
       'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-admin', ['security_admin']) }),
       'GET /api/v1/policy/rules': () => {
         const r = registry();
         const tckn = r.rules[1]!;
-        tckn.versions = tckn.versions.filter((v) => v.status !== 'pending');
-        if (requested) {
-          tckn.versions.unshift(
-            version('class.TCKN', 4, {
-              action: 'BLOCK',
-              status: 'pending',
-              source: 'registry',
-              author: 'USR-00000000a1',
-              reasonCode: 'SCOPE_WITHDRAWAL',
-              activatedAt: null,
-              inSnapshot: false,
-              scope: { kind: 'GROUPS', groups: ['GRP-BETA'] },
-              withdrawal: { withdrawsVersion: 2, reason: 'Pilot finished', withdrawnAt: null },
-            }),
+        if (withdrawn) {
+          tckn.versions = tckn.versions.map((v) =>
+            v.version === 2 ? { ...v, status: 'withdrawn', inSnapshot: false, withdrawal } : v,
           );
         }
         return { status: 200, body: r };
       },
       'POST /api/v1/policy/rules/class.TCKN/versions/2/withdrawal': () => {
-        requested = true;
+        withdrawn = true;
         return {
-          status: 201,
-          body: version('class.TCKN', 4, {
-            status: 'pending',
-            withdrawal: { withdrawsVersion: 2, reason: 'Pilot finished', withdrawnAt: null },
+          status: 200,
+          body: version('class.TCKN', 2, {
+            action: 'BLOCK',
+            scope: { kind: 'GROUPS', groups: ['GRP-BETA'] },
+            status: 'withdrawn',
+            source: 'registry',
+            inSnapshot: false,
+            withdrawal,
           }),
         };
       },
@@ -383,19 +382,52 @@ describe('withdrawing a group scope', () => {
     expect(within(form).getByRole('button', { name: 'Devam et' })).toBeDisabled();
     await userEvent.type(within(form).getByRole('textbox', { name: /Gerekçe/ }), 'Pilot finished');
     await userEvent.click(within(form).getByRole('button', { name: 'Devam et' }));
-    expect(within(form).getByText(/İki onay verilene kadar gruplarına uygulanmaya devam eder/)).toBeInTheDocument();
+    expect(within(form).getByText(/Sürüm 2 hemen geri çekilecek; onay beklenmez/)).toBeInTheDocument();
     expect(server.calls.some((c) => c.method === 'POST')).toBe(false);
-    await userEvent.click(within(form).getByRole('button', { name: 'Evet, onaya gönder' }));
-    expect(await screen.findByText('Geri çekme isteği (sürüm 4) iki onay bekliyor.')).toBeInTheDocument();
-    const post = server.calls.find((c) => c.method === 'POST')!;
-    expect(JSON.parse(String(post.init.body))).toEqual({ reason: 'Pilot finished' });
-    expect(await screen.findByText(/Sürüm 4: GRP-BETA için sürüm 2 geri çekiliyor/)).toBeInTheDocument();
-    expect(screen.getByText(/Sürüm 2 için geri çekme · GRP-BETA · Onay bekliyor · Pilot finished/)).toBeInTheDocument();
+    await userEvent.click(within(form).getByRole('button', { name: 'Evet, geri çek' }));
+    expect(
+      await screen.findByText('Sürüm 2 geri çekildi. Bu gruplara artık herkese uygulanan kural uygulanıyor.'),
+    ).toBeInTheDocument();
+    const posts = server.calls.filter((c) => c.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ reason: 'Pilot finished' });
+    expect(
+      await screen.findByText(/31\.10\.2026 12:15:00 tarihinde USR-00000000a1 tarafından geri çekildi\. Gerekçe: Pilot finished/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/GRP-BETA · Geri çekildi/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Geri çek' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/geri çekiliyor/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/geri çekme isteği/i)).not.toBeInTheDocument();
     expect(confirm).not.toHaveBeenCalled();
   });
 
-  it('offers no withdrawal to the privacy officer or a masked session', async () => {
-    for (const me of [user('synthetic-officer', ['privacy_officer']), user('', ['replay_viewer', 'security_admin'], true)]) {
+  it('shows the server reason when the withdrawal is refused and changes nothing', async () => {
+    fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-admin', ['security_admin']) }),
+      'GET /api/v1/policy/rules': () => ({ status: 200, body: registry() }),
+      'POST /api/v1/policy/rules/class.TCKN/versions/2/withdrawal': () => ({
+        status: 400,
+        body: { reason: 'REASON_HOLDS_IDENTIFIER', message: 'The reason holds an identifier.' },
+      }),
+    });
+    renderApp('/policies');
+    await userEvent.click(within(await screen.findByRole('table', { name: 'Politika kuralları' })).getByText('TCKN'));
+    await userEvent.click(screen.getByRole('button', { name: 'Geri çek' }));
+    const form = screen.getByRole('form', { name: 'Sürüm 2 gruplarından geri çekilsin' });
+    await userEvent.type(within(form).getByRole('textbox', { name: /Gerekçe/ }), 'Synthetic reason');
+    await userEvent.click(within(form).getByRole('button', { name: 'Devam et' }));
+    await userEvent.click(within(form).getByRole('button', { name: 'Evet, geri çek' }));
+    expect(await within(form).findByText('Gerekçede kimlik bilgisi var')).toBeInTheDocument();
+    expect(screen.queryByText(/geri çekildi\./)).not.toBeInTheDocument();
+    expect(within(form).getByRole('button', { name: 'Devam et' })).toBeInTheDocument();
+  });
+
+  it('offers no withdrawal to the viewer, the privacy officer or a masked session', async () => {
+    for (const me of [
+      user('synthetic-viewer', ['viewer']),
+      user('synthetic-officer', ['privacy_officer']),
+      user('', ['replay_viewer', 'security_admin'], true),
+    ]) {
       fakeServer({
         'GET /api/v1/auth/me': () => ({ status: 200, body: me }),
         'GET /api/v1/policy/rules': () => ({ status: 200, body: registry() }),

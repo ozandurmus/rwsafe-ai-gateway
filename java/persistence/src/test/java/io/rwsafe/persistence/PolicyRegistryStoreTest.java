@@ -392,74 +392,167 @@ class PolicyRegistryStoreTest {
         assertEquals("active", status("class.TCKN", 6));
     }
 
-    // PR 21 Q-41: a group-scoped version is withdrawn with the same two approvals as an activation.
+    // PO decision Q-41 (2026-10-31): one administrator withdraws a group-scoped version with a reason, at once.
 
-    @Test
-    void aGroupScopedVersionIsWithdrawnOnlyWithTwoApprovals() {
+    private PolicyRuleVersion withdraw(String ruleId, int version, String admin, String reason) {
+        return registry.withdrawScope(ruleId, version, admin, reason,
+            new AuditContext(admin, "policy.scope_withdraw", reason, null), active -> { });
+    }
+
+    private void activeGroupVersion() {
         registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
         approve("class.TCKN", 2, "security_admin", ADMIN);
         approve("class.TCKN", 2, "privacy_officer", OFFICER);
-        assertEquals("WITHDRAWAL_NOT_APPLICABLE", assertThrows(RegistryConflict.class, () -> registry.requestWithdrawal(
-            "class.TCKN", 1, "Synthetic", ADMIN, new AuditContext(ADMIN, "policy.withdraw_request", "Synthetic", null)))
-            .reason(), "the ANY baseline is never withdrawn");
-        PolicyRuleVersion request = registry.requestWithdrawal("class.TCKN", 2, "Pilot finished", ADMIN,
-            new AuditContext(ADMIN, "policy.withdraw_request", "Pilot finished", null));
-        assertEquals(3, request.version());
-        assertEquals(2, request.withdrawsVersion());
-        assertEquals("pending", request.status());
-        assertEquals(List.of("grp-alpha"), request.scopeGroups());
+    }
 
-        approve("class.TCKN", 3, "security_admin", ADMIN);
-        assertEquals("active", status("class.TCKN", 2), "one approval withdraws nothing");
-        DataAccessException direct = assertThrows(DataAccessException.class, () -> mutate(
-            "UPDATE policy_rule_version SET status = 'withdrawn', withdrawn_at = now() WHERE rule_id = 'class.TCKN' "
-                + "AND version = 2"));
-        assertTrue(direct.getMessage().contains("POLICY_WITHDRAWAL_REFUSED"));
-        approve("class.TCKN", 3, "privacy_officer", OFFICER);
-        PolicyRuleVersion withdrawn = registry.version("class.TCKN", 2).orElseThrow();
-        assertEquals("withdrawn", withdrawn.status());
+    @Test
+    void oneAdministratorWithdrawsAGroupScopedVersionAtOnceAndItsHistoryStays() {
+        activeGroupVersion();
+        assertEquals("WITHDRAWAL_NOT_APPLICABLE", assertThrows(RegistryConflict.class,
+            () -> withdraw("class.TCKN", 1, ADMIN, "Synthetic")).reason(), "the ANY baseline is never withdrawn");
+        assertEquals("WITHDRAWAL_NOT_APPLICABLE", assertThrows(RegistryConflict.class,
+            () -> withdraw("platform.claude", 1, ADMIN, "Synthetic")).reason(), "a platform row is retired instead");
+        assertEquals("POLICY_VERSION_NOT_FOUND", assertThrows(RegistryConflict.class,
+            () -> withdraw("class.TCKN", 9, ADMIN, "Synthetic")).reason());
+
+        PolicyRuleVersion withdrawn = withdraw("class.TCKN", 2, ADMIN, "Pilot finished");
+        assertEquals("withdrawn", withdrawn.status(), "no second approval");
+        assertEquals(ADMIN, withdrawn.withdrawnBy());
+        assertEquals("Pilot finished", withdrawn.withdrawalReason());
         assertTrue(withdrawn.withdrawnAt() != null && withdrawn.activatedAt() != null, "history kept");
-        assertEquals("active", status("class.TCKN", 3), "the request is the scope's marker");
-        assertEquals("active", status("class.TCKN", 1));
-        assertEquals(2, ledgerRows("policy_rule_version", "UPDATE", "policy.activate", "class.TCKN@v2"),
-            "its activation and its withdrawal are ledgered on the withdrawn version");
-        assertEquals(1, ledgerRows("policy_rule_version", "INSERT", "policy.withdraw_request", "class.TCKN@v3"));
+        assertEquals(null, withdrawn.withdrawsVersion());
+        assertTrue(registry.active().stream().noneMatch(v -> v.key().equals("class.TCKN@v2")),
+            "the version leaves the active set, so the next snapshot");
+        assertEquals("active", status("class.TCKN", 1), "the groups fall back to the ANY baseline");
+        assertEquals(2, registry.versions().stream().filter(v -> v.ruleId().equals("class.TCKN")).count(),
+            "no request version is written");
+        assertEquals(1, db.dsl().fetchCount(Schema.AUDIT_EVENT, Schema.AUDIT_TABLE.eq("policy_rule_version")
+            .and(Schema.AUDIT_OPERATION.eq("UPDATE")).and(Schema.AUDIT_ACTION.eq("policy.scope_withdraw"))
+            .and(Schema.AUDIT_ACTOR.eq(ADMIN)).and(Schema.AUDIT_REASON.eq("Pilot finished"))
+            .and(Schema.AUDIT_ROW_KEY.eq("class.TCKN@v2"))));
+
+        assertEquals("WITHDRAWAL_NOT_APPLICABLE", assertThrows(RegistryConflict.class,
+            () -> withdraw("class.TCKN", 2, ADMIN, "again")).reason(), "a withdrawn version stays withdrawn");
         for (String sql : new String[] {
-            "UPDATE policy_rule_version SET status = 'active', withdrawn_at = NULL WHERE rule_id = 'class.TCKN' "
+            "UPDATE policy_rule_version SET status = 'active', withdrawn_at = NULL, withdrawn_by = NULL, "
+                + "withdrawal_reason = NULL WHERE rule_id = 'class.TCKN' AND version = 2",
+            "UPDATE policy_rule_version SET withdrawal_reason = 'rewritten' WHERE rule_id = 'class.TCKN' AND version = 2",
+            "UPDATE policy_rule_version SET withdrawn_by = '" + OTHER_ADMIN + "' WHERE rule_id = 'class.TCKN' "
                 + "AND version = 2",
             "UPDATE policy_rule_version SET withdrawn_at = now() WHERE rule_id = 'class.TCKN' AND version = 2",
             "DELETE FROM policy_rule_version WHERE rule_id = 'class.TCKN' AND version = 2"}) {
             assertThrows(DataAccessException.class, () -> mutate(sql), sql);
         }
 
-        // A new version of the scope replaces the marker under the normal two approvals.
+        // The scope comes back only as a new version under the two approvals.
         registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
-        approve("class.TCKN", 4, "security_admin", ADMIN);
-        approve("class.TCKN", 4, "privacy_officer", OFFICER);
-        assertEquals("superseded", status("class.TCKN", 3));
-        assertEquals("withdrawn", status("class.TCKN", 2));
+        approve("class.TCKN", 3, "security_admin", ADMIN);
+        assertEquals("pending", status("class.TCKN", 3), "one approval brings nothing back");
+        approve("class.TCKN", 3, "privacy_officer", OFFICER);
+        assertEquals("active", status("class.TCKN", 3));
+        assertEquals("withdrawn", status("class.TCKN", 2), "the withdrawn version keeps its history");
     }
 
     @Test
-    void aWithdrawalBelongsToItsOwnScopeAndANewDraftThereReplacesIt() {
-        registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
-        approve("class.TCKN", 2, "security_admin", ADMIN);
-        approve("class.TCKN", 2, "privacy_officer", OFFICER);
-        registry.requestWithdrawal("class.TCKN", 2, "Synthetic", ADMIN,
-            new AuditContext(ADMIN, "policy.withdraw_request", "Synthetic", null));
-        approve("class.TCKN", 3, "security_admin", ADMIN);
-        registry.draft(groupRule("TCKN", "REDACT", "monitor", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
-        assertEquals("pending", status("class.TCKN", 3), "another mode is another scope slot");
+    void theDatabaseRefusesAWithdrawalTheLedgerDoesNotNameAsTheAdministratorsWithTheReason() {
+        activeGroupVersion();
+        String withdraw = "UPDATE policy_rule_version SET status = 'withdrawn', withdrawn_at = now(), "
+            + "withdrawn_by = '%s', withdrawal_reason = '%s' WHERE rule_id = '%s' AND version = %d";
+        DataAccessException bare = assertThrows(DataAccessException.class, () -> mutate(
+            "UPDATE policy_rule_version SET status = 'withdrawn', withdrawn_at = now() WHERE rule_id = 'class.TCKN' "
+                + "AND version = 2"));
+        assertTrue(bare.getMessage().contains("POLICY_WITHDRAWAL_REFUSED"), "no administrator, no reason");
+        DataAccessException otherActor = assertThrows(DataAccessException.class, () -> mutateAs(OTHER_ADMIN,
+            "Synthetic", String.format(withdraw, ADMIN, "Synthetic", "class.TCKN", 2)));
+        assertTrue(otherActor.getMessage().contains("POLICY_WITHDRAWAL_REFUSED"),
+            "the ledger's actor is the withdrawing administrator");
+        DataAccessException otherReason = assertThrows(DataAccessException.class, () -> mutateAs(ADMIN,
+            "SYNTHETIC_CHANGE", String.format(withdraw, ADMIN, "Synthetic", "class.TCKN", 2)));
+        assertTrue(otherReason.getMessage().contains("POLICY_WITHDRAWAL_REFUSED"), "the ledger carries the reason");
+        assertThrows(DataAccessException.class, () -> mutateAs(ADMIN, "x",
+            String.format(withdraw, ADMIN, " x", "class.TCKN", 2)), "an untrimmed reason");
+        assertThrows(DataAccessException.class, () -> mutateAs(ADMIN, "Synthetic",
+            String.format(withdraw, ADMIN, "Synthetic", "class.TCKN", 1)), "the ANY baseline");
+        assertThrows(DataAccessException.class, () -> mutateAs(ADMIN, "Synthetic",
+            String.format(withdraw, ADMIN, "Synthetic", "platform.claude", 1)), "a platform row");
+        assertEquals("active", status("class.TCKN", 2));
+
+        mutateAs(ADMIN, "Synthetic", String.format(withdraw, ADMIN, "Synthetic", "class.TCKN", 2));
+        assertEquals("withdrawn", status("class.TCKN", 2), "the guarded direct path is the store's own update");
+    }
+
+    @Test
+    void theTwoApprovalWithdrawalRequestIsGone() {
+        activeGroupVersion();
+        DataAccessException request = assertThrows(DataAccessException.class, () -> mutate("INSERT INTO "
+            + "policy_rule_version (rule_id, version, kind, data_class, action, mode, rollout_stage, status, source, "
+            + "author_fingerprint, reason_code, scope_kind, scope_groups, withdraws_version, withdrawal_reason) VALUES "
+            + "('class.TCKN', 3, 'class_action', 'TCKN', 'BLOCK', 'enforce', 'all', 'pending', 'registry', "
+            + "'USR-00000000a1', 'SCOPE_WITHDRAWAL', 'GROUPS', ARRAY['grp-alpha'], 2, 'Synthetic')"));
+        assertTrue(request.getMessage().contains("POLICY_WITHDRAWAL_REQUEST_RETIRED"), request.getMessage());
         assertThrows(DataAccessException.class, () -> mutate("INSERT INTO policy_rule_version (rule_id, version, kind, "
             + "data_class, action, mode, rollout_stage, status, source, author_fingerprint, reason_code, scope_kind, "
-            + "scope_groups, withdraws_version, withdrawal_reason) VALUES ('class.TCKN', 9, 'class_action', 'TCKN', "
-            + "'BLOCK', 'enforce', 'all', 'pending', 'registry', 'USR-00000000a1', 'SCOPE_WITHDRAWAL', 'GROUPS', "
-            + "ARRAY['grp-beta'], 2, 'Synthetic')"), "a withdrawal names a version of its own scope");
-        registry.draft(groupRule("TCKN", "REDACT", "enforce", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
-        assertEquals("superseded", status("class.TCKN", 3), "a new draft of the scope replaces the request");
-        assertEquals("POLICY_NOT_PENDING", assertThrows(RegistryConflict.class,
-            () -> approve("class.TCKN", 3, "privacy_officer", OFFICER)).reason());
+            + "scope_groups, withdrawn_by) VALUES ('class.TCKN', 3, 'class_action', 'TCKN', 'BLOCK', 'enforce', 'all', "
+            + "'pending', 'registry', 'USR-00000000a1', 'SYNTHETIC_CHANGE', 'GROUPS', ARRAY['grp-beta'], "
+            + "'USR-00000000a1')"), "a new version carries no withdrawal");
         assertEquals("active", status("class.TCKN", 2));
+    }
+
+    @Test
+    void aWithdrawalLeavesOtherScopesAndTheirDraftsAlone() {
+        activeGroupVersion();
+        registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("grp-beta")), audit(ADMIN, "policy.draft"));
+        approve("class.TCKN", 3, "security_admin", ADMIN);
+        approve("class.TCKN", 3, "privacy_officer", OFFICER);
+        registry.draft(groupRule("TCKN", "REDACT", "enforce", List.of("grp-beta")), audit(ADMIN, "policy.draft"));
+        registry.draft(groupRule("TCKN", "REDACT", "monitor", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
+        withdraw("class.TCKN", 2, OTHER_ADMIN, "Synthetic");
+        assertEquals("withdrawn", status("class.TCKN", 2));
+        assertEquals("active", status("class.TCKN", 3), "another group scope keeps applying");
+        assertEquals("pending", status("class.TCKN", 4), "a draft of another scope waits for its two approvals");
+        assertEquals("pending", status("class.TCKN", 5), "a draft of another mode waits for its two approvals");
+        approve("class.TCKN", 4, "security_admin", ADMIN);
+        approve("class.TCKN", 4, "privacy_officer", OFFICER);
+        assertEquals("active", status("class.TCKN", 4));
+    }
+
+    // PR 30 review D-01: a draft of the withdrawn scope started before the withdrawal stops counting with its approval.
+
+    @Test
+    void aDraftStartedBeforeAWithdrawalCanNeverBringTheScopeBack() {
+        activeGroupVersion();
+        registry.draft(groupRule("TCKN", "REDACT", "enforce", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
+        approve("class.TCKN", 3, "security_admin", ADMIN);
+        withdraw("class.TCKN", 2, OTHER_ADMIN, "Synthetic");
+        assertEquals("superseded", status("class.TCKN", 3), "superseded in the withdrawal's transaction");
+        assertEquals(1, ledgerRows("policy_rule_version", "UPDATE", "policy.scope_withdraw", "class.TCKN@v3"));
+        assertEquals("POLICY_NOT_PENDING", assertThrows(RegistryConflict.class,
+            () -> approve("class.TCKN", 3, "privacy_officer", OFFICER)).reason(),
+            "the privacy officer alone can never complete the older draft");
+        assertTrue(registry.active().stream().noneMatch(v -> v.scopedToGroups()), "the scope stays withdrawn");
+
+        // The trigger: a pending draft is superseded by a newer draft of its own mode and scope, or by a withdrawal of
+        // its mode and scope in the same transaction; neither a newer draft of another scope nor an old withdrawal does.
+        registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("grp-alpha")), audit(ADMIN, "policy.draft"));
+        registry.draft(groupRule("TCKN", "BLOCK", "enforce", List.of("grp-beta")), audit(ADMIN, "policy.draft"));
+        DataAccessException refused = assertThrows(DataAccessException.class, () -> mutate(
+            "UPDATE policy_rule_version SET status = 'superseded', superseded_at = now() WHERE rule_id = 'class.TCKN' "
+                + "AND version = 4"));
+        assertTrue(refused.getMessage().contains("POLICY_NO_REPLACEMENT"), refused.getMessage());
+        assertEquals("pending", status("class.TCKN", 4), "the draft after the withdrawal waits for its two approvals");
+        assertEquals("pending", status("class.TCKN", 5));
+    }
+
+    @Test
+    void aRefusedWithdrawCheckRollsTheWithdrawalBack() {
+        activeGroupVersion();
+        assertThrows(IllegalStateException.class, () -> registry.withdrawScope("class.TCKN", 2, ADMIN, "Synthetic",
+            new AuditContext(ADMIN, "policy.scope_withdraw", "Synthetic", null), active -> {
+                assertTrue(active.stream().noneMatch(v -> v.key().equals("class.TCKN@v2")));
+                throw new IllegalStateException("synthetic refusal");
+            }));
+        assertEquals("active", status("class.TCKN", 2));
+        assertEquals(0, db.dsl().fetchCount(Schema.AUDIT_EVENT, Schema.AUDIT_ACTION.eq("policy.scope_withdraw")));
     }
 
     // PR 21 review D-01: retiring a platform supersedes its pending drafts and their approvals.

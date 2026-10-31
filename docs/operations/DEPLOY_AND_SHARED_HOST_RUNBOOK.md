@@ -115,6 +115,9 @@ e2e verdicts. A deploy that ends without `Done.` is a failure with its reason in
 
 ## 7. Build and apply commands (implementation phase)
 
+Ratified as part of the frozen runbook by `docs/design/PO_DECISION_RECORD_2026_10_31_Q41_Q42_Q44.md` (Q-42,
+2026-10-31); amended like the rest of the runbook.
+
 Agents build and test; **the apply is the Product Owner's step**, run in the PO's own terminal after the checks in §3 and
 outside the protected windows. No agent runs `kubectl apply`, `kubectl diff` against HOST-A or a container build for a
 release.

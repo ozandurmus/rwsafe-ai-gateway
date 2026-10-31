@@ -53,17 +53,14 @@ public class PolicyApiController {
     }
 
     /**
-     * Requests the withdrawal of an active group-scoped class version (PR 21 Q-41), with a reason; it takes effect with
-     * the two approvals given on the returned version through the approval route.
+     * Withdraws an active group-scoped class version (PO decision Q-41, 2026-10-31): {@code security_admin} only
+     * (SecurityConfig and the service), with a reason, effective at once; returns the withdrawn version. The viewer, the
+     * privacy officer alone and the masked role get 403.
      */
     @PostMapping("/rules/{ruleId}/versions/{version}/withdrawal")
-    public ResponseEntity<VersionView> withdraw(@PathVariable("ruleId") String ruleId,
-                                                @PathVariable("version") int version,
-                                                @RequestBody PolicyRegistryService.RetireRequest body,
-                                                Authentication auth) {
-        VersionView created = VersionView.of(registry.requestWithdrawal(ruleId, version, body, auth.getName(),
-            roles(auth)), Set.of());
-        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    public VersionView withdraw(@PathVariable("ruleId") String ruleId, @PathVariable("version") int version,
+                                @RequestBody PolicyRegistryService.RetireRequest body, Authentication auth) {
+        return VersionView.of(registry.withdrawScope(ruleId, version, body, auth.getName(), roles(auth)), Set.of());
     }
 
     @PostMapping("/rules/{ruleId}/versions/{version}/approvals")

@@ -99,6 +99,8 @@ final class Schema {
         SQLDataType.CLOB);
     static final Field<Instant> RV_WITHDRAWN_AT = DSL.field(DSL.name("policy_rule_version", "withdrawn_at"),
         SQLDataType.INSTANT);
+    static final Field<String> RV_WITHDRAWN_BY = DSL.field(DSL.name("policy_rule_version", "withdrawn_by"),
+        SQLDataType.CLOB);
 
     static final Table<Record> APPROVAL = DSL.table(DSL.name("policy_approval"));
     static final Field<String> AP_RULE_ID = DSL.field(DSL.name("policy_approval", "rule_id"), SQLDataType.CLOB);

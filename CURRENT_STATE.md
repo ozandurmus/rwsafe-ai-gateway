@@ -156,8 +156,9 @@ ICAP head, the chunked decoder and the JSON scanner replace the placeholder. Loc
   rollout bar; Platforms has the retire action with a reason and a built-in confirmation step. After the second review
   (`docs/reviews/PR21_2026_10_30_RESPONSE.md`): group names use the shared `java/policy` `GroupNames` normal form
   everywhere (API, database check, compiler, masked pseudonyms, UI duplicate check); a retirement supersedes the
-  platform's pending drafts; an active group-scoped version can be withdrawn with a reason and two approvals (Q-41,
-  status `withdrawn`, its groups fall back to `ANY`); drafts for different scopes wait side by side; verdict events
+  platform's pending drafts; an active group-scoped version can be withdrawn (status `withdrawn`, its groups fall back
+  to `ANY`; since PO decision Q-41 of 2026-10-31 one security administrator with a reason, see "Done (single-administrator
+  withdrawal)"); drafts for different scopes wait side by side; verdict events
   carry only `class.<CLASS>@<version>` rule ids and the read paths return them; free-text reasons refuse identifiers.
 - Screens: Policies (registry table with action, mode, scope, version, status; versions, approval steps,
   simulation panel and a new-version form for a selected rule) and Platforms (platform rows). The masked role reads both
@@ -400,8 +401,9 @@ The features above are wired into `deploy/rwsafe/`, every one off by default; no
 - Second review: `docs/reviews/PR27_2026_10_31_ARGON_DEPLOY_WIRING_2.md`, answered in `PR27_2026_10_31_RESPONSE.md`.
 - Residual (accepted, PR 27 review Q-1): 9401 also holds the ICAP preStop drain, so an admitted scraper pod could
   drain an ICAP pod; 9402 is the gateway's port in the frozen plan, so the drain gets no port of its own.
-- Departures: the frozen runbook gained §7.5 and the two-placeholder estate patch in §7.4, and the frozen plan's capture
-  claim (100Gi) is 40Gi for now; both need the PO's record. The quota ceilings of the three namespaces (150Gi, 20Gi,
+- Departures: the frozen runbook gained §7.5 and the two-placeholder estate patch in §7.4 (ratified with the rest of
+  section 7 by PO decision Q-42, `docs/design/PO_DECISION_RECORD_2026_10_31_Q41_Q42_Q44.md`), and the frozen plan's capture
+  claim (100Gi) is 40Gi for now, which still needs the PO's record. The quota ceilings of the three namespaces (150Gi, 20Gi,
   30Gi; 200Gi together) still exceed the host-free budget: the check bounds what is requested, not the quotas.
 
 Product Owner inputs, before the first release or the feature named:
@@ -453,10 +455,10 @@ Product Owner inputs, before the first release or the feature named:
   registry reasons are refused at write; the admin's capture read shows the person as a `NAME-<WORD>`.
 - Second review (Argon, `docs/reviews/PR26_2026_10_31_ARGON_MASKING_LAYERS_4_5.md`, DO NOT MERGE) and its
   confirmation review (`PR26_2026_10_31_ARGON_MASKING_LAYERS_4_5_RECHECK.md`: D-02, D-03, D-05, D-07, D-08 closed;
-  N-01 to N-04) answered by id in `docs/reviews/PR26_2026_10_31_RESPONSE.md`. Class-token widening is the PO's open
-  question Q-44.
-- Remaining before `rwmask-v1` (MASKING_AND_PRIVACY B2, B3): the B3 `pseudonym_registry` (class tokens stay 4 hex
-  until then; open as Q-44), MAC OUI-preserving masking (a MAC reads `[REDACTED_IP]` today),
+  N-01 to N-04) answered by id in `docs/reviews/PR26_2026_10_31_RESPONSE.md`. Class-token widening was question Q-44:
+  the PO chose the B3 pseudonym registry, token formats unchanged (`docs/design/PO_DECISION_RECORD_2026_10_31_Q41_Q42_Q44.md`).
+- Remaining before `rwmask-v1` (MASKING_AND_PRIVACY B2, B3): the B3 `pseudonym_registry` (class tokens stay 4 hex;
+  PO decision Q-44 builds the registry next, in its own lane with migration V10), MAC OUI-preserving masking (a MAC reads `[REDACTED_IP]` today),
   customer numbers `CUST-` by the PO's format rules (Q-23; only the word after müşteri, customer or hesap is `CUST-`
   now), project code names (they need an estate list of code names that does not exist yet).
 
@@ -492,6 +494,45 @@ Screens for the control-plane features merged on 2026-10-31; every new string in
 - Open: ADR-009 §5 still names `security_analyst` for the incident read (the role does not exist yet; the PO's records
   give it to `security_admin`); the event list does not say which events hold captured content.
 
+## Done (single-administrator withdrawal, branch `feature/q41-single-admin-withdrawal`)
+
+PO decisions Q-41, Q-42 and Q-44 of 2026-10-31 (`docs/design/PO_DECISION_RECORD_2026_10_31_Q41_Q42_Q44.md`, RATIFIED); it supersedes
+the orchestrator's interim Q-41 decision (two approvals) in `docs/reviews/PR21_2026_10_30_RESPONSE.md`.
+
+- Q-41: one `security_admin` withdraws an active group-scoped class version with a reason, effective at once: the
+  version becomes `withdrawn` (kept with the time, the administrator's pseudonym and the reason), leaves the next
+  snapshot, and its groups fall back to `ANY`; a pending draft of the same rule, mode and scope (and any approval it
+  holds) is superseded in the same transaction (PR 30 review D-01). The reason takes the platform-retirement checks (`IdentifierCheck`, the
+  free-text layers, the estate dictionary; withheld from the masked role). Ledger action `policy.scope_withdraw`, so the
+  SIEM export carries it. The viewer, the privacy officer alone and the masked role get 403. Residual risk accepted by
+  the PO: one person can loosen policy for a group.
+- Flyway `V9__single_admin_withdrawal.sql`: column `withdrawn_by`; the guard refuses a withdrawal whose ledger row does
+  not name the same administrator and reason (as for retirement), refuses every new withdrawal request
+  (`POLICY_WITHDRAWAL_REQUEST_RETIRED`) and the activation of an old one; a pending V3 request is superseded by the
+  migration (ledgered as `system:migration`); an active V3 request and the version it withdrew stay as history.
+- The two-approval request path is gone from the store, service, API (the withdrawal route now returns the withdrawn
+  version, HTTP 200) and UI ("Geri çek": reason, in-page confirmation, result line; no approval card for a withdrawal).
+- Q-42: runbook section 7 ratified as part of the frozen runbook (a ratification line under its heading). Q-44: the B3
+  pseudonym registry is built next by its own lane (migration V10).
+- Tests: `PolicyRegistryStoreTest` (one administrator withdraws; ledger actor and reason checked by the trigger; direct
+  SQL without them refused; no request row; other scopes and drafts untouched; refused check rolls back),
+  `SingleAdminWithdrawalMigrationTest` (V8 data with V3 requests, then V9), `SnapshotCompilerTest` (withdrawn version
+  absent), `PolicyRegistryIntegrationTest` (403 for viewer, officer, masked and dual sessions; reason checks; snapshot
+  drops the scope at once; ledger), `MaskedRoleLeakProbeTest` (seeds one withdrawn and one active scoped version and
+  walks the withdrawal route), `policies.test.tsx` (withdraw, refusal, no button for viewer, officer, masked).
+- Second review (Argon, `docs/reviews/PR30_2026_10_31_ARGON_SINGLE_ADMIN_WITHDRAWAL.md`, MERGE WITH CORRECTIONS),
+  answered in `docs/reviews/PR30_2026_10_31_RESPONSE.md`: D-01 (drafts of the withdrawn scope superseded; the guard
+  supersedes a pending draft only for a newer draft of its own mode and scope, a withdrawal of it in the same
+  transaction or a retirement) and D-02 (the masked role reads the withdrawal reason withheld).
+
+## Held (pseudonym registry, Q-44)
+
+The B3 pseudonym registry is built on branch `feature/pseudonym-registry` (V10) and not merged: with the frozen
+4-hex class tokens a kind holds 65 536 tokens per key, and `NUM-` (every run of six or more digits) can fill it at bank
+scale, after which masked pages fail closed (503). Per the PO's rule of 2026-10-31 (prove the product end to end first,
+decide governance details at go-live), the token width is decided at go-live; until then the 4-hex tokens may collide
+(no leak, an auditor may see two values share a token).
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
@@ -500,8 +541,7 @@ request 14) added the signed snapshot pull, Secure ICAP with a required client c
 admission, the body budget, the drain window, the verdict spool with backpressure and fixed-label metrics.
 Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 1, needs the PO's go); vendoring of the
 neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeScript rules for `frontend/`; control plane
-later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules, the PO's
-confirmation of the orchestrator's Q-41 decision (withdrawal of a group scope under two approvals), a server-side user
+later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules, a server-side user
 settings store for the UI language, the
 ratified decision record that mirrors the seed fixture, the C4 raw capture and its grants, the Incidents, Identities
 and roles and Administration screens, a browser-level (Playwright) masked-role leak probe on top of the API-level one,

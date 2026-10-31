@@ -491,27 +491,35 @@ class MaskedRoleLeakProbeTest {
         assertEquals(200, admin.post(approvals, role("security_admin"), true).status());
         assertEquals(200, officer.post(approvals, role("privacy_officer"), true).status());
 
-        // A group-scoped class version (PO decision Q-39) naming the estate's directory groups, activated, then a
-        // withdrawal request and a platform retirement (Q-40, Q-41) with free-text reasons: the registry's free values
-        // that reach the screens. A reason that names a person (masking layer 4) or carries a number glued to letters is
-        // refused before it is stored, so the stored reasons are plain sentences, withheld from the masked role anyway.
-        ObjectNode scoped = JSON.createObjectNode().put("action", "BLOCK").put("mode", "enforce")
-            .put("reasonCode", "SYNTHETIC_SCOPE");
-        ObjectNode scope = scoped.putObject("scope").put("kind", "GROUPS");
-        com.fasterxml.jackson.databind.node.ArrayNode scopeGroups = scope.putArray("groups");
-        canaries.groups.forEach(g -> scopeGroups.add(g));
-        ApiClient.Response scopedDraft = admin.post("/api/v1/policy/rules/class.TR_IBAN/versions", scoped.toString(),
-            true);
-        assertEquals(201, scopedDraft.status(), String.valueOf(scopedDraft.body()));
-        int scopedVersion = scopedDraft.body().get("version").asInt();
-        String scopedApprovals = "/api/v1/policy/rules/class.TR_IBAN/versions/" + scopedVersion + "/approvals";
-        assertEquals(200, admin.post(scopedApprovals, role("security_admin"), true).status());
-        assertEquals(200, officer.post(scopedApprovals, role("privacy_officer"), true).status());
+        // Group-scoped class versions (PO decision Q-39) naming the estate's directory groups, activated; one is then
+        // withdrawn by one administrator (Q-41, 2026-10-31) and a platform is retired (Q-40), with free-text reasons:
+        // the registry's free values that reach the screens. The monitor version stays active, so the groups reach the
+        // snapshot too. A reason that names a person (masking layer 4) or carries a number glued to letters is refused
+        // before it is stored, so the stored reasons are plain sentences, withheld from the masked role anyway.
+        int scopedVersion = 0;
+        for (String mode : List.of("enforce", "monitor")) {
+            ObjectNode scoped = JSON.createObjectNode().put("action", "BLOCK").put("mode", mode)
+                .put("reasonCode", "SYNTHETIC_SCOPE");
+            ObjectNode scope = scoped.putObject("scope").put("kind", "GROUPS");
+            com.fasterxml.jackson.databind.node.ArrayNode scopeGroups = scope.putArray("groups");
+            canaries.groups.forEach(g -> scopeGroups.add(g));
+            ApiClient.Response scopedDraft = admin.post("/api/v1/policy/rules/class.TR_IBAN/versions",
+                scoped.toString(), true);
+            assertEquals(201, scopedDraft.status(), String.valueOf(scopedDraft.body()));
+            int created = scopedDraft.body().get("version").asInt();
+            String scopedApprovals = "/api/v1/policy/rules/class.TR_IBAN/versions/" + created + "/approvals";
+            assertEquals(200, admin.post(scopedApprovals, role("security_admin"), true).status());
+            assertEquals(200, officer.post(scopedApprovals, role("privacy_officer"), true).status());
+            if (scopedVersion == 0) {
+                scopedVersion = created;
+            }
+        }
         Person named = canaries.claimants.get(1);
         String withdrawalReason = "Talep sahibi kapsamın bittiğini bildirdi";
         ApiClient.Response withdrawal = admin.post("/api/v1/policy/rules/class.TR_IBAN/versions/" + scopedVersion
             + "/withdrawal", JSON.createObjectNode().put("reason", withdrawalReason).toString(), true);
-        assertEquals(201, withdrawal.status(), String.valueOf(withdrawal.body()));
+        assertEquals(200, withdrawal.status(), String.valueOf(withdrawal.body()));
+        assertEquals("withdrawn", withdrawal.body().get("status").asText());
         String retirementReason = "Platform artık kullanılmıyor";
         // A reason with a person's name or a number glued to letters is refused before it is stored, for every role.
         for (String gluedReason : List.of("kayıt ref" + canaries.tckns.get(0), "arayan tel" + canaries.mobiles.get(0),

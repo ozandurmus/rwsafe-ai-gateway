@@ -158,14 +158,16 @@ approval given before it never counts afterwards. A reason (retirement or withdr
 identifier: an address, an e-mail address, a phone, card, IBAN or TCKN number, a secret shape or an estate term
 (`REASON_HOLDS_IDENTIFIER`, `ESTATE_NAME_REFUSED`).
 
-Withdrawing a group scope (PR 21 decision Q-41): signed in as `synthetic-admin`, open Policies, select the class, press
-"Geri çek" beside an active group-scoped version, write the reason, press "Devam et" and confirm with "Evet, onaya
-gönder". The request appears as a new pending version ("Sürüm N için geri çekme") with its own approval steps; it takes
-the same two approvals as an activation (security administrator, then `synthetic-officer` as privacy officer). With the
-second approval the scoped version becomes `withdrawn`, the request stays active as the scope's marker, and the next
-snapshot no longer lists the scoped rule, so those groups follow the rule for everyone again. Until then the version
-keeps applying. As a request: `POST /api/v1/policy/rules/class.<CLASS>/versions/<version>/withdrawal` with
-`{"reason":"..."}`, then the usual approvals on the returned version. Drafts for different scopes (or modes) of one rule
+Withdrawing a group scope (PO decision Q-41, `docs/design/PO_DECISION_RECORD_2026_10_31_Q41_Q42_Q44.md`): signed in as
+`synthetic-admin`, open Policies, select the class, press "Geri çek" beside an active group-scoped version, write the
+reason, press "Devam et", read the consequences and confirm with "Evet, geri çek". No second approval is needed: the
+version becomes `withdrawn` at once (it stays listed, greyed, with the time, the administrator's pseudonym and the
+reason), the next snapshot no longer lists the scoped rule, so those groups follow the rule for everyone again, and the
+ledger (`audit_event`, action `policy.scope_withdraw`) names the administrator and carries the reason. Bringing the group
+rule back is a new version under the two approvals; a draft of the same scope and mode started before the withdrawal
+is superseded with it (its approvals never count afterwards). As a request:
+`POST /api/v1/policy/rules/class.<CLASS>/versions/<version>/withdrawal` with `{"reason":"..."}` (security administrator
+only; 403 for the viewer, the privacy officer and the masked role); the response is the withdrawn version. Drafts for different scopes (or modes) of one rule
 wait side by side; a new draft replaces only the pending version of its own rule, mode and scope.
 
 The signed snapshot, as the data plane pulls it:

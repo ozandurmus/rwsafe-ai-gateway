@@ -280,7 +280,28 @@ class SnapshotCompilerTest {
             assertThrows(RegistryRefusal.class, () -> compiler.compile(tooMany)).reason());
     }
 
-    // PR 21 Q-41: an active withdrawal request marks a withdrawn scope and is never compiled.
+    // PO decision Q-41: a withdrawn group-scoped version is never compiled; its groups follow the ANY baseline.
+
+    @Test
+    void aWithdrawnGroupScopedVersionIsAbsentFromTheSnapshot() {
+        PolicyRuleVersion s = scoped("TCKN", 2, "BLOCK", "enforce", List.of("GRP-ALPHA"));
+        List<PolicyRuleVersion> withScope = new ArrayList<>(seedActive());
+        withScope.add(s);
+        assertTrue(compiler.compile(withScope).ruleVersions().contains("class.TCKN@v2"), "the positive control");
+
+        PolicyRuleVersion withdrawn = new PolicyRuleVersion(s.ruleId(), 2, s.kind(), s.dataClass(), s.action(), null,
+            null, null, null, null, s.mode(), "all", "withdrawn", "registry", s.authorFingerprint(), s.reasonCode(),
+            Instant.EPOCH, Instant.EPOCH, null, TWO_APPROVALS, "GROUPS", s.scopeGroups(), null, null, "Pilot finished",
+            Instant.EPOCH, "USR-00000000a1");
+        List<PolicyRuleVersion> afterWithdrawal = new ArrayList<>(seedActive());
+        afterWithdrawal.add(withdrawn);
+        PolicySnapshotStore.Compiled compiled = compiler.compile(afterWithdrawal);
+        assertEquals(compiler.compile(seedActive()).rulesDigest(), compiled.rulesDigest(),
+            "the snapshot is the ANY baseline's");
+        assertTrue(!compiled.ruleVersions().contains("class.TCKN@v2"));
+    }
+
+    // A V3 withdrawal request kept as history (an active marker) is never compiled either.
 
     @Test
     void aWithdrawalRequestIsNeverCompiled() {
@@ -288,7 +309,7 @@ class SnapshotCompilerTest {
         PolicyRuleVersion marker = new PolicyRuleVersion(s.ruleId(), 3, s.kind(), s.dataClass(), s.action(), null, null,
             null, null, null, s.mode(), "all", "active", "registry", s.authorFingerprint(), "SCOPE_WITHDRAWAL",
             Instant.EPOCH, Instant.EPOCH, null, TWO_APPROVALS, "GROUPS", s.scopeGroups(), null, 2, "Pilot finished",
-            null);
+            null, null);
         List<PolicyRuleVersion> active = new ArrayList<>(seedActive());
         active.add(marker);
         PolicySnapshotStore.Compiled compiled = compiler.compile(active);
