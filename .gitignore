@@ -37,3 +37,6 @@ __pycache__/
 
 # Frontend build output (the image build produces it; never committed).
 frontend/dist/
+
+# Local trial runtime state: logs, PID files, spool, snapshot cache (tools/trial/README.md).
+tools/trial/.run/
