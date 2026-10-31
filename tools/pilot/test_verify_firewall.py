@@ -168,8 +168,8 @@ FAKE_KUBECTL = r'''#!/usr/bin/env bash
 a="$*"
 case "${a}" in
   "get namespace rwsafe") exit 0 ;;
-  *"name=rwsafe-icap -o jsonpath"*) printf 'true\ntrue\n' ;;
-  *"name=rwsafe-icap -o name"*) printf 'pod/a\npod/b\n' ;;
+  *"component=icap --field-selector=status.phase=Running -o jsonpath"*) printf 'true\ntrue\n' ;;
+  *"component=icap --field-selector=status.phase!=Succeeded -o name"*) printf 'pod/a\npod/b\n' ;;
   *"get jobs -l app.kubernetes.io/name=rwsafe-icap-probe"*)
     printf '2026-10-31T10:00:00Z rwsafe-icap-probe-old\n2026-10-31T10:15:00Z rwsafe-icap-probe-%s\n' "${NEWEST}" ;;
   *"get job rwsafe-icap-probe-old "*) printf 'Complete\n' ;;
