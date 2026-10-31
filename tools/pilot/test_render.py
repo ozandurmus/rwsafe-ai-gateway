@@ -329,6 +329,27 @@ class BuildTarget(unittest.TestCase):
                 self.assertFalse(any(line.startswith(("ARG", "ENV HTTP", "ENV HTTPS", "ENV NO_PROXY"))
                                      for line in lines[:froms[0]]))
 
+    # PR 39 review D-03: the ui stage's CA join keeps every BEGIN line on a line of its own, even when a file lacks its
+    # final newline (synthetic text, no certificate material).
+    def test_the_ui_stage_joins_ca_files_with_a_newline(self):
+        import subprocess
+        text = (mc.REPO_ROOT / "deploy/images/control.Containerfile").read_text()
+        joins = [line.strip().rstrip("\\").strip().rstrip(";") for line in text.splitlines()
+                 if "> /tmp/corp-ca.bundle" in line]
+        self.assertEqual(len(joins), 1, joins)
+        self.assertTrue(joins[0].startswith("for pem in /tmp/corp-ca/*.pem;"), joins[0])
+        begin, end = "-----BEGIN " + "CERTIFICATE-----", "-----END " + "CERTIFICATE-----"
+        with tempfile.TemporaryDirectory() as tmp:
+            ca = Path(tmp) / "corp-ca"
+            ca.mkdir()
+            (ca / "a.pem").write_text(f"{begin}\nsynthetic-a\n{end}")
+            (ca / "b.pem").write_text(f"{begin}\nsynthetic-b\n{end}\n")
+            bundle = Path(tmp) / "bundle"
+            command = joins[0].replace("/tmp/corp-ca/", f"{ca}/").replace("/tmp/corp-ca.bundle", str(bundle))
+            subprocess.run(["sh", "-c", command], check=True)
+            lines = bundle.read_text().splitlines()
+        self.assertEqual([line for line in lines if "BEGIN" in line or "END" in line], [begin, end, begin, end])
+
     def test_build_jobs_pass_the_proxy_only_as_build_arguments(self):
         for j in (o for o in _BUILD["acme"] if o["kind"] == "Job"):
             c = mc.containers(mc.pod_template(j)[1])[0]

@@ -11,15 +11,17 @@ import org.springframework.stereotype.Component;
  * browsers accept that on {@code https} and on {@code http://localhost}, which the pilot's port-forward uses
  * (PILOT_RUNBOOK step 14). A non-Secure cookie is for a plain-http local run only, and then the session cookie must not
  * carry the {@code __Host-}/{@code __Secure-} prefix (a browser drops such a cookie without Secure, so sign-in would loop
- * without an error); a half-applied setting is refused here instead of failing silently in the browser.
+ * without an error); a half-applied setting is refused here instead of failing silently in the browser. A Secure
+ * deployment keeps the {@code __Host-} prefix (PR 39 review D-02): the browser then binds the session cookie to this
+ * origin and path {@code /}, with no Domain attribute, whatever {@code RWSAFE_SESSION_COOKIE} says.
  */
 @Component
 public class CookiePolicy {
 
     private static final Logger LOG = LoggerFactory.getLogger(CookiePolicy.class);
 
-    public CookiePolicy(@Value("${server.servlet.session.cookie.name:JSESSIONID}") String sessionCookie,
-                        @Value("${server.servlet.session.cookie.secure:false}") boolean sessionSecure,
+    public CookiePolicy(@Value("${server.servlet.session.cookie.name:__Host-rwsafe-session}") String sessionCookie,
+                        @Value("${server.servlet.session.cookie.secure:true}") boolean sessionSecure,
                         @Value("${rwsafe.identity.cookie-secure:true}") boolean csrfSecure) {
         check(sessionCookie, sessionSecure, csrfSecure);
         if (!sessionSecure) {
@@ -31,6 +33,10 @@ public class CookiePolicy {
         if (sessionSecure != csrfSecure) {
             throw new IllegalStateException("server.servlet.session.cookie.secure and rwsafe.identity.cookie-secure "
                 + "differ; set both through RWSAFE_COOKIE_SECURE");
+        }
+        if (sessionSecure && !sessionCookie.startsWith("__Host-")) {
+            throw new IllegalStateException("a Secure session cookie keeps the __Host- prefix; set RWSAFE_SESSION_COOKIE "
+                + "to a __Host- name or leave it unset");
         }
         if (!sessionSecure && (sessionCookie.startsWith("__Host-") || sessionCookie.startsWith("__Secure-"))) {
             throw new IllegalStateException("a __Host-/__Secure- session cookie needs Secure; with "

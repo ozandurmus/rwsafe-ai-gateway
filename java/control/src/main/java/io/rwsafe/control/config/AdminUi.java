@@ -31,6 +31,8 @@ import org.springframework.web.servlet.resource.PathResourceResolver;
  *   <li>Everything else, and every path when the directory holds no {@code index.html} (a local run without a frontend
  *       build), is the API's JSON 404.</li>
  * </ul>
+ * A file is served only when its real path (every symbolic link resolved) lies inside the UI directory's real path
+ * (PR 39 review D-01): a link in the directory that points elsewhere is the JSON 404, never its target.
  * The security headers (CSP {@code default-src 'self'}, {@code script-src 'self'}, {@code frame-ancestors 'none'},
  * {@code nosniff}, {@code no-referrer}) come from the admin security chain ({@code SecurityConfig}) and cover these
  * responses too; the built index.html loads its script from {@code /assets/} and has no inline script.
@@ -56,12 +58,12 @@ public class AdminUi implements WebMvcConfigurer {
             .addResourceLocations(new FileSystemResource(dir.resolve("assets").toString() + "/"))
             .setCacheControl(CacheControl.maxAge(Duration.ofDays(365)).immutable())
             .resourceChain(false)
-            .addResolver(new PathResourceResolver());
+            .addResolver(new ConfinedResolver(dir));
         registry.addResourceHandler("/**")
             .addResourceLocations(root)
             .setCacheControl(CacheControl.noStore())
             .resourceChain(false)
-            .addResolver(new SpaResolver());
+            .addResolver(new SpaResolver(dir));
     }
 
     /** The root has an empty resource path, which the resource handler never resolves: it is index.html's route. */
@@ -84,8 +86,39 @@ public class AdminUi implements WebMvcConfigurer {
         return path.indexOf('.', slash + 1) < 0;
     }
 
+    /**
+     * {@link PathResourceResolver}'s lexical location check, plus the real-path check: the file's real path must lie
+     * inside the UI directory's real path, so no symbolic link (of a file or of a directory on the way) leads out of it.
+     */
+    static class ConfinedResolver extends PathResourceResolver {
+
+        private final Path root;
+
+        ConfinedResolver(Path root) {
+            this.root = root;
+        }
+
+        @Override
+        protected boolean checkResource(Resource resource, Resource location) throws IOException {
+            return super.checkResource(resource, location) && inside(resource);
+        }
+
+        private boolean inside(Resource resource) {
+            try {
+                Path file = resource.getFile().toPath().toRealPath();
+                return Files.isRegularFile(file) && file.startsWith(root.toRealPath());
+            } catch (IOException | UnsupportedOperationException e) {
+                return false;
+            }
+        }
+    }
+
     /** A file at the top of the directory, else index.html for a client-side route. */
-    static final class SpaResolver extends PathResourceResolver {
+    static final class SpaResolver extends ConfinedResolver {
+
+        SpaResolver(Path root) {
+            super(root);
+        }
 
         @Override
         protected Resource getResource(String resourcePath, Resource location) throws IOException {

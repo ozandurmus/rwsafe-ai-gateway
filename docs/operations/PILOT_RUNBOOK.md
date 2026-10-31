@@ -439,7 +439,7 @@ Cookies: the session cookie is `__Host-rwsafe-session` and both it and the CSRF 
 `http://127.0.0.1:18080` or the node address. If sign-in returns to the sign-in page in Chrome or Edge on
 `http://localhost`, stop and report. A non-Secure setting exists for plain-http local runs only (LOCAL_RUN.md); the control
 plane refuses to start when it is half-applied (`CookiePolicy`: `RWSAFE_COOKIE_SECURE=false` needs a session cookie name
-without the `__Host-` prefix), and using it in the pilot would be a committed overlay change after a PO decision, never
+without the `__Host-` prefix, and a Secure setting needs the `__Host-` name), and using it in the pilot would be a committed overlay change after a PO decision, never
 `kubectl set env`.
 
 ## 15. PROXY CHANGE P1 (the PO, proxy console): the ICAP service

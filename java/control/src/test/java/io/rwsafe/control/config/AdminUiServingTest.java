@@ -43,6 +43,14 @@ class AdminUiServingTest {
         Files.createDirectories(uiDir.resolve("assets"));
         Files.writeString(uiDir.resolve(ASSET.substring(1)), "console.log('synthetic');");
         Files.writeString(parent.resolve("outside.txt"), OUTSIDE_MARKER);
+        Files.writeString(parent.resolve("outside.js"), OUTSIDE_MARKER);
+        // PR 39 review D-01: links inside the directory that lead out of it (a file, a file in assets/, a directory).
+        Files.createSymbolicLink(uiDir.resolve("linked.txt"), parent.resolve("outside.txt"));
+        Files.createSymbolicLink(uiDir.resolve("assets").resolve("linked-0a1b2c3d.js"), parent.resolve("outside.js"));
+        Files.createSymbolicLink(uiDir.resolve("assets").resolve("up"), parent);
+        Files.createSymbolicLink(uiDir.resolve("up"), parent);
+        // A link that stays inside the directory is an ordinary file.
+        Files.createSymbolicLink(uiDir.resolve("assets").resolve("alias-0a1b2c3d.js"), uiDir.resolve(ASSET.substring(1)));
         r.add("rwsafe.ui.dir", uiDir::toString);
     }
 
@@ -115,11 +123,14 @@ class AdminUiServingTest {
     @Test
     void nothingOutsideTheDirectoryIsServed() throws Exception {
         for (String path : new String[] {"/..%2foutside.txt", "/assets/..%2f..%2foutside.txt", "/%2e%2e/outside.txt",
-            "/assets/%2e%2e/%2e%2e/outside.txt"}) {
+            "/assets/%2e%2e/%2e%2e/outside.txt", "/linked.txt", "/assets/linked-0a1b2c3d.js", "/assets/up/outside.js",
+            "/up/outside.txt"}) {
             HttpResponse<String> r = get(port, path);
             assertNotEquals(200, r.statusCode(), path);
             assertFalse(r.body().contains(OUTSIDE_MARKER), path);
         }
+        HttpResponse<String> alias = get(port, "/assets/alias-0a1b2c3d.js");
+        assertEquals(200, alias.statusCode(), "a link whose target stays inside the directory is served");
     }
 
     @Test

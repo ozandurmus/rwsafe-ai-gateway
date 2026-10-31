@@ -19,7 +19,11 @@ class CookiePolicyTest {
         assertThrows(IllegalStateException.class, () -> CookiePolicy.check("__Host-rwsafe-session", false, false),
             "a browser drops a __Host- cookie without Secure: sign-in would loop silently");
         assertThrows(IllegalStateException.class, () -> CookiePolicy.check("__Secure-rwsafe-session", false, false));
-        assertThrows(IllegalStateException.class, () -> CookiePolicy.check("rwsafe-session", true, false));
+        assertThrows(IllegalStateException.class, () -> CookiePolicy.check("rwsafe-session", true, true),
+            "PR 39 review D-02: a Secure deployment keeps the __Host- prefix");
+        assertThrows(IllegalStateException.class, () -> CookiePolicy.check("__Secure-rwsafe-session", true, true),
+            "__Secure- allows a Domain attribute; only __Host- binds the cookie to this origin");
+        assertThrows(IllegalStateException.class, () -> CookiePolicy.check("__Host-rwsafe-session", true, false));
         assertThrows(IllegalStateException.class, () -> CookiePolicy.check("rwsafe-session", false, true));
     }
 }

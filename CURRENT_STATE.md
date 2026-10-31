@@ -562,10 +562,15 @@ the orchestrator's interim Q-41 decision (two approvals) in `docs/reviews/PR21_2
   9400 at 404); `/assets/**` exact and immutable for a year, top-level files and client routes `index.html` with
   `no-store`, never for `api/`, `internal/` or `assets/` paths; classpath static mappings off. Headers from the admin
   chain (CSP `default-src 'self'`, `script-src 'self'`, `frame-ancestors 'none'`, nosniff, no-referrer, DENY); the built
-  index.html has no inline script. Without a UI directory `GET /` stays the JSON 404.
-- `CookiePolicy`: refuses to start when the session and CSRF `Secure` flags differ or a `__Host-`/`__Secure-` session
-  cookie is not Secure. Deploys keep `RWSAFE_COOKIE_SECURE=true`; PILOT_RUNBOOK step 14 uses `http://localhost` (Chromium
+  index.html has no inline script. Without a UI directory `GET /` stays the JSON 404. A file is served only when its
+  real path lies inside the UI directory's real path (no symbolic link leads out).
+- `CookiePolicy`: refuses to start when the session and CSRF `Secure` flags differ, a `__Host-`/`__Secure-` session
+  cookie is not Secure, or a Secure session cookie lacks the `__Host-` prefix. Deploys keep `RWSAFE_COOKIE_SECURE=true`; PILOT_RUNBOOK step 14 uses `http://localhost` (Chromium
   and Firefox keep Secure cookies there; UNVERIFIED for the PO's browser).
+- Second review (Argon, `docs/reviews/PR39_2026_10_31_ARGON_CONTROL_SERVES_UI.md`, MERGE WITH CORRECTIONS): D-01
+  (symbolic links), D-02 (the `__Host-` prefix when Secure) and D-03 (CA files joined with a newline) fixed; answers in
+  `docs/reviews/PR39_2026_10_31_RESPONSE.md`. The orchestrator built the image on the pilot host (the UI stage installed
+  237 packages).
 - Open: step 14 tunnels with `ssh -L`, but step 4b records that HOST-A's sshd allows no port forwarding; how the PO
   reaches the forward is a PO decision (the runbook says stop and report).
 

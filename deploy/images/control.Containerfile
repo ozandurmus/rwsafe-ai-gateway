@@ -36,8 +36,11 @@ COPY frontend/package.json frontend/package-lock.json /ui/
 # --ignore-scripts: no dependency runs an install script. The lockfile's only two (esbuild's postinstall, which only
 # checks its binary, and fsevents, macOS only) are not needed: esbuild resolves its platform package
 # (@esbuild/linux-x64, in the lockfile) at run time. NODE_EXTRA_CA_CERTS: Node keeps its own CA list, so the optional
-# CA anchors of a TLS-intercepting proxy are added for this step only.
-RUN if ls /tmp/corp-ca/*.pem >/dev/null 2>&1; then cat /tmp/corp-ca/*.pem > /tmp/corp-ca.bundle; \
+# CA anchors of a TLS-intercepting proxy are added for this step only. The files are joined with a newline after each
+# (PR 39 review D-03), so a file without a final newline cannot glue its END line to the next BEGIN line, which would
+# make Node drop that certificate; tools/pilot/test_render.py runs this join on such files.
+RUN if ls /tmp/corp-ca/*.pem >/dev/null 2>&1; then \
+      for pem in /tmp/corp-ca/*.pem; do cat "${pem}"; echo; done > /tmp/corp-ca.bundle; \
       export NODE_EXTRA_CA_CERTS=/tmp/corp-ca.bundle; fi; \
     npm ci --ignore-scripts --no-audit --no-fund --cache /tmp/npm-cache \
  && rm -rf /tmp/npm-cache /tmp/corp-ca.bundle
