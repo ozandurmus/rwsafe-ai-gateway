@@ -150,9 +150,9 @@ finish()
 # ---- the orchestrator's part --------------------------------------------------------------------------------------------
 check_icap_pods() {
   local ready total
-  ready="$(k -n "${NS}" get pods -l "app.kubernetes.io/name=${PRODUCT}-icap" \
-    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null | grep -c '^true$' || true)"
-  total="$(k -n "${NS}" get pods -l "app.kubernetes.io/name=${PRODUCT}-icap" -o name 2>/dev/null | grep -c . || true)"
+  ready="$(k -n "${NS}" get pods -l "app.kubernetes.io/name=${PRODUCT}-icap,app.kubernetes.io/component=icap" \
+    --field-selector=status.phase=Running -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null | grep -c '^true$' || true)"
+  total="$(k -n "${NS}" get pods -l "app.kubernetes.io/name=${PRODUCT}-icap,app.kubernetes.io/component=icap" --field-selector=status.phase!=Succeeded -o name 2>/dev/null | grep -c . || true)"
   if [ "${total}" -gt 0 ] && [ "${ready}" = "${total}" ]; then
     good "icap pods" "${ready}/${total} ready"
   else
