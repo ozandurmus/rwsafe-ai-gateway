@@ -8,7 +8,8 @@ k3s overlay were written, as the artefact AC-1 and AC-4 are checked against. The
 assignment to `overlays/k3s/`, and the Secret and estate ConfigMap contract to `contracts/runtime-contracts.json`.
 
 `overlays/pilot/` is the first HOST-A pilot (k3s overlay plus: plain ICAP on 1344 only, break-glass sign-in without a
-directory, no SIEM, no Ingress, the committed policy seed from `policy/kustomization.yaml`); `build/` holds the kaniko
+directory, no SIEM, the admin UI through the host's Traefik by one host rule `ui.<product>.local`, the committed
+policy seed from `policy/kustomization.yaml`); `build/` holds the kaniko
 image build Jobs and their context loader. The deployed product name is set once in `product.env` and applied by
 `tools/pilot/render.py` (manifests are committed with `rwsafe`); the procedure is `docs/operations/PILOT_RUNBOOK.md`.
 

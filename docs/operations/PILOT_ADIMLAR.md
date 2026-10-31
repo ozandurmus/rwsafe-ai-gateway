@@ -87,33 +87,90 @@ Geri alma (tek satır, ürün adını aynı biçimde kendisi okur):
 adım), onayınızı alarak 1344'ü açan hizmeti kurar (12. adım) ve pilot denetimini çalıştırır (13. adım). Vekil konsoluna
 ancak ajan "1344 açıldı, pilot denetimi PASS" dedikten sonra geçin.
 
-## B. Yönetim arayüzü (14. adım, okuma, yalnızca siz girersiniz)
+## B. Yönetim arayüzü (14. adım, yalnızca siz girersiniz)
 
-Acil durum hesabının parolası yalnızca sizdedir; arayüze bu yüzden yalnızca siz girersiniz. Ajan sunucuda yönlendirmeyi
-açık bırakır:
+Arayüze, sunucudaki diğer ürüne ulaştığınız yoldan ulaşırsınız: sunucunun Traefik'i üzerinden, bir ad kuralıyla. Henüz
+DNS adı yoktur; ad uydurma ve ayrılmış bir addır: `ui.<ürün>.local` (bugün `ui.rwsafe.local`; ürün adı değişirse
+kendiliğinden değişir). Sertifika pilotun kendisinindir: sunucuda küçük bir sertifika yetkilisi (CA) üretilir, siz onun
+sertifikasına kendi bilgisayarınızda güvenirsiniz. Diğer ürünün Ingress'ine ve sertifikasına dokunulmaz.
+
+Ajan önce (onayınızla) sertifikayı üretir ve Ingress'i uygular (`PILOT_RUNBOOK.md` 14.1-14.3). Size iki satır iletir:
+CA sertifikasının yolu (`~/.config/<ürün>/admin-ca/ca.crt`, gizli değildir) ve parmak izi (`CA SHA-256 fingerprint:
+AB:CD:...`, 32 çift). CA'nın anahtarı yalnızca sunucuda, yalnızca sizin hesabınızın okuyabileceği bir dosyadadır; kümeye
+hiç girmez. Bu CA yalnızca `ui.<ürün>.local` adına sertifika verebilir; ona güvenmeniz başka hiçbir siteye güven vermez.
+
+**1. CA sertifikasını bilgisayarınıza alın** ve parmak izini karşılaştırın:
 
 ```bash
-kubectl -n "${PRODUCT}" port-forward "svc/${PRODUCT}-control" 18080:8080 --address 127.0.0.1
+scp <yönetici-hesabı>@<sunucu-adresi>:.config/<ürün>/admin-ca/ca.crt ~/Downloads/<ürün>-admin-ca.crt
+openssl x509 -in ~/Downloads/<ürün>-admin-ca.crt -noout -fingerprint -sha256      # macOS
 ```
 
-Kendi bilgisayarınızda: `ssh -N -L 18080:127.0.0.1:18080 <yönetici-hesabı>@<sunucu-adresi>`, sonra tarayıcıda
-`http://localhost:18080` adresini açıp `breakglass` ile girin. Chrome, Edge ya da Firefox kullanın ve adres olarak
-`127.0.0.1` ya da sunucu adresi değil `localhost` yazın (oturum çerezi `Secure`; Safari bunu `localhost` üzerinde
-tutmaz). `ssh -L` "administratively prohibited" derse ya da sayfa açılmazsa durun ve bildirin: sunucuda başka bir
-aktarma yolu kurulmaz, nasıl erişileceği sizin kararınızdır. `GET /` yalnızca `NOT_FOUND` içeren bir JSON döndürürse
-denetim düzlemi görüntüsünde arayüz yoktur; durun ve bildirin. Giriş sayfası Chrome ya da Edge ile `localhost` üzerinde
-kendine dönüyorsa yine durun ve bildirin (ayrıntı: `PILOT_RUNBOOK.md` adım 14).
+Windows'ta PowerShell'de önce `cd $HOME/Downloads`, sonra aynı `scp` komutu (hedef `./<ürün>-admin-ca.crt`); parmak
+izi için aynı klasörde `certutil -dump .\<ürün>-admin-ca.crt | findstr /i sha256` (`Cert Hash(sha256)` satırı; sertifika
+penceresindeki "Thumbprint" SHA-1'dir, bu değer değildir). Parmak izi ajanın ilettiğinden farklıysa durun ve bildirin.
+
+**2. Sertifikaya güvenin.**
+
+- macOS: Anahtar Zinciri Erişimi'ni (Keychain Access) açın, Dosya > Öğeleri İçe Aktar, dosyayı seçin, anahtar zinciri
+  **Sistem** (System). İçe aktarılan `<ürün> pilot admin CA` öğesine çift tıklayın, **Güven** (Trust) bölümünde
+  **Güvenli Yuva Katmanı (SSL)** için **Her Zaman Güven** (Always Trust) seçin, pencereyi kapatıp parolanızla onaylayın.
+  Terminalden aynısı:
+  `sudo security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain ~/Downloads/<ürün>-admin-ca.crt`
+- Windows: dosyaya çift tıklayın, Sertifika Yükle, **Yerel Makine**, "Tüm sertifikaları aşağıdaki depolama alanına
+  yerleştir", Gözat, **Güvenilen Kök Sertifika Yetkilileri** (Trusted Root Certification Authorities), Son. Yönetici
+  PowerShell'inden, İndirilenler klasöründe aynısı: `certutil -addstore -f Root .\<ürün>-admin-ca.crt`
+- Chrome, Edge ve Safari işletim sisteminin deposunu kullanır. Firefox kendi deposunu kullanır: Ayarlar > Gizlilik ve
+  Güvenlik > Sertifikalar > Sertifikaları Göster > Yetkililer > İçe Aktar, "Web sitelerini tanımlamak için bu CA'ya güven"
+  kutusunu işaretleyin.
+
+**3. Hosts dosyasına tek satır ekleyin:** `<sunucu-adresi> ui.<ürün>.local`
+
+- macOS: `sudo sh -c 'echo "<sunucu-adresi> ui.<ürün>.local" >> /etc/hosts'`, ardından
+  `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`
+- Windows: Not Defteri'ni **yönetici olarak** açın, `C:\Windows\System32\drivers\etc\hosts` dosyasını açıp satırı ekleyin,
+  kaydedin, ardından `ipconfig /flushdns`
+- `.local` aynı zamanda çok noktaya yayın DNS'in (Bonjour) alanıdır: macOS'ta `.local` bir adın ilk çözümlemesi birkaç
+  saniye bekleyebilir. Hosts satırı yine de kullanılır; ilk açılışın yavaş olması bundandır, üründen değil.
+
+**4. Tarayıcıda `https://ui.<ürün>.local` adresini açın** (Chrome, Edge, Safari ya da Firefox) ve `breakglass` ile,
+10. adımdaki parolayla girin. Asma kilitte uyarı olmamalıdır. `http://` ile açarsanız Traefik sizi `https://` adresine
+yönlendirir.
+
+Sertifika uyarısı **beklenmez** ve uyarı hiçbir zaman "yine de devam et" ile geçilmez: durun ve yalnızca uyarının sınıfını
+bildirin. `NET::ERR_CERT_AUTHORITY_INVALID` (Safari'de "güvenilir değil") CA'ya bu bilgisayarda güvenilmediği anlamına
+gelir (2. madde yapılmamış ya da Firefox kendi deposunu kullanıyor). Uyarı başka bir ad gösteriyorsa Traefik kendi
+varsayılan (diğer ürünün) sertifikasını sunmuştur; ajan sertifika adımını yeniden çalıştırır. Sayfa güvenilir bağlantıyla
+bir kez açıldıktan sonra tarayıcı bu ad için bir yıl boyunca yalnızca güvenilir `https://` kabul eder (HSTS); CA'yı
+güven deposundan sonradan silerseniz sayfa o tarayıcıda açılmaz.
+
+**Maskeli rol:** Arayüze yalnızca siz girersiniz. Hiçbir ajan arayüzü açmaz, ekran görüntüsünü görmez, oradan bir değer
+almaz. Acil durum oturumu bir operatör oturumudur; ekranların gösterdiği gerçek adları gösterir. Maskeli rol
+(`replay_viewer`) pilotta kullanılmaz: kurum sözlüğünde yalnızca bir yer tutucu terim vardır (7. adım), maskeli bir oturum
+kurum adlarını henüz maskelemez. Bu rolü biri kullanmadan önce sözlük gerçek terimlerle değiştirilir.
 
 Görmeniz gereken: Politikalar ekranında tohum kuralları (gizli anahtar engelle; kimlik numarası, IBAN ve kart numarası
-maskele; zorlama kipi) ve Sağlık ekranında bileşenlerin çalıştığı.
+maskele; zorlama kipi) ve Sağlık ekranında bileşenlerin çalıştığı. `GET /` yalnızca `NOT_FOUND` içeren bir JSON
+döndürürse denetim düzlemi görüntüsünde arayüz yoktur; giriş sayfası kendine dönüyorsa da durun ve bildirin.
 
 Sentetik yoklamanın takma adını bir kez bulun: Trafik ekranında son bir saat, platform `gemini`, karar `BLOCK`; her
 :00, :15, :30 ve :45'ten sonraki bir dakika içinde bir olay görünür ve kullanıcı sütunu yoklamanın `USR-...` takma adını
 gösterir. Bu takma adı not edin (yalnızca kendinize; gerçek bir kişiyi göstermez). Yoklama 15 dakikada bir altı olay
 yazar: ikişer izin, maskeleme ve engelleme.
 
+**Yedek yol:** Ingress kullanılamazsa eski yol sunucuda hiçbir şeyi değiştirmeden çalışır: sunucuda
+`kubectl -n "${PRODUCT}" port-forward "svc/${PRODUCT}-control" 18080:8080 --address 127.0.0.1`, kendi bilgisayarınızda
+`ssh -N -L 18080:127.0.0.1:18080 <yönetici-hesabı>@<sunucu-adresi>`, sonra Chrome, Edge ya da Firefox ile
+`http://localhost:18080` (Safari `localhost` üzerinde `Secure` çerezi tutmaz). `ssh -L` "administratively prohibited"
+derse durun ve bildirin: sunucuda başka bir aktarma yolu kurulmaz.
+
+**Sonra:** Gerçek bir DNS adı ve kurumsal sertifika ayrı ve küçük bir değişikliktir (`PILOT_RUNBOOK.md` 14. adım,
+"Later"); o zaman hosts satırını ve pilot CA'yı güven deponuzdan silersiniz (macOS: Anahtar Zinciri Erişimi, Sistem,
+`<ürün> pilot admin CA`, Sil; Windows: `certlm.msc`, Güvenilen Kök Sertifika Yetkilileri).
+
 **Ajana söyleyin:** "Arayüze girildi, politikalar ve sağlık tamam." Bir şey ters giderse yalnızca ekrandaki hata
-sınıfını söyleyin (örnek metin değil, "administratively prohibited", "NOT_FOUND" ya da "giriş sayfasına dönüyor").
+sınıfını söyleyin (örnek metin, adres ya da ekran görüntüsü değil; örneğin "ERR_CERT_AUTHORITY_INVALID", "NOT_FOUND",
+"giriş sayfasına dönüyor" ya da "parmak izi farklı").
 
 ## C. Vekil konsolu (15, 16 ve 17. adımlar, yalnızca siz)
 

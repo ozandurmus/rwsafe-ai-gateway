@@ -8,8 +8,8 @@ import org.springframework.stereotype.Component;
 /**
  * The session and CSRF cookie settings agree, or the control plane does not start. Both cookies are {@code Secure} by
  * default and in every deploy ({@code RWSAFE_COOKIE_SECURE=true}, the session cookie {@code __Host-rwsafe-session});
- * browsers accept that on {@code https} and on {@code http://localhost}, which the pilot's port-forward uses
- * (PILOT_RUNBOOK step 14). A non-Secure cookie is for a plain-http local run only, and then the session cookie must not
+ * browsers accept that on {@code https}, which the pilot's admin Ingress serves ({@code https://ui.<product>.local}), and
+ * on {@code http://localhost}, which its port-forward fallback uses (PILOT_RUNBOOK step 14). A non-Secure cookie is for a plain-http local run only, and then the session cookie must not
  * carry the {@code __Host-}/{@code __Secure-} prefix (a browser drops such a cookie without Secure, so sign-in would loop
  * without an error); a half-applied setting is refused here instead of failing silently in the browser. A Secure
  * deployment keeps the {@code __Host-} prefix (PR 39 review D-02): the browser then binds the session cookie to this

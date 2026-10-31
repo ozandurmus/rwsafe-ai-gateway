@@ -8,9 +8,10 @@ The Turkish copy-paste checklist of the Product Owner's remaining steps (10 if n
 **Scope.** The corporate web proxy (Broadcom ProxySG, SGOS 7.4.15.x, three appliances, PHASE0_PROXYSG_RECORD F-1)
 sends the AI-category requests of **one test user** to the ICAP engine over **plain ICAP on 1344** (decision Q-28,
 exception H-2: at most 30 days, REQMOD fail-closed). The pilot uses `deploy/rwsafe/overlays/pilot`: no directory
-(break-glass sign-in only), no SIEM, no capture, no group claims, no Ingress (admin UI by `kubectl port-forward`), the
+(break-glass sign-in only), no SIEM, no capture, no group claims, the admin UI through the host's Traefik by the
+synthetic name `ui.<product>.local` (one Ingress with one host rule and the pilot's own certificate, step 14), the
 committed policy seed (TCKN redact, secrets block, enforce). neXus is not touched: no neXus object, namespace,
-Ingress, registry repository or firewall table is read or changed.
+Ingress, certificate, registry repository or firewall table is read or changed.
 
 **Placeholders.** Never write a real value into this file, a commit, a chat or a ticket: `<node-address>` (HOST-A's
 address), `<proxysg-address-1>` ... `<proxysg-address-3>`, `<DOMAIN>\<test-user>`, `<AI category>` (the vendor's
@@ -64,6 +65,8 @@ that the root filesystem is below 85 % used (`df -h /`; 69 % on 2026-10-31, HOST
 | H8 | 11 | **root, PO only**: a separate nftables table `<product>_pilot` (hyphens as underscores) that drops new TCP 1344 connections **to the node's own addresses** from every source except the ProxySG appliances (pod-to-pod and ServiceLB traffic untouched; neXus's own table is not touched) | `sudo nft delete table inet <product>_pilot` |
 | H8b | 11.3 | one probe Job created from the CronJob by `tools/pilot/verify_firewall.sh` (removed by its TTL after a day); `--latest` instead changes nothing | the TTL |
 | H9 | 12 | the ServiceLB Service that opens **1344 on the node** (no node-port range port: `allocateLoadBalancerNodePorts: false`, externalTrafficPolicy Cluster) | step 18 |
+| H10 | 14.1 | the pilot's admin CA in `~/.config/<product>/admin-ca/` on the host (key 0600, never in the cluster) and the TLS Secret `${PRODUCT}-admin-tls` (a leaf for `ui.<product>.local` only) | deleted with the namespace; the CA directory: step 18 |
+| H11 | 14.3 | the Ingress `${PRODUCT}-admin` (one host rule `ui.<product>.local` to `${PRODUCT}-control:8080`, class traefik) and the NetworkPolicy `${PRODUCT}-control-from-traefik` (Traefik's pods to 8080 only) | step 18 |
 | P1 | 15 | **proxy**: a new ICAP service pointing at `<node-address>:1344` | delete the service |
 | P2 | 16 | **proxy**: one policy rule sending only the test user's AI-category requests to it, fail-closed | step 17.6, one step |
 
@@ -266,7 +269,7 @@ python3 -B tools/deploy/manifest_check.py --rendered ~/pilot/app.json --release 
 kubectl diff --server-side -f ~/pilot/app.json | grep -c '^+++ '
 ```
 
-Expected: `render: target pilot, product ..., 41 objects (...)`; `manifest check PASS: 41 objects, 4 workloads, 0
+Expected: `render: target pilot, product ..., 43 objects (...)`; `manifest check PASS: 43 objects, 4 workloads, 0
 failure(s); product ...` (the fourth workload is the synthetic probe's CronJob, inside the quota); the diff shows the new objects (the 12 isolation objects are unchanged). The rendered file
 holds no Secret, no estate value and no address (the pilot has no directory or SIEM CIDR to patch in), so it may stay on
 disk in `~/pilot/`.
@@ -274,10 +277,11 @@ disk in `~/pilot/`.
 ## 9. HOST CHANGE H7: database and control plane
 
 Everything except the ICAP steps' objects (the ICAP Deployment, ConfigMap, ServiceAccount, Services, PDB and
-NetworkPolicies, the synthetic probe, and every LoadBalancer Service): the ServiceLB Service would open 1344 on the node,
-which waits for the firewall rule of step 11. The split is made by the render (`--phase control`, then `icap` in step
-9b and `servicelb` in step 12; PR 33 review D-05), not by a label selector, and `tools/pilot/test_render.py` proves that
-the three phases are disjoint, together are the whole render, and that only `servicelb` holds a LoadBalancer Service.
+NetworkPolicies, the synthetic probe, and every LoadBalancer Service) and the admin Ingress step's (the Ingress and
+Traefik's NetworkPolicy, step 14.3): the ServiceLB Service would open 1344 on the node, which waits for the firewall rule
+of step 11. The split is made by the render (`--phase control`, then `icap` in step 9b, `servicelb` in step 12 and
+`ingress` in step 14.3; PR 33 review D-05), not by a label selector, and `tools/pilot/test_render.py` proves that the
+four phases are disjoint, together are the whole render, and that only `servicelb` holds a LoadBalancer Service.
 
 ```bash
 python3 -B tools/pilot/render.py --product "${PRODUCT}" --phase control \
@@ -529,26 +533,148 @@ The ICAP OPTIONS line above is sent from the host itself, which the prerouting r
 if that line says the query failed, the transactions counts of the ICAP pods and the Traffic screen (step 14) are the
 evidence instead.
 
-## 14. The admin UI (READ; a port-forward on the host)
+## 14. The admin UI through the host's Traefik
 
-On HOST-A (leave it running):
+The admin UI is reached the way the other product on the host is: through the host's Traefik (k3s's ingress controller,
+80/443 on the node, `web` redirecting to `websecure`), by a host-name rule. There is no DNS name yet, so the name is the
+synthetic `ui.${PRODUCT}.local` (`ui.rwsafe.local` today; it follows `deploy/rwsafe/product.env`), which the PO maps to
+the node address with one hosts-file line on his own computer. The certificate is the pilot's own: a small CA made on the
+host, whose certificate the PO trusts on his computer (14.4), and a leaf for that one name in the Secret
+`${PRODUCT}-admin-tls`. Nothing of the other product is read or changed: its Ingress (with its catch-all rule) and its
+certificate in Traefik's default store stay as they are; our Ingress has exactly one Host() rule, which Traefik ranks
+above a catch-all for this name only (`tools/deploy/manifest_check.py` refuses a host-less rule, a defaultBackend,
+another host, class, backend or Secret, and any Traefik annotation).
+
+What is exposed: `${PRODUCT}-control:8080` only (the admin UI and its API); 8091, 8092 and 9400 stay cluster-internal.
+Traefik's pods are admitted to 8080 by the NetworkPolicy `${PRODUCT}-control-from-traefik`. The control plane trusts the
+`X-Forwarded-*` headers Traefik sets only when the connection comes from a pod address of the k3s default cluster range
+(`RWSAFE_FORWARD_HEADERS=native`, `RWSAFE_TRUSTED_PROXIES` in `deploy/rwsafe/overlays/pilot/10-pilot-config.yaml`), so the
+login throttle counts the address Traefik saw and nobody else can choose it (`ForwardedHeadersIntegrationTest`,
+`ForwardedHeadersUntrustedPeerIntegrationTest`).
+
+### 14.1 HOST CHANGE H10: the admin certificate (the host user, never root)
 
 ```bash
-kubectl -n "${PRODUCT}" port-forward "svc/${PRODUCT}-control" 18080:8080 --address 127.0.0.1
+tools/pilot/admin_tls.sh
 ```
 
-On your workstation: `ssh -N -L 18080:127.0.0.1:18080 <admin-user>@<node-address>`, then open `http://localhost:18080`
-and sign in as `breakglass` with the password from step 10. Step 4b records that HOST-A's sshd allows no port
-forwarding: if this `ssh -L` answers `administratively prohibited` (or the page does not load), stop and report; the way
-to reach the forward is a PO decision (for example forwarding allowed for the admin account, or a browser on a machine
-that holds the cluster's kubeconfig), never a relay improvised on the host (AGENTS.md section 8: HOST-A is never a jump
-server).
+Expected: `CA created: ~/.config/<product>/admin-ca/ ...`, `created secret ${PRODUCT}-admin-tls (leaf for
+ui.<product>.local, 825 days)`, then two lines for the PO: the CA certificate's path
+`~/.config/<product>/admin-ca/ca.crt` and `CA SHA-256 fingerprint: AB:CD:...` (32 pairs), and `done; no key was printed`.
+The CA (ECDSA P-256, 10 years) is name-constrained to `ui.<product>.local`: it can sign nothing else, so trusting it does
+not let it vouch for any other site. Its key stays in `~/.config/<product>/admin-ca/ca.key` (mode 0600) on the host and
+never enters the cluster; the leaf (subjectAltName DNS only, serverAuth, 825 days, the most macOS accepts) is in the
+Secret only, its temporary files shredded. Run again, it changes nothing; `--renew` issues a new leaf from the same CA
+(before the 825 days end; the PO imports nothing again).
+
+### 14.2 Traefik's label and pod addresses (READ)
+
+```bash
+kubectl -n kube-system get pods -l app.kubernetes.io/name=traefik --no-headers | grep -c Running
+kubectl -n kube-system get pods -l app.kubernetes.io/name=traefik \
+  -o jsonpath='{range .items[*]}{.status.podIP}{"\n"}{end}' | grep -cE '^10\.42\.[0-9]{1,3}\.[0-9]{1,3}$'
+```
+
+Expected: the same number twice, at least `1`. The first proves the NetworkPolicy's label (the k3s Traefik chart's default,
+UNVERIFIED on HOST-A until this runs); the second that Traefik's pod addresses are in the range whose forwarded headers
+are trusted (counts only, no address is printed). If the first is `0`, stop: the NetworkPolicy would admit nothing and
+the UI would answer Traefik's 502/504. If the second is lower, the UI still works, but the throttle counts every client as
+Traefik's own address; report it, and the trusted range is corrected in the committed overlay (never `kubectl set env`).
+
+Then whether Traefik passes on the client's own address, and whether it believes forwarded headers a client sends
+(PR 43 review D-03; values printed are policy names and counts, never an address):
+
+```bash
+kubectl -n kube-system get svc traefik -o jsonpath='{.spec.externalTrafficPolicy}{"\n"}'
+kubectl -n kube-system get deploy traefik -o jsonpath='{.spec.template.spec.containers[*].args}' | grep -oiE 'forwardedheaders|proxyprotocol' | wc -l
+```
+
+Expected: `0` on the second line: Traefik trusts no incoming `X-Forwarded-*` or PROXY header, so it replaces what a
+client sends and nobody can choose the address the control plane sees. Anything else: stop, the trusted range would let a
+client spoof its address. The first line is `Cluster` on HOST-A (2026-10-31, the k3s default): the ServiceLB hands
+Traefik every connection from a pod-network address, so the client's own address never reaches the product and the
+login throttle counts every browser as one client (five wrong passwords for one name lock that name for everyone for
+15 minutes). Recorded as a go-live item (PO decision record Q-46, amendment 1); in the pilot only the PO signs in.
+`Local` would keep the address, but it changes the other product's entry point and is not done here.
+
+### 14.3 HOST CHANGE H11: the Ingress and Traefik's NetworkPolicy
+
+If step 9 was applied from a commit before this step existed, apply the control phase again first (it changes only the
+control plane's ConfigMap: the forwarded-header settings) and restart the control plane pod so it reads it:
+
+```bash
+python3 -B tools/pilot/render.py --product "${PRODUCT}" --phase control \
+  --dataplane-digest "$(cat ~/pilot/dataplane.digest)" --control-digest "$(cat ~/pilot/control.digest)" \
+  --output ~/pilot/app-control.json
+kubectl apply --server-side -f ~/pilot/app-control.json
+kubectl -n "${PRODUCT}" delete pod -l "app.kubernetes.io/name=${PRODUCT}-control" --wait=false
+kubectl -n "${PRODUCT}" rollout status "deploy/${PRODUCT}-control" --timeout=10m
+```
+
+Then, once 14.1 printed `created secret` (or `exists`):
+
+```bash
+python3 -B tools/pilot/render.py --product "${PRODUCT}" --phase ingress \
+  --dataplane-digest "$(cat ~/pilot/dataplane.digest)" --control-digest "$(cat ~/pilot/control.digest)" \
+  --output ~/pilot/app-ingress.json
+kubectl apply --server-side -f ~/pilot/app-ingress.json
+kubectl -n "${PRODUCT}" get ingress --no-headers | wc -l
+```
+
+Expected: `render: ... 2 objects (1 Ingress, 1 NetworkPolicy)`; `ingress.networking.k8s.io/${PRODUCT}-admin
+serverside-applied` and `networkpolicy.networking.k8s.io/${PRODUCT}-control-from-traefik serverside-applied`; `1`.
+`kubectl apply --server-side -f ~/pilot/app.json` (step 8) is the same end state. The other product's Ingress is not
+listed or touched.
+
+### 14.4 PO ONLY: your computer (CA certificate, hosts file, sign-in)
+
+1. **Copy the CA certificate** (public) to your computer, for example
+   `scp <admin-user>@<node-address>:.config/<product>/admin-ca/ca.crt ~/Downloads/<product>-admin-ca.crt`
+   (Windows: in PowerShell, `cd $HOME/Downloads` and the same `scp` into `./<product>-admin-ca.crt`). Compare its fingerprint with the one 14.1 printed:
+   macOS `openssl x509 -in ~/Downloads/<product>-admin-ca.crt -noout -fingerprint -sha256`; Windows
+   `certutil -dump .\<product>-admin-ca.crt | findstr /i sha256` (in that folder) (the `Cert Hash(sha256)` line, UNVERIFIED
+   2026-10-31 on the PO's Windows release; the certificate dialog's Thumbprint is SHA-1, not this value). Different: stop.
+2. **Trust it.**
+   - macOS: open Keychain Access, File > Import Items..., choose the file, keychain **System**; double-click the imported
+     `<product> pilot admin CA`, open **Trust**, set **Secure Sockets Layer (SSL)** to **Always Trust**, close the
+     window and confirm with your password. (The same in Terminal:
+     `sudo security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain ~/Downloads/<product>-admin-ca.crt`.)
+   - Windows: double-click the file, Install Certificate..., **Local Machine**, "Place all certificates in the following
+     store", Browse..., **Trusted Root Certification Authorities**, Finish. (The same in an administrator PowerShell:
+     `certutil -addstore -f Root .\<product>-admin-ca.crt` in the Downloads folder.)
+   - Chrome, Edge and Safari use the operating system's store. Firefox keeps its own unless enterprise roots are on:
+     Settings > Privacy & Security > Certificates > View Certificates... > Authorities > Import..., tick "Trust this CA to
+     identify websites".
+3. **The hosts-file line** `<node-address> ui.<product>.local` (one line, the node's address, the product's name):
+   - macOS: `sudo sh -c 'echo "<node-address> ui.<product>.local" >> /etc/hosts'`, then
+     `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`.
+   - Windows: Notepad **as administrator**, open `C:\Windows\System32\drivers\etc\hosts`, add the line, save, then
+     `ipconfig /flushdns`.
+   - `.local` is also the multicast DNS (Bonjour) domain: on macOS the first lookup of a `.local` name can wait a few
+     seconds on multicast before the hosts entry answers. The hosts entry is used anyway; a slow first page load is that,
+     not the product.
+4. **Open `https://ui.<product>.local`** in Chrome, Edge, Safari or Firefox. The padlock shows no warning (the certificate
+   is issued to `ui.<product>.local` by the CA you trusted). Sign in as `breakglass` with the password from step 10.
+   `http://ui.<product>.local` is redirected to https by the host's Traefik.
+
+A certificate warning is **not** expected and is never clicked through: stop and report its class. `NET::ERR_CERT_AUTHORITY_INVALID`
+(or Safari's "not trusted") means the CA is not trusted on this computer (2. not done, or Firefox's own store); a warning
+that names another host means Traefik served its default certificate (the other product's), so the Secret was missing
+when the Ingress was applied (run 14.1, then reload). Behind Traefik the control plane sends HSTS: once the page has
+loaded over a trusted connection, the browser refuses plain http and any untrusted certificate for this name for a
+year; removing the CA from the trust store later makes the page unreachable from that browser until the HSTS entry is
+cleared.
+
+**The masked role.** Only the PO signs in: no agent opens the UI, sees a screenshot of it or receives a value from it
+(AGENTS.md 4.4, 4.7); the break-glass session is an operator session that shows real names where the screens show them.
+The masked role (`replay_viewer`) is not used in the pilot: the estate dictionary holds one placeholder term (step 7), so a
+masked session would not yet mask estate names; it is replaced with the estate's terms before anyone uses that role.
 
 What answers on 8080 (and only there; 8091, 8092 and 9400 answer 404 for every UI path): the admin UI built into the
 control image (`/app/ui`, the `ui` stage of `deploy/images/control.Containerfile`). `GET /` and every client route
 (`/traffic`, `/policies`, `/health`, ...) answer the SPA's `index.html` (`Cache-Control: no-store`); `/assets/*` are the
 content-hashed bundles (cached for a year); the UI calls the API same-origin under `/api`, so the session and CSRF
-cookies travel through the forward unchanged. Every response carries the CSP (`default-src 'self'`, `script-src 'self'`,
+cookies travel through Traefik unchanged. Every response carries the CSP (`default-src 'self'`, `script-src 'self'`,
 `frame-ancestors 'none'`), `nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`. A `GET /` that answers
 the JSON `{"reason":"NOT_FOUND",...}` means the image has no UI: the control image was built from a commit before the UI
 stage (rebuild it, step 6).
@@ -557,14 +683,24 @@ Check: the Policies screen lists the seeded rules (SECRET BLOCK; TCKN, TR_IBAN, 
 Health shows the database, the snapshot feed and ingestion UP.
 
 Cookies: the session cookie is `__Host-rwsafe-session` and both it and the CSRF cookie are `Secure`
-(`RWSAFE_COOKIE_SECURE=true`, the only deploy setting). Chromium browsers (Chrome, Edge) and Firefox treat
-`http://localhost` as a secure context and keep `Secure` and `__Host-` cookies there; Safari does not (UNVERIFIED
-2026-10-31 for the PO's browser and version; signing in once verifies it). Use `http://localhost:18080`, not
-`http://127.0.0.1:18080` or the node address. If sign-in returns to the sign-in page in Chrome or Edge on
-`http://localhost`, stop and report. A non-Secure setting exists for plain-http local runs only (LOCAL_RUN.md); the control
-plane refuses to start when it is half-applied (`CookiePolicy`: `RWSAFE_COOKIE_SECURE=false` needs a session cookie name
-without the `__Host-` prefix, and a Secure setting needs the `__Host-` name), and using it in the pilot would be a committed overlay change after a PO decision, never
-`kubectl set env`.
+(`RWSAFE_COOKIE_SECURE=true`, the only deploy setting) by configuration, not by the request's scheme, so they are set
+over Traefik's plain-http hop to 8080 and kept by every browser on `https://ui.<product>.local`, Safari included. If
+sign-in returns to the sign-in page, stop and report. A non-Secure setting exists for plain-http local runs only
+(LOCAL_RUN.md); the control plane refuses to start when it is half-applied (`CookiePolicy`).
+
+**Fallback: the port-forward.** If the Ingress cannot be used, the earlier way still works and changes nothing on the
+host: `kubectl -n "${PRODUCT}" port-forward "svc/${PRODUCT}-control" 18080:8080 --address 127.0.0.1` on HOST-A and
+`ssh -N -L 18080:127.0.0.1:18080 <admin-user>@<node-address>` on the workstation, then `http://localhost:18080` in Chrome,
+Edge or Firefox (Safari does not keep a `Secure` cookie on `http://localhost`). Step 4b records that HOST-A's sshd allows
+no port forwarding: if `ssh -L` answers `administratively prohibited`, stop and report; HOST-A is never a jump server
+(AGENTS.md section 8). A port-forward connects from 127.0.0.1, whose forwarded headers are not trusted.
+
+**Later: a real DNS name and certificate** are a small, separate change, never a hand-made object: the Ingress host in
+`deploy/rwsafe/overlays/pilot/70-admin-ingress.yaml` comes from an uncommitted estate value patched in at render time
+(an estate name is never committed, AGENTS.md 4.2), `admin_host()` in `tools/deploy/manifest_check.py` then takes that
+name from the same value instead of `ui.<product>.local`, and the corporate CA's leaf replaces this one in the same Secret
+`${PRODUCT}-admin-tls` (`kubectl create secret tls` from files, as `admin_tls.sh` does). The PO then removes the hosts
+line and the pilot CA from his trust store, and `~/.config/<product>/admin-ca/` is shredded (step 18).
 
 ## 15. PROXY CHANGE P1 (the PO, proxy console): the ICAP service
 
@@ -656,9 +792,12 @@ kubectl delete namespace "${PRODUCT}" "${PRODUCT}-build" "${PRODUCT}-security" -
 kubectl delete priorityclass "${PRODUCT}-dataplane" "${PRODUCT}-control" "${PRODUCT}-batch" --ignore-not-found=true
 # 4. root, the PO: the firewall table of step 11
 sudo nft delete table inet "${PRODUCT//-/_}_pilot" 2>/dev/null || echo "no firewall table (already gone)"
-# 5. local files: the rendered manifests and the digests; the PO also the break-glass password file
+# 5. local files: the rendered manifests and the digests; the PO also the break-glass password file; the admin CA
 find ~/pilot -type f -exec shred -u {} + 2>/dev/null; rmdir ~/pilot 2>/dev/null
 find "${HOME}/.config/${PRODUCT}/pilot" -type f -exec shred -u {} + 2>/dev/null; true
+find "${HOME}/.config/${PRODUCT}/admin-ca" -type f -exec shred -u {} + 2>/dev/null; rmdir "${HOME}/.config/${PRODUCT}/admin-ca" 2>/dev/null; true
+# 6. the PO, on his computer: the hosts-file line of step 14.4 and the pilot CA in the trust store (Keychain Access,
+#    System, `<product> pilot admin CA`, Delete; Windows: certmgr / certlm, Trusted Root Certification Authorities)
 ```
 
 Expected: the namespaces gone (`kubectl get namespace -l "app.kubernetes.io/part-of=${PRODUCT}"` prints nothing), the
@@ -670,5 +809,5 @@ neXus is touched; they go with the registry GC of SHIP_PIPELINE_PLAN §4, or sta
 
 Secure ICAP (H-2 closes within 30 days: the TLS Secret and 11344 return with the k3s overlay), the directory sign-in,
 SIEM export, redacted capture, group claims, RESPMOD, the in-cluster ICAP e2e and masked-role e2e Jobs of runbook §4
-step 5 (not yet built; the synthetic probe of step 9b covers six REQMOD scenarios and OPTIONS, not the e2e suite), and
-more than one user. Each is a later, separate change.
+step 5 (not yet built; the synthetic probe of step 9b covers six REQMOD scenarios and OPTIONS, not the e2e suite), a
+real DNS name and corporate certificate for the admin UI (step 14, "Later"), and more than one user. Each is a later, separate change.

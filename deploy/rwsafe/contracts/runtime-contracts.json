@@ -12,6 +12,10 @@
       "keys": ["tls.crt", "tls.key", "client-ca.crt"],
       "purpose": "Secure ICAP server chain, its PKCS#8 key, and the CA that issued the proxy's client certificate (H-1)"
     },
+    "rwsafe-admin-tls": {
+      "keys": ["tls.crt", "tls.key"],
+      "purpose": "the admin UI's TLS leaf certificate for ui.<product>.local and its key (type kubernetes.io/tls), read by Traefik for the Ingress rwsafe-admin; issued by the pilot's own CA, whose key stays on the host outside the cluster (tools/pilot/admin_tls.sh, PILOT_RUNBOOK.md step 14)"
+    },
     "rwsafe-snapshot-signing-key": {
       "keys": ["rwsafe-snapshot-1.pem"],
       "purpose": "Ed25519 policy-snapshot signing key, PKCS#8 PEM, named by its key id (POLICY_SNAPSHOT_CONTRACT.md)"

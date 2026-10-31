@@ -1,6 +1,6 @@
-# NetworkPolicies the pilot does not need: no directory (break-glass only), no SIEM export, no Traefik in front of the
-# admin UI (kubectl port-forward). Removing them leaves no documentation-range placeholder CIDR in the render, so the
-# release check needs only the image digests.
+# NetworkPolicies the pilot does not need: no directory (break-glass only), no SIEM export. Removing them leaves no
+# documentation-range placeholder CIDR in the render, so the release check needs only the image digests. The k3s
+# overlay's `rwsafe-control-from-traefik` stays: Traefik reaches the admin UI (70-admin-ingress.yaml).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -12,12 +12,5 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: rwsafe-control-to-siem
-  namespace: rwsafe
-$patch: delete
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: rwsafe-control-from-traefik
   namespace: rwsafe
 $patch: delete

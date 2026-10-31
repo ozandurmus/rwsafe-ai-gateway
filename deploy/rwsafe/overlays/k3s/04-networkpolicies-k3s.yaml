@@ -52,7 +52,10 @@ spec:
         - { protocol: TCP, port: 1344 }
         - { protocol: TCP, port: 11344 }
 ---
-# ADR-003: the admin UI and API are reached through Traefik by host name only.
+# ADR-003: the admin UI and API are reached through Traefik by host name only. The label is the k3s Traefik chart's
+# default; UNVERIFIED on HOST-A (2026-10-31): verify with a masked label listing of the Traefik pods
+# (`tools/hosta/inventory_readonly.sh`, shapes only) before the pilot's ingress phase (PILOT_RUNBOOK.md step 14). A
+# wrong label admits nothing: the admin UI then answers Traefik's 502/504, never an open port.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
