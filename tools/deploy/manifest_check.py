@@ -682,6 +682,11 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
                     check_ref(obj, fail, "ConfigMap", src["configMapRef"].get("name"), [], configmap_contract,
                               rendered_configmaps, ns, src["configMapRef"].get("optional"))
 
+    # At most one Ingress: the admin UI's (PR 43 review D-05); a second would be a route nobody reviewed.
+    ingresses = [o for o in objects if o.get("kind") == "Ingress"]
+    if len(ingresses) > 1:
+        failures.append(f"{ident(ingresses[0])}: {len(ingresses)} Ingress objects rendered; at most one (the admin UI)")
+
     # NetworkPolicies: default deny per namespace, and one policy selecting every workload.
     policies = [o for o in objects if o.get("kind") == "NetworkPolicy"]
     for ns in sorted({w[0]["metadata"].get("namespace") for w in workloads}, key=str):
@@ -867,7 +872,7 @@ def check_ingress(obj: dict, fail, product: str, secret_contract: dict, service_
     if spec.get("ingressClassName") != INGRESS_CLASS:
         fail(obj, f"Ingress class is {spec.get('ingressClassName') or 'unset'}, not {INGRESS_CLASS}")
     for key in (md.get("annotations") or {}):
-        if "traefik" in key or key == "kubernetes.io/ingress.class":
+        if "traefik" in key.lower() or key == "kubernetes.io/ingress.class":
             fail(obj, f"Ingress annotation {key} (no Traefik annotation is needed; one changes routing or the class)")
     if spec.get("defaultBackend"):
         fail(obj, "Ingress has a defaultBackend (a catch-all for every host)")

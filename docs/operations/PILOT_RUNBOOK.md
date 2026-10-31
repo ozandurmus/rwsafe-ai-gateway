@@ -581,6 +581,22 @@ are trusted (counts only, no address is printed). If the first is `0`, stop: the
 the UI would answer Traefik's 502/504. If the second is lower, the UI still works, but the throttle counts every client as
 Traefik's own address; report it, and the trusted range is corrected in the committed overlay (never `kubectl set env`).
 
+Then whether Traefik passes on the client's own address, and whether it believes forwarded headers a client sends
+(PR 43 review D-03; values printed are policy names and counts, never an address):
+
+```bash
+kubectl -n kube-system get svc traefik -o jsonpath='{.spec.externalTrafficPolicy}{"\n"}'
+kubectl -n kube-system get deploy traefik -o jsonpath='{.spec.template.spec.containers[*].args}' | grep -oiE 'forwardedheaders|proxyprotocol' | wc -l
+```
+
+Expected: `0` on the second line: Traefik trusts no incoming `X-Forwarded-*` or PROXY header, so it replaces what a
+client sends and nobody can choose the address the control plane sees. Anything else: stop, the trusted range would let a
+client spoof its address. The first line is `Cluster` on HOST-A (2026-10-31, the k3s default): the ServiceLB hands
+Traefik every connection from a pod-network address, so the client's own address never reaches the product and the
+login throttle counts every browser as one client (five wrong passwords for one name lock that name for everyone for
+15 minutes). Recorded as a go-live item (PO decision record Q-46, amendment 1); in the pilot only the PO signs in.
+`Local` would keep the address, but it changes the other product's entry point and is not done here.
+
 ### 14.3 HOST CHANGE H11: the Ingress and Traefik's NetworkPolicy
 
 If step 9 was applied from a commit before this step existed, apply the control phase again first (it changes only the

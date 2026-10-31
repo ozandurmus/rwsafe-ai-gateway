@@ -28,6 +28,13 @@
       "reason": "Unaltered external review (AGENTS.md 11) shows the generic shape of a distinguished name with ellipsis placeholders in prose (question Q-2); no directory name",
       "owner": "orchestrating ENGINEER session",
       "review_date": "2027-01-31"
+    },
+    {
+      "rule": "NON_DOCUMENTATION_IPV4",
+      "path": "docs/reviews/PR43_2026_10_31_ARGON_PILOT_ADMIN_INGRESS.md",
+      "reason": "Unaltered external review (AGENTS.md 11) cites an RFC 5280 section number (four dotted numbers, finding D-01); no host address",
+      "owner": "orchestrating ENGINEER session",
+      "review_date": "2027-01-31"
     }
   ]
 }

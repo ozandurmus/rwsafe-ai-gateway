@@ -122,7 +122,8 @@ CN = ${PRODUCT} pilot admin CA
 [ca_ext]
 basicConstraints = critical, CA:TRUE, pathlen:0
 keyUsage = critical, keyCertSign, cRLSign
-nameConstraints = critical, permitted;DNS:${HOST}
+nameConstraints = critical, permitted;DNS:${HOST}, excluded;IP:0.0.0.0/0.0.0.0, excluded;IP:::/0:0:0:0:0:0:0:0
+extendedKeyUsage = serverAuth
 subjectKeyIdentifier = hash
 EOF
   if ! openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve -out "${WORK}/ca.key" >/dev/null 2>&1 \

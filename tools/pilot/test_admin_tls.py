@@ -131,7 +131,15 @@ class AdminTls(unittest.TestCase):
         # The CA: 10 years, a CA for one path length, constrained to the admin host.
         ca_text = openssl("x509", "-in", ca_cert, "-noout", "-text")
         self.assertRegex(ca_text, r"CA:TRUE, pathlen:0")
-        self.assertIn(f"DNS:{host}", ca_text.split("Name Constraints", 1)[1])
+        constraints = ca_text.split("Name Constraints", 1)[1]
+        self.assertIn(f"DNS:{host}", constraints.split("Excluded", 1)[0])
+        # PR 43 review D-01: with no IP constraint the CA could sign any address; both address families are excluded,
+        # and the CA's own extended key usage limits what it vouches for to TLS servers (Windows honours it on a root).
+        excluded = constraints.split("Excluded:", 1)[1]
+        self.assertIn("IP:0.0.0.0/0.0.0.0", excluded)
+        self.assertRegex(excluded, r"IP:(::|0:0:0:0:0:0:0:0)/(::|0:0:0:0:0:0:0:0)")
+        ca_eku = ca_text.split("Extended Key Usage", 1)[1].splitlines()[1]
+        self.assertEqual(ca_eku.strip(), "TLS Web Server Authentication")
         self.assertEqual(self.days(ca_cert), 3650)
         # The leaf: this host only, serverAuth, EC P-256, 825 days, issued by the CA and verifying against it.
         leaf_text = openssl("x509", "-in", leaf, "-noout", "-text")

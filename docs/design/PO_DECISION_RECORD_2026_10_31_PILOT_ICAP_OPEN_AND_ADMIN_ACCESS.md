@@ -25,3 +25,24 @@ first.
   users. The proxy's AI traffic still passes through the engine only when the PO's proxy rule sends it.
 - The orchestrator checks the open port and the in-cluster probe after each change; the firewall step stays the PO's.
 - The browser shows a certificate-name warning for `<product>.pilot.test` until a certificate for it exists.
+
+## Amendment 1 (RATIFIED, Product Owner, 2026-10-31, chat): the host name and the pilot's own CA
+
+The PO's words: "devam et abi. ui.rwsafe.local olsun sadece sertifikyıda trust store eklyebiliriz" (go on; let it be
+ui.rwsafe.local, and we can add its certificate to the trust store too). This supersedes decision 2's name and the last
+consequence above (PR 43 review D-04):
+
+- The admin host is `ui.<product>.local` (`ui.rwsafe.local` today; it follows `deploy/rwsafe/product.env`), mapped by the
+  PO's hosts file, still without DNS.
+- Its certificate is issued by the pilot's own CA (`tools/pilot/admin_tls.sh`, PILOT_RUNBOOK step 14.1), name-constrained
+  to that one host and to no IP address, whose certificate the PO adds to their computer's trust store. No certificate
+  warning is expected or clicked through; the other product's certificate in Traefik's default store is not touched.
+- **Residual risk, recorded by the orchestrator (PILOT_RUNBOOK step 14.2, read on HOST-A 2026-10-31); not a PO decision
+  yet, deferred to go-live:** the host's Traefik
+  Service keeps the k3s default external traffic policy `Cluster`, so the ServiceLB hands Traefik every connection from a
+  pod-network address and the client's own address is lost before it reaches the product. Traefik trusts no incoming
+  forwarded headers (no `forwardedHeaders` argument), so nobody can choose the address the product sees; but the login
+  throttle counts every browser as one client: five wrong passwords for one name lock that name for everyone, and twenty
+  lock every sign-in, for 15 minutes. In the pilot only the PO signs in. Before go-live the address must be preserved
+  (`externalTrafficPolicy: Local` on the shared Traefik Service, a change to the other product's entry point that needs
+  its own PO decision) or the throttle keyed differently.

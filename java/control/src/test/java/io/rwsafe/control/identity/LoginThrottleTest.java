@@ -46,6 +46,40 @@ class LoginThrottleTest {
         assertFalse(t.locked("synthetic-admin", "source-clean"));
     }
 
+    private static final int SMALL = 12;
+
+    @Test
+    void nearCapacityTheTwoKeysOfOneAttemptNeverEvictEachOther() {
+        LoginThrottle t = new LoginThrottle(clock, SMALL);
+        // Room for exactly the two entries one attempt needs: before PR 43 review D-02 the source entry evicted the pair
+        // entry just counted (and back), so neither ever reached its limit.
+        lockPairs(t, SMALL - 2);
+        for (int i = 0; i < LoginThrottle.MAX_PER_PAIR; i++) {
+            t.failure("breakglass", "source-a");
+        }
+        assertTrue(t.locked("breakglass", "source-a"), "the pair locks after five failures at capacity");
+        assertFalse(t.locked("synthetic-admin", "source-other"), "not saturated: other clients still sign in");
+    }
+
+    @Test
+    void fullOfLiveLocksTheThrottleFailsClosed() {
+        LoginThrottle t = new LoginThrottle(clock, SMALL);
+        lockPairs(t, SMALL - 1);
+        assertFalse(t.locked("breakglass", "source-new"));
+        t.failure("breakglass", "source-new");
+        assertTrue(t.locked("breakglass", "source-new"), "an uncountable failure refuses logins, never allows guessing");
+        assertTrue(t.locked("synthetic-admin", "source-other"));
+    }
+
+    /** Leaves {@code n} live locks: n pairs locked on n sources (each source's own unlocked entry is evictable). */
+    private static void lockPairs(LoginThrottle t, int n) {
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < LoginThrottle.MAX_PER_PAIR; j++) {
+                t.failure("synthetic-name", "source-flood-" + i);
+            }
+        }
+    }
+
     @Test
     void theMaskedRoleIsExclusive() {
         AuthenticatedUser dual = new AuthenticatedUser("synthetic-dual",

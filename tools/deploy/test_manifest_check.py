@@ -754,6 +754,14 @@ class AdminIngress(unittest.TestCase):
             ing["spec"]["defaultBackend"] = copy.deepcopy(ing["spec"]["rules"][0]["http"]["paths"][0]["backend"])
         self.assert_refused(default_backend, "defaultBackend")
 
+    def test_a_second_ingress_is_refused(self):
+        # PR 43 review D-05: each Ingress passing on its own is not enough; a second one is an unreviewed route.
+        def second(ing, objects, _):
+            other = copy.deepcopy(ing)
+            other["metadata"]["name"] = other["metadata"]["name"] + "-two"
+            objects.append(other)
+        self.assert_refused(second, "2 Ingress objects rendered")
+
     def test_foreign_backend_is_refused(self):
         def foreign_service(ing, *_):
             ing["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"]["name"] = "other-frontend"
@@ -802,7 +810,7 @@ class AdminIngress(unittest.TestCase):
                                     for f in failures), failures)
 
         for key in ("traefik.ingress.kubernetes.io/router.middlewares", "traefik.ingress.kubernetes.io/router.priority",
-                    "kubernetes.io/ingress.class"):
+                    "Traefik.Ingress.Kubernetes.io/router.priority", "kubernetes.io/ingress.class"):
             def annotated(ing, *_, key=key):
                 ing["metadata"].setdefault("annotations", {})[key] = "x"
             self.assert_refused(annotated, f"annotation {key}")

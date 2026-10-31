@@ -15,10 +15,12 @@ data:
   RWSAFE_POLICY_SEED_FILE: "/etc/rwsafe/policy/registry-seed.yaml"
   # Traefik in front of the admin UI (70-admin-ingress.yaml) terminates https and forwards plain http to 8080 with
   # X-Forwarded-For/-Proto/-Host. Tomcat's remote-IP valve trusts them only when the TCP peer is a pod address of the k3s
-  # default cluster CIDR (10.42/16; UNVERIFIED on HOST-A 2026-10-31, a masked inventory of the pod addresses' shape
-  # verifies it), and the NetworkPolicy `rwsafe-control-from-traefik` admits only Traefik's pods to 8080 from the pod
-  # network; so the login throttle's client address (never stored or logged) is the one Traefik saw, and nobody else can
-  # choose it. A port-forward connects from 127.0.0.1, which is not trusted: its headers are ignored. If HOST-A's pod
+  # default cluster CIDR (10.42/16; verified on HOST-A 2026-10-31 by PILOT_RUNBOOK step 14.2, counts only), and the
+  # NetworkPolicy `rwsafe-control-from-traefik` admits only Traefik's pods to 8080 from the pod network; so the login
+  # throttle's client address (never stored or logged) is the one Traefik saw, and nobody else can choose it (Traefik
+  # trusts no incoming forwarded header, step 14.2). On HOST-A Traefik itself sees every client as the ServiceLB's
+  # pod-network address (external traffic policy `Cluster`), so the throttle counts all browsers as one client: a
+  # go-live item (PO decision record Q-46, amendment 1). A port-forward connects from 127.0.0.1, which is not trusted: its headers are ignored. If HOST-A's pod
   # range differs, nothing is trusted (every Traefik client shares Traefik's address in the throttle) until this line
   # is corrected; it never trusts more. The session and CSRF cookies are Secure by configuration (RWSAFE_COOKIE_SECURE),
   # not by the request's scheme, so sign-in works over https://ui.<product>.local either way (ForwardedHeadersIntegrationTest).

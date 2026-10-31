@@ -14,8 +14,10 @@ import org.slf4j.LoggerFactory;
  * one client within 15 minutes lock that pair; twenty failures from one client, whatever the names, lock the client. No
  * lock spans clients, so nobody elsewhere can lock an administrator or the break-glass account out; the directory's own
  * account lockout covers guessing spread over many clients, and the break-glass password is a 24-character random value.
- * A lock is never evicted early. When 10 000 live entries exist, unlocked entries are dropped first; if only locks remain,
- * a new failure is not recorded (logged) rather than refusing everyone.
+ * A lock is never evicted early. When 10 000 live entries exist, expired and then unlocked entries are dropped, never the
+ * two entries the failure being counted needs (PR 43 review D-02: otherwise one key evicted the other on every attempt and
+ * neither ever locked). If only locks remain, the throttle fails closed (AGENTS.md section 7): every login is refused for
+ * one window, logged, rather than letting a failure go uncounted.
  */
 public final class LoginThrottle {
 
@@ -37,14 +39,24 @@ public final class LoginThrottle {
     }
 
     private final Clock clock;
+    private final int maxEntries;
     private final Map<String, State> states = new HashMap<>();
+    private Instant saturatedUntil;
 
     public LoginThrottle(Clock clock) {
+        this(clock, MAX_ENTRIES);
+    }
+
+    LoginThrottle(Clock clock, int maxEntries) {
         this.clock = clock;
+        this.maxEntries = maxEntries;
     }
 
     public synchronized boolean locked(String loginName, String source) {
         Instant now = clock.instant();
+        if (saturatedUntil != null && now.isBefore(saturatedUntil)) {
+            return true;
+        }
         State pair = states.get(pairKey(loginName, source));
         State client = states.get(sourceKey(source));
         return (pair != null && pair.locked(now)) || (client != null && client.locked(now));
@@ -52,8 +64,16 @@ public final class LoginThrottle {
 
     public synchronized void failure(String loginName, String source) {
         Instant now = clock.instant();
-        count(pairKey(loginName, source), MAX_PER_PAIR, now);
-        count(sourceKey(source), MAX_PER_SOURCE, now);
+        String pair = pairKey(loginName, source);
+        String client = sourceKey(source);
+        int needed = (states.containsKey(pair) ? 0 : 1) + (states.containsKey(client) ? 0 : 1);
+        if (!room(now, needed, pair, client)) {
+            saturatedUntil = now.plus(WINDOW);
+            LOG.warn("login throttle full of live locks: every login is refused for one window");
+            return;
+        }
+        count(pair, MAX_PER_PAIR, now);
+        count(client, MAX_PER_SOURCE, now);
     }
 
     /** A success clears the pair only; the client's count keeps running so one good login does not reset a spray. */
@@ -64,27 +84,24 @@ public final class LoginThrottle {
     private void count(String key, int max, Instant now) {
         State s = states.get(key);
         if (s == null || s.expired(now)) {
-            if (s == null && !room(now)) {
-                LOG.warn("login throttle full of live locks: a failure was not recorded");
-                return;
-            }
             s = new State(0, now, null);
         }
         int failures = s.failures() + 1;
         states.put(key, new State(failures, s.first(), failures >= max ? now.plus(WINDOW) : s.lockedUntil()));
     }
 
-    /** True when a new entry fits, after dropping expired entries and then unlocked ones. */
-    private boolean room(Instant now) {
-        if (states.size() < MAX_ENTRIES) {
+    /** True when {@code needed} new entries fit, after dropping expired and then unlocked entries other than {@code keep}. */
+    private boolean room(Instant now, int needed, String... keep) {
+        java.util.Set<String> kept = java.util.Set.of(keep);
+        if (states.size() + needed <= maxEntries) {
             return true;
         }
-        states.values().removeIf(s -> s.expired(now));
-        if (states.size() < MAX_ENTRIES) {
+        states.entrySet().removeIf(e -> !kept.contains(e.getKey()) && e.getValue().expired(now));
+        if (states.size() + needed <= maxEntries) {
             return true;
         }
-        states.values().removeIf(s -> !s.locked(now));
-        return states.size() < MAX_ENTRIES;
+        states.entrySet().removeIf(e -> !kept.contains(e.getKey()) && !e.getValue().locked(now));
+        return states.size() + needed <= maxEntries;
     }
 
     private static String pairKey(String loginName, String source) {
