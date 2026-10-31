@@ -139,6 +139,11 @@ kubectl -n "${PRODUCT}-build" wait --for=condition=Ready "pod/${PRODUCT}-build-c
 # the CA bundle for Gradle inside the build stage (deploy/images/ca/, git-ignored): the same host bundle
 kubectl -n "${PRODUCT}-build" exec -i "${PRODUCT}-build-context-loader" -- \
   sh -c 'cat > /workspace/src/deploy/images/ca/host-bundle.pem' < /etc/ssl/certs/ca-certificates.crt
+# the pinned Gradle distribution (the host cannot follow services.gradle.org's redirect, 2026-10-31): fetched on the
+# workstation, its SHA-256 compared with distributionSha256Sum in java/gradle/wrapper/gradle-wrapper.properties, copied to
+# the host as ~/pilot/gradle-8.14.3-bin.zip; the wrapper checks the sum again inside the build
+kubectl -n "${PRODUCT}-build" exec -i "${PRODUCT}-build-context-loader" -- \
+  sh -c 'cat > /workspace/src/deploy/images/gradle-dist/gradle-8.14.3-bin.zip' < ~/pilot/gradle-8.14.3-bin.zip
 kubectl -n "${PRODUCT}-build" exec "${PRODUCT}-build-context-loader" -- \
   sh -c 'ls /workspace/src/java/gradlew /workspace/src/deploy/images/dataplane.Containerfile /workspace/src/deploy/images/ca/host-bundle.pem | wc -l'
 kubectl -n "${PRODUCT}-build" delete pod "${PRODUCT}-build-context-loader" --wait=true

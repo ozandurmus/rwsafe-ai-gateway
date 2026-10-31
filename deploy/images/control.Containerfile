@@ -35,6 +35,14 @@ COPY deploy/images/ca/ /tmp/corp-ca/
 RUN if ls /tmp/corp-ca/*.pem >/dev/null 2>&1; then \
       cp /tmp/corp-ca/*.pem /etc/pki/ca-trust/source/anchors/ && update-ca-trust; \
     fi
+# Optional pinned Gradle distribution for a build host that cannot reach its download location (the distribution
+# server redirects to a host the pilot network refuses, 2026-10-31): deploy/images/gradle-dist/ is committed empty
+# (.gitkeep); when the pilot runbook places the distribution zip there, the wrapper reads it from the file system. The
+# wrapper still checks distributionSha256Sum, so only the pinned distribution is accepted.
+COPY deploy/images/gradle-dist/ /tmp/gradle-dist/
+RUN set -- /tmp/gradle-dist/gradle-*-bin.zip; if [ -f "$1" ]; then \
+      sed -i "s#^distributionUrl=.*#distributionUrl=file\\:$1#" java/gradle/wrapper/gradle-wrapper.properties; \
+    fi
 # The wrapper fetches the pinned Gradle distribution and every artifact is checked against
 # gradle/verification-metadata.xml. No test runs here: CI ran them on the same commit.
 RUN ./java/gradlew -p java --no-daemon --console=plain --dependency-verification strict :control:imageDist \

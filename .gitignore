@@ -44,3 +44,6 @@ tools/trial/.run/
 # Build-time CA anchors copied into the image build context by the pilot runbook; never committed.
 deploy/images/ca/*
 !deploy/images/ca/.gitkeep
+# The pinned Gradle distribution placed in the build context when the build host cannot download it (pilot step 4).
+deploy/images/gradle-dist/*
+!deploy/images/gradle-dist/.gitkeep
