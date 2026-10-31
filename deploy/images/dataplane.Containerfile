@@ -37,8 +37,9 @@ RUN if ls /tmp/corp-ca/*.pem >/dev/null 2>&1; then \
 # (.gitkeep); when the pilot runbook places the distribution zip there, the wrapper reads it from the file system. The
 # wrapper still checks distributionSha256Sum, so only the pinned distribution is accepted.
 COPY deploy/images/gradle-dist/ /tmp/gradle-dist/
-RUN set -- /tmp/gradle-dist/gradle-*-bin.zip; if [ -f "$1" ]; then \
-      sed -i "s#^distributionUrl=.*#distributionUrl=file\\:$1#" java/gradle/wrapper/gradle-wrapper.properties; \
+RUN name="$(sed -n 's#^distributionUrl=.*/\(gradle-[0-9][0-9.]*-bin\.zip\)$#\1#p' java/gradle/wrapper/gradle-wrapper.properties)"; \
+    if [ -n "${name}" ] && [ -f "/tmp/gradle-dist/${name}" ]; then \
+      sed -i "s#^distributionUrl=.*#distributionUrl=file\\:/tmp/gradle-dist/${name}#" java/gradle/wrapper/gradle-wrapper.properties; \
     fi
 # The wrapper fetches the pinned Gradle distribution and every artifact is checked against
 # gradle/verification-metadata.xml. No test runs here: CI ran them on the same commit.
