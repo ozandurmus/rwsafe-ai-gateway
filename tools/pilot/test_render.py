@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""Self-test of tools/pilot/render.py: the pilot and build targets render under the default and another product name,
+pass their checks, take the built digests, and refuse what they must. Offline (kubectl with KUBECONFIG=/dev/null).
+
+Usage: python3 -B tools/pilot/test_render.py
+"""
+from __future__ import annotations
+
+import contextlib
+import copy
+import io
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import proxy_settings  # noqa: E402
+import render  # noqa: E402
+
+mc = render.mc
+DIGESTS = {"dataplane": "sha256:" + "a" * 64, "control": "sha256:" + "b" * 64}
+_BUILD = {p: render.render_target("build", p) for p in ("rwsafe", "acme")}
+_CONTRACTS = {p: mc.rename_contracts(json.loads(mc.DEFAULT_CONTRACTS.read_text()), p) for p in ("rwsafe", "acme")}
+_PILOT = {p: render.render_target("pilot", p, DIGESTS) for p in ("rwsafe", "acme")}
+
+
+def job(objects: list[dict]) -> dict:
+    return next(o for o in objects if o["kind"] == "Job")
+
+
+def kaniko(objects: list[dict]) -> dict:
+    return mc.containers(mc.pod_template(job(objects))[1])[0]
+
+
+def job_spec(objects: list[dict]) -> dict:
+    return mc.pod_template(job(objects))[1]
+
+
+def run(argv: list[str]) -> tuple[int, str, str]:
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = render.main(argv)
+    return rc, out.getvalue(), err.getvalue()
+
+
+class PilotTarget(unittest.TestCase):
+    def test_pilot_with_digests_is_releasable_under_both_names(self):
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                objects = render.render_target("pilot", product, DIGESTS)
+                images = {c["image"] for o in objects if mc.pod_template(o)
+                          for c in mc.containers(mc.pod_template(o)[1])}
+                self.assertIn(f"{mc.IN_CLUSTER_REGISTRY}/{product}-dataplane@{DIGESTS['dataplane']}", images)
+                self.assertIn(f"{mc.IN_CLUSTER_REGISTRY}/{product}-control@{DIGESTS['control']}", images)
+                namespaces = {o["metadata"]["name"] for o in objects if o["kind"] == "Namespace"}
+                self.assertEqual(namespaces, {product, f"{product}-build", f"{product}-security"})
+                classes = {o["metadata"]["name"] for o in objects if o["kind"] == "PriorityClass"}
+                self.assertEqual(classes, {f"{product}-dataplane", f"{product}-control", f"{product}-batch"})
+
+    def test_pilot_shape(self):
+        objects = render.render_target("pilot", "rwsafe", DIGESTS)
+        text = json.dumps(objects)
+        self.assertNotIn("11344", text)
+        self.assertNotIn("RWSAFE_TLS_CERT", text)
+        self.assertNotIn("RWSAFE_LDAP_URL", text)
+        self.assertNotIn("rwsafe-icap-tls", text)
+        self.assertNotIn("rwsafe-ldap-bind", text)
+        policies = {o["metadata"]["name"] for o in objects if o["kind"] == "NetworkPolicy"}
+        self.assertFalse({"rwsafe-control-to-directory", "rwsafe-control-to-siem",
+                          "rwsafe-control-from-traefik"} & policies)
+        self.assertFalse(any(o["kind"] == "Ingress" for o in objects))
+        icap = next(o for o in objects if o["kind"] == "Deployment" and o["metadata"]["name"] == "rwsafe-icap")
+        self.assertEqual(icap["spec"]["replicas"], 2)
+        lb = next(o for o in objects if o["kind"] == "Service" and o["metadata"]["name"] == "rwsafe-icap-lb")
+        self.assertEqual([p["port"] for p in lb["spec"]["ports"]], [1344])
+        control_cm = next(o for o in objects if o["kind"] == "ConfigMap"
+                          and o["metadata"]["name"] == "rwsafe-control-config")["data"]
+        self.assertEqual(control_cm["RWSAFE_BREAK_GLASS_ENABLED"], "true")
+        self.assertEqual(control_cm["RWSAFE_SIEM_ENABLED"], "false")
+        self.assertEqual(control_cm["RWSAFE_CAPTURE_MODE"], "off")
+        icap_cm = next(o for o in objects if o["kind"] == "ConfigMap"
+                       and o["metadata"]["name"] == "rwsafe-icap-config")["data"]
+        self.assertNotIn("RWSAFE_GROUP_CLAIM_ENCODING", icap_cm)
+        self.assertEqual(icap_cm["RWSAFE_CAPTURE_MODE"], "off")
+        seed = next(o for o in objects if o["kind"] == "ConfigMap"
+                    and o["metadata"]["name"].startswith("rwsafe-policy-seed-"))
+        self.assertIn("registry-seed.yaml", seed["data"])
+
+    def test_bad_digest_and_bad_product_are_refused(self):
+        with self.assertRaises(render.Refused):
+            render.render_target("pilot", "rwsafe", {"dataplane": "sha256:" + "0" * 64, "control": DIGESTS["control"]})
+        with self.assertRaises(render.Refused):
+            render.render_target("pilot", "rwsafe", {"dataplane": "latest", "control": DIGESTS["control"]})
+        for product in ("nexus", "ui2-x", "Bad"):
+            with self.subTest(product), self.assertRaises(render.Refused):
+                render.render_target("pilot", product, DIGESTS)
+
+    def test_main_refuses_a_workload_with_the_placeholder_digest(self):
+        rc, out, err = run(["--target", "pilot"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "")
+        self.assertIn("placeholder digest", err)
+
+    def test_main_isolation_objects_without_digests(self):
+        rc, out, err = run(["--kinds", "Namespace,PriorityClass,ResourceQuota,LimitRange", "--product", "acme"])
+        self.assertEqual(rc, 0, err)
+        items = json.loads(out)["items"]
+        self.assertEqual({o["kind"] for o in items}, {"Namespace", "PriorityClass", "ResourceQuota", "LimitRange"})
+        self.assertTrue(all(o["metadata"]["name"].startswith("acme") or o["metadata"].get("namespace", "")
+                            .startswith("acme") for o in items))
+
+    def test_main_output_passes_the_release_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "app.json"
+            rc, _, err = run(["--product", "acme", "--dataplane-digest", DIGESTS["dataplane"],
+                              "--control-digest", DIGESTS["control"], "--output", str(target)])
+            self.assertEqual(rc, 0, err)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = mc.main(["--rendered", str(target), "--release", "--product", "acme"])
+            self.assertEqual(rc, 0, out.getvalue())
+
+
+class Phases(unittest.TestCase):
+    """PR 33 review D-05: step 9 (control) applies nothing that opens 1344 on the node; step 12 adds the ICAP objects."""
+
+    def test_control_phase_holds_no_icap_object_and_no_load_balancer(self):
+        for product, objects in _PILOT.items():
+            with self.subTest(product):
+                control = render.select_phase(objects, product, "control")
+                icap = render.select_phase(objects, product, "icap")
+                self.assertEqual(len(control) + len(icap), len(objects))
+                self.assertFalse(any(o["kind"] == "Service" and o["spec"].get("type") == "LoadBalancer"
+                                     for o in control))
+                self.assertFalse(any(o["metadata"]["name"].startswith(f"{product}-icap") for o in control))
+                self.assertEqual({o["metadata"]["name"] for o in icap if o["kind"] != "ConfigMap"} | {"cm"}, {
+                    f"{product}-icap", f"{product}-icap-lb", f"{product}-icap-from-servicelb",
+                    f"{product}-icap-metrics-from-scraper", "cm"})
+                kinds = {o["kind"] for o in control}
+                self.assertTrue({"StatefulSet", "Deployment", "Namespace", "PriorityClass"} <= kinds)
+                self.assertFalse(any(o["kind"] == "Deployment" and o["metadata"]["name"] == f"{product}-icap"
+                                     for o in control))
+
+    def test_main_phase_control(self):
+        rc, out, err = run(["--product", "acme", "--dataplane-digest", DIGESTS["dataplane"],
+                            "--control-digest", DIGESTS["control"], "--phase", "control"])
+        self.assertEqual(rc, 0, err)
+        items = json.loads(out)["items"]
+        self.assertFalse(any(o["metadata"]["name"].startswith("acme-icap") for o in items))
+
+
+class K3sTarget(unittest.TestCase):
+    # PR 33 review D-06: the k3s target renders and passes under another name too.
+    def test_k3s_under_another_name(self):
+        with self.assertRaises(render.Refused):   # the k3s overlay still holds its directory and SIEM placeholders
+            render.render_target("k3s", "acme", DIGESTS)
+        objects = render.render_target("k3s", "acme")
+        self.assertEqual(mc.source_name_references(objects), [])
+        lb = next(o for o in objects if o["kind"] == "Service" and o["spec"].get("type") == "LoadBalancer")
+        self.assertEqual((lb["metadata"]["name"], lb["spec"]["allocateLoadBalancerNodePorts"],
+                          lb["spec"]["externalTrafficPolicy"]), ("acme-icap-lb", False, "Cluster"))
+
+
+class ProxySettings(unittest.TestCase):
+    """PR 33 review D-03: the build's proxy file is refused with credentials or anything unexpected; no value printed."""
+    KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "GRADLE_OPTS"]
+    GOOD = ("HTTP_PROXY=http://proxy.example.invalid:3128\nHTTPS_PROXY=http://proxy.example.invalid:3128\n"
+            "NO_PROXY=.svc,.cluster.local,registry.kube-system.svc.cluster.local\n"
+            "GRADLE_OPTS=-Dhttps.proxyHost=proxy.example.invalid -Dhttps.proxyPort=3128 "
+            "-Dhttp.proxyHost=proxy.example.invalid -Dhttp.proxyPort=3128 -Dhttp.nonProxyHosts=*.svc|*.cluster.local\n")
+
+    def test_valid_and_empty_settings_pass(self):
+        self.assertEqual(proxy_settings.problems(self.GOOD, self.KEYS, 0o100600), [])
+        empty = "# no proxy here\nHTTP_PROXY=\nHTTPS_PROXY=\nNO_PROXY=\nGRADLE_OPTS=\n"
+        self.assertEqual(proxy_settings.problems(empty, self.KEYS, 0o100600), [])
+
+    def test_contract_keys(self):
+        self.assertEqual(proxy_settings.contract_keys(_CONTRACTS["rwsafe"]), self.KEYS)
+
+    def test_refusals(self):
+        user = "pilotuser"
+        cases = {
+            "credentials": self.GOOD.replace("http://proxy", f"http://{user}:x@proxy", 1),
+            "proxy password": self.GOOD.replace("-Dhttp.proxyPort=3128", "-Dhttp.proxyPassword=x"),
+            "proxy user": self.GOOD.replace("-Dhttp.proxyPort=3128", f"-Dhttp.proxyUser={user}"),
+            "unknown key": self.GOOD + "TOKEN=x\n",
+            "missing key": self.GOOD.replace("NO_PROXY=", "#NO_PROXY="),
+            "repeated key": self.GOOD + "HTTP_PROXY=http://proxy.example.invalid:3128\n",
+            "scheme": self.GOOD.replace("HTTP_PROXY=http://", "HTTP_PROXY=socks5://"),
+            "path": self.GOOD.replace("HTTPS_PROXY=http://proxy.example.invalid:3128",
+                                      "HTTPS_PROXY=http://proxy.example.invalid:3128/x"),
+            "registry not exempt": self.GOOD.replace(",registry.kube-system.svc.cluster.local", ""),
+            "not key=value": self.GOOD + "garbage\n",
+        }
+        for name, text in cases.items():
+            with self.subTest(name):
+                found = proxy_settings.problems(text, self.KEYS, 0o100600)
+                self.assertNotEqual(found, [])
+                self.assertFalse(any(user in f or "example.invalid" in f for f in found), found)
+        self.assertNotEqual(proxy_settings.problems(self.GOOD, self.KEYS, 0o100644), [])
+
+    def test_main_prints_no_value(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "build-proxy.env"
+            f.write_text(self.GOOD.replace("http://proxy", "http://pilotuser:x@proxy", 1))
+            f.chmod(0o600)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = proxy_settings.main([str(f), str(mc.DEFAULT_CONTRACTS)])
+            self.assertEqual(rc, 1)
+            self.assertNotIn("pilotuser", out.getvalue() + err.getvalue())
+            self.assertNotIn("example.invalid", out.getvalue() + err.getvalue())
+
+
+class BuildTarget(unittest.TestCase):
+    def test_build_renders_under_both_names(self):
+        for product, objects in _BUILD.items():
+            with self.subTest(product):
+                self.assertEqual(render.check_build(objects, product, _CONTRACTS[product]), [])
+                jobs = [o for o in objects if o["kind"] == "Job"]
+                self.assertEqual({j["metadata"]["name"] for j in jobs},
+                                 {f"{product}-build-dataplane", f"{product}-build-control"})
+                destinations = {a for j in jobs for c in mc.containers(mc.pod_template(j)[1]) for a in c["args"]
+                                if a.startswith("--destination=")}
+                self.assertEqual(destinations, {
+                    f"--destination={mc.IN_CLUSTER_REGISTRY}/{product}-dataplane:$(IMAGE_TAG)",
+                    f"--destination={mc.IN_CLUSTER_REGISTRY}/{product}-control:$(IMAGE_TAG)"})
+                refs = json.dumps(objects)
+                for name in ("build-config", "build-proxy", "build-ca", "build-context"):
+                    self.assertIn(f'"{product}-{name}"', refs)
+                self.assertTrue(all(o["metadata"]["namespace"] == f"{product}-build" for o in objects))
+
+    def test_committed_build_passes_its_check(self):
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                self.assertEqual(render.check_build(_BUILD[product], product, _CONTRACTS[product]), [])
+
+    # PR 33 review D-02: every core rule on the build manifests, one mutation each.
+    def test_build_check_refuses_each_violation(self):
+        registry = mc.IN_CLUSTER_REGISTRY
+        dest = f"--destination={registry}/acme-dataplane:x"
+
+        def set_args(o, args):
+            kaniko(o)["args"] = args
+
+        def without_destination(o):
+            set_args(o, [a for a in kaniko(o)["args"] if not a.startswith("--destination=")])
+
+        cases = {
+            "foreign destination": lambda o: set_args(o, [f"--destination={registry}/other-dataplane:x"
+                                                          if a.startswith("--destination=") else a
+                                                          for a in kaniko(o)["args"]]),
+            "no destination": without_destination,
+            "two destinations": lambda o: kaniko(o)["args"].append(dest),
+            "short form": lambda o: (without_destination(o), kaniko(o)["args"].extend(["-d", dest[14:]])),
+            "split form": lambda o: (without_destination(o), kaniko(o)["args"].extend(["--destination", dest[14:]])),
+            "blanket tls skip": lambda o: kaniko(o)["args"].append("--skip-tls-verify"),
+            "literal build arg": lambda o: kaniko(o)["args"].append("--build-arg=HTTP_PROXY=http://p.example.invalid:3128"),
+            "unknown build arg": lambda o: kaniko(o)["args"].append("--build-arg=TOKEN=$(TOKEN)"),
+            "tag": lambda o: kaniko(o).__setitem__("image", "gcr.io/kaniko-project/executor:latest"),
+            "placeholder digest": lambda o: kaniko(o).__setitem__("image", "gcr.io/kaniko-project/executor@"
+                                                                  + mc.ZERO_DIGEST),
+            "secret": lambda o: o.append({"apiVersion": "v1", "kind": "Secret", "metadata": {
+                "name": "acme-x", "namespace": "acme-build", "labels": {mc.PART_OF: "acme"}}}),
+            "rendered contract configmap": lambda o: o.append({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {
+                "name": "acme-build-proxy", "namespace": "acme-build", "labels": {mc.PART_OF: "acme"}},
+                "data": {"HTTP_PROXY": ""}}),
+            "unknown configmap": lambda o: kaniko(o)["envFrom"].append({"configMapRef": {"name": "acme-other"}}),
+            "key outside the contract": lambda o: kaniko(o)["env"].append({"name": "X", "valueFrom": {
+                "configMapKeyRef": {"name": "acme-build-config", "key": "other"}}}),
+            "secret env": lambda o: kaniko(o)["env"].append({"name": "X", "valueFrom": {
+                "secretKeyRef": {"name": "acme-x", "key": "k"}}}),
+            "secret envFrom": lambda o: kaniko(o)["envFrom"].append({"secretRef": {"name": "acme-x"}}),
+            "literal proxy env": lambda o: kaniko(o)["env"].append({"name": "HTTPS_PROXY", "value": "x"}),
+            "token": lambda o: job_spec(o).__setitem__("automountServiceAccountToken", True),
+            "host network": lambda o: job_spec(o).__setitem__("hostNetwork", True),
+            "host path": lambda o: job_spec(o)["volumes"].append({"name": "h", "hostPath": {"path": "/x"}}),
+            "host port": lambda o: kaniko(o).__setitem__("ports", [{"containerPort": 1, "hostPort": 1}]),
+            "privileged": lambda o: kaniko(o)["securityContext"].__setitem__("privileged", True),
+            "escalation": lambda o: kaniko(o)["securityContext"].__setitem__("allowPrivilegeEscalation", True),
+            "capability": lambda o: kaniko(o)["securityContext"].__setitem__("capabilities", {"add": ["SYS_ADMIN"]}),
+            "toleration": lambda o: job_spec(o).__setitem__("tolerations", [{
+                "key": "node.kubernetes.io/disk-pressure", "operator": "Exists"}]),
+            "no limits": lambda o: kaniko(o)["resources"].pop("limits"),
+            "priority": lambda o: job_spec(o).__setitem__("priorityClassName", "system-cluster-critical"),
+            "namespace": lambda o: job(o)["metadata"].__setitem__("namespace", "acme"),
+            "memory emptyDir": lambda o: job_spec(o)["volumes"].append({"name": "m", "emptyDir": {
+                "medium": "Memory", "sizeLimit": "1Gi"}}),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name):
+                objects = copy.deepcopy(_BUILD["acme"])
+                mutate(objects)
+                self.assertNotEqual(render.check_build(objects, "acme", _CONTRACTS["acme"]), [])
+
+    # PR 33 review D-03: the proxy reaches only the build stage, as build arguments, never a runtime layer.
+    def test_containerfiles_keep_the_proxy_in_the_build_stage(self):
+        for name in ("dataplane", "control"):
+            with self.subTest(name):
+                lines = [line.strip() for line in (mc.REPO_ROOT / f"deploy/images/{name}.Containerfile")
+                         .read_text().splitlines() if line.strip() and not line.strip().startswith("#")]
+                froms = [i for i, line in enumerate(lines) if line.startswith("FROM ")]
+                self.assertEqual(len(froms), 2)
+                self.assertTrue(lines[froms[0]].endswith(" AS build"))
+                build, runtime = lines[froms[0]:froms[1]], lines[froms[1]:]
+                for key in render.PROXY_ARGS:
+                    self.assertIn(f"ARG {key}", build)
+                    self.assertFalse(any(key in line for line in runtime), f"{key} in the runtime stage")
+                    self.assertFalse(any(line.startswith("ENV") and key in line for line in lines), key)
+                self.assertEqual([line for line in runtime if line.startswith("COPY --from=")],
+                                 ["COPY --from=build --chown=0:0 /out/app/ /app/"])
+                self.assertFalse(any(line.startswith(("ARG", "ENV HTTP", "ENV HTTPS", "ENV NO_PROXY"))
+                                     for line in lines[:froms[0]]))
+
+    def test_build_jobs_pass_the_proxy_only_as_build_arguments(self):
+        for j in (o for o in _BUILD["acme"] if o["kind"] == "Job"):
+            c = mc.containers(mc.pod_template(j)[1])[0]
+            self.assertEqual(sorted(a for a in c["args"] if a.startswith("--build-arg=")),
+                             sorted(f"--build-arg={k}=$({k})" for k in render.PROXY_ARGS))
+            self.assertEqual(c["envFrom"], [{"configMapRef": {"name": "acme-build-proxy"}}])
+
+    def test_digests_are_refused_for_the_build_target(self):
+        rc, _, _ = run(["--target", "build", "--phase", "control"])
+        self.assertEqual(rc, 2)
+        rc, _, _ = run(["--target", "build", "--dataplane-digest", DIGESTS["dataplane"]])
+        self.assertEqual(rc, 2)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)

@@ -3,6 +3,8 @@
 # rwsafe never preempts anything. Measured 2026-10-30: neXus uses system-cluster-critical for its services and
 # `ui2-low` (-100) for packet analysis. PO decision Q-10 (PO_DECISION_RECORD_2026_10_30_MVP_BLOCKING_QUESTIONS item 8):
 # the data plane (1000) sits above that class and below every other neXus class; manifest_check.py caps rwsafe at 1000.
+# The descriptions name no product: they are rendered, and manifest_check.py refuses a render that names neXus (`nexus*`
+# or `ui2*` tokens) and, under another product name (deploy/rwsafe/product.env), one that still names rwsafe.
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
@@ -11,7 +13,7 @@ metadata:
 value: 1000
 globalDefault: false
 preemptionPolicy: Never
-description: "rwsafe ICAP engine and LLM gateway: above build and batch work, far below every neXus service pod."
+description: "Data plane (ICAP engine, LLM gateway): above build and batch work, far below every service class of the other product on the host."
 ---
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
@@ -21,7 +23,7 @@ metadata:
 value: 500
 globalDefault: false
 preemptionPolicy: Never
-description: "rwsafe control plane and database: evicted before the data plane."
+description: "Control plane and database: evicted before the data plane."
 ---
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
@@ -31,4 +33,4 @@ metadata:
 value: -200
 globalDefault: false
 preemptionPolicy: Never
-description: "rwsafe worker, async classifiers, e2e and build jobs: below neXus's packet-analysis class (-100)."
+description: "Worker, async classifiers, e2e and build jobs: below the other product's packet-analysis class (-100)."

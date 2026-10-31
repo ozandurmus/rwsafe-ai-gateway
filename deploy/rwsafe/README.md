@@ -7,6 +7,11 @@ k3s overlay were written, as the artefact AC-1 and AC-4 are checked against. The
 (`rwsafe-icap` from the `rwsafe-dataplane` image, `rwsafe-control`, `rwsafe-db`) to `base/`, the platform-peer NetworkPolicies and PriorityClass
 assignment to `overlays/k3s/`, and the Secret and estate ConfigMap contract to `contracts/runtime-contracts.json`.
 
+`overlays/pilot/` is the first HOST-A pilot (k3s overlay plus: plain ICAP on 1344 only, break-glass sign-in without a
+directory, no SIEM, no Ingress, the committed policy seed from `policy/kustomization.yaml`); `build/` holds the kaniko
+image build Jobs and their context loader. The deployed product name is set once in `product.env` and applied by
+`tools/pilot/render.py` (manifests are committed with `rwsafe`); the procedure is `docs/operations/PILOT_RUNBOOK.md`.
+
 Rules: no `hostPath`, no `hostPort` in pod specs, no fixed UID/GID, read-only root, all capabilities dropped, digest-pinned
 images, Secret contracts without values, real names only in uncommitted ConfigMaps (`rwsafe-estate`). The manifest test
 (`tools/deploy/manifest_check.py`, CI job `manifests`) asserts every rule and that nothing in any object names a `ui2*`

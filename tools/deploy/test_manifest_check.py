@@ -160,6 +160,39 @@ class Mutations(unittest.TestCase):
         self.assertFalse(mc.names_nexus("app.kubernetes.io/part-of"))
         self.assertTrue(mc.names_nexus("UI2-DB"))
 
+    # PO 2026-10-31: neXus's repositories and any `nexus*` token are out of bounds too.
+    def test_nexus_tokens_fail(self):
+        self.assertTrue(mc.names_nexus("registry.kube-system.svc.cluster.local/nexus-ui2-service:abc"))
+        self.assertTrue(mc.names_nexus("far below every neXus service pod"))
+        self.assertFalse(mc.names_nexus("connexus"))
+        objects = compliant()
+        container(objects)["image"] = ("registry.kube-system.svc.cluster.local/nexus-ui2-build-cache@sha256:"
+                                       + "1" * 64)
+        self.assertFails(objects, "names a ui2* (neXus) object")
+
+    def test_load_balancer_port_in_use_on_the_host_fails(self):
+        for port in (80, 443, 22, 6443):
+            with self.subTest(port):
+                objects = compliant()
+                objects.append({"apiVersion": "v1", "kind": "Service",
+                                "metadata": {"name": "fixture-lb", "namespace": "fixture"},
+                                "spec": {"type": "LoadBalancer", "ports": [{"port": port, "targetPort": 8080}]}})
+                self.assertFails(objects, f"LoadBalancer port {port} is already in use on the host")
+
+    def test_nexus_cluster_ports_fail(self):
+        objects = compliant()
+        container(objects)["ports"] = [{"name": "x", "containerPort": 8086}]
+        self.assertFails(objects, "containerPort 8086 is one of neXus's cluster ports")
+
+    def test_in_cluster_registry_repository_must_be_the_products(self):
+        objects = compliant()
+        container(objects)["image"] = "registry.kube-system.svc.cluster.local/other-app@sha256:" + "1" * 64
+        self.assertFails(objects, "in-cluster registry repository other-app is not a rwsafe-* repository")
+        container(objects)["image"] = "registry.kube-system.svc.cluster.local/rwsafe-app@sha256:" + "1" * 64
+        failures, _ = mc.check(objects, CONTRACTS)
+        self.assertFalse(any("registry repository" in f for f in failures), failures)
+
+
     # PR 18 review D-05: one mutation per rule.
     def test_init_container_counts_in_the_quota(self):
         objects = compliant()
@@ -385,12 +418,13 @@ class Mutations(unittest.TestCase):
     # PR 27 review D-06: all requested storage together within the host-free budget.
     def test_requested_storage_of_all_namespaces_is_within_the_host_budget(self):
         objects = compliant()
-        for name, size in (("fixture-a", "100Gi"), ("fixture-b", "39Gi")):
+        # HOSTA_MEASUREMENT_2026_10_31: 305 GiB free minus the 5 % eviction reserve of 1005 GiB = 254 GiB.
+        for name, size in (("fixture-a", "200Gi"), ("fixture-b", "55Gi")):
             objects.append({"apiVersion": "v1", "kind": "PersistentVolumeClaim",
                             "metadata": {"name": name, "namespace": "other"},
                             "spec": {"resources": {"requests": {"storage": size}}}})
-        self.assertFails(objects, "requested storage of all namespaces is 139Gi, above the host-free budget 138Gi")
-        objects[-1]["spec"]["resources"]["requests"]["storage"] = "38Gi"
+        self.assertFails(objects, "requested storage of all namespaces is 255Gi, above the host-free budget 254Gi")
+        objects[-1]["spec"]["resources"]["requests"]["storage"] = "54Gi"
         failures, _ = mc.check(objects, CONTRACTS)
         self.assertFalse(any("host-free budget" in f for f in failures), failures)
 
@@ -417,6 +451,140 @@ class Mutations(unittest.TestCase):
         self.assertEqual(mc.quantity("4"), 4.0)
 
 
+class ProductName(unittest.TestCase):
+    """PO 2026-10-31: the product name is one parameter (deploy/rwsafe/product.env) for every cluster-visible name."""
+
+    def test_default_is_rwsafe(self):
+        self.assertEqual(mc.default_product(), "rwsafe")
+
+    def test_invalid_names_are_refused(self):
+        for name in ("nexus", "nexus2", "ui2x", "Rwsafe", "a", "kube-x", "system", "x_y", "-x", "x-", "a--b",
+                     "averyveryverylongname1"):
+            with self.subTest(name):
+                self.assertIsNotNone(mc.validate_product(name))
+        for name in ("rwsafe", "acme", "ai-guard", "g7"):
+            with self.subTest(name):
+                self.assertIsNone(mc.validate_product(name))
+
+    def test_swap_name(self):
+        self.assertEqual(mc.swap_name("rwsafe", "acme"), "acme")
+        self.assertEqual(mc.swap_name("rwsafe-icap-lb", "acme"), "acme-icap-lb")
+        self.assertEqual(mc.swap_name("rwsafe_app", "acme"), "rwsafe_app")
+        self.assertEqual(mc.swap_name("kube-system", "acme"), "kube-system")
+
+    def test_rename_covers_names_references_labels_dns_and_registry(self):
+        obj = {"apiVersion": "apps/v1", "kind": "Deployment",
+               "metadata": {"name": "rwsafe-icap", "namespace": "rwsafe",
+                            "labels": {"app.kubernetes.io/part-of": "rwsafe", "rwsafe.io/x": "true"}},
+               "spec": {"selector": {"matchLabels": {"app.kubernetes.io/name": "rwsafe-icap"}},
+                        "template": {"spec": {
+                            "serviceAccountName": "rwsafe-icap", "priorityClassName": "rwsafe-dataplane",
+                            "containers": [{"name": "icap",
+                                            "image": "registry.kube-system.svc.cluster.local/rwsafe-dataplane@sha256:"
+                                                     + "1" * 64,
+                                            "env": [{"name": "RWSAFE_URL",
+                                                     "value": "http://rwsafe-control.rwsafe.svc.cluster.local:8091/x"},
+                                                    {"name": "POSTGRESQL_DATABASE", "value": "rwsafe"},
+                                                    {"name": "K", "valueFrom": {"secretKeyRef": {
+                                                        "name": "rwsafe-db-credentials",
+                                                        "key": "rwsafe.migration.password"}}}],
+                                            "volumeMounts": [{"name": "k", "mountPath": "/run/secrets/rwsafe-x"}]}],
+                            "volumes": [{"name": "k", "secret": {"secretName": "rwsafe-x", "items": [
+                                {"key": "rwsafe-snapshot-1.pem", "path": "rwsafe-snapshot-1.pem"}]}},
+                                        {"name": "c", "configMap": {"name": "rwsafe-estate"}},
+                                        {"name": "p", "persistentVolumeClaim": {"claimName": "rwsafe-db-data"}}]}}}}
+        out = mc.rename_objects([obj], "acme")[0]
+        self.assertEqual(out["metadata"]["name"], "acme-icap")
+        self.assertEqual(out["metadata"]["namespace"], "acme")
+        self.assertEqual(out["metadata"]["labels"], {"app.kubernetes.io/part-of": "acme", "acme.io/x": "true"})
+        self.assertEqual(out["spec"]["selector"]["matchLabels"]["app.kubernetes.io/name"], "acme-icap")
+        spec = out["spec"]["template"]["spec"]
+        self.assertEqual((spec["serviceAccountName"], spec["priorityClassName"]), ("acme-icap", "acme-dataplane"))
+        c = spec["containers"][0]
+        self.assertTrue(c["image"].startswith("registry.kube-system.svc.cluster.local/acme-dataplane@"))
+        self.assertEqual(c["env"][0]["value"], "http://acme-control.acme.svc.cluster.local:8091/x")
+        self.assertEqual(c["env"][1]["value"], "rwsafe")   # the database name is application-internal
+        self.assertEqual(c["env"][2]["valueFrom"]["secretKeyRef"],
+                         {"name": "acme-db-credentials", "key": "rwsafe.migration.password"})
+        self.assertEqual(c["volumeMounts"][0]["mountPath"], "/run/secrets/rwsafe-x")   # inside the container
+        self.assertEqual(spec["volumes"][0]["secret"]["secretName"], "acme-x")
+        self.assertEqual(spec["volumes"][0]["secret"]["items"][0]["key"], "rwsafe-snapshot-1.pem")
+        self.assertEqual(spec["volumes"][1]["configMap"]["name"], "acme-estate")
+        self.assertEqual(spec["volumes"][2]["persistentVolumeClaim"]["claimName"], "acme-db-data")
+        self.assertEqual(mc.source_name_references(out), [])
+        self.assertEqual(mc.rename_objects([obj], "rwsafe")[0], obj)
+
+    def test_leftover_source_name_fails_under_another_product(self):
+        objects = mc.rename_objects(compliant(), "acme")
+        deployment(objects)["metadata"]["labels"] = {"app.kubernetes.io/name": "rwsafe-left"}
+        failures, _ = mc.check(objects, mc.rename_contracts(CONTRACTS, "acme"), product="acme")
+        self.assertTrue(any("still names rwsafe under product acme" in f for f in failures), failures)
+
+    def test_part_of_label_follows_the_product(self):
+        objects = compliant()
+        failures, _ = mc.check(objects, CONTRACTS, product="acme")
+        self.assertTrue(any("Namespace is not labelled part-of acme" in f for f in failures), failures)
+
+    def test_contract_names_follow_the_product(self):
+        renamed = mc.rename_contracts({"namespace": "rwsafe", "secrets": {"rwsafe-x": {"keys": ["k"]}},
+                                       "configMaps": {"rwsafe-y": {"keys": ["rwsafe-k"]}},
+                                       "build": {"namespace": "rwsafe-build", "configMaps": {"rwsafe-b": {}}}}, "acme")
+        self.assertEqual(renamed["namespace"], "acme")
+        self.assertEqual(set(renamed["secrets"]), {"acme-x"})
+        self.assertEqual(renamed["configMaps"]["acme-y"]["keys"], ["rwsafe-k"])
+        self.assertEqual((renamed["build"]["namespace"], set(renamed["build"]["configMaps"])),
+                         ("acme-build", {"acme-b"}))
+
+    # PR 33 review D-06: Ingress backends, short Service names in URLs, annotation keys and Service selectors.
+    def test_rename_covers_ingress_urls_annotations_and_service_selectors(self):
+        ingress = {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress",
+                   "metadata": {"name": "rwsafe-admin", "namespace": "rwsafe",
+                                "annotations": {"rwsafe.io/route": "admin"}},
+                   "spec": {"rules": [{"http": {"paths": [{"path": "/", "pathType": "Prefix", "backend": {
+                       "service": {"name": "rwsafe-control", "port": {"number": 8080}}}}]}}]}}
+        cm = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "rwsafe-x", "namespace": "rwsafe"},
+              "data": {"URL": "http://rwsafe-control:8091/x", "BARE": "http://rwsafe/x"}}
+        out = mc.rename_objects([ingress, cm], "acme")
+        backend = out[0]["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"]
+        self.assertEqual(backend["name"], "acme-control")
+        self.assertEqual(out[0]["metadata"]["annotations"], {"acme.io/route": "admin"})
+        self.assertEqual(out[1]["data"], {"URL": "http://acme-control:8091/x", "BARE": "http://acme/x"})
+        self.assertEqual(mc.source_name_references(out[0]) + mc.source_name_references(out[1]), [])
+        for leftover in ({"data": {"URL": "http://rwsafe:8091/"}},
+                         {"metadata": {"annotations": {"rwsafe.io/x": "1"}}},
+                         {"spec": {"selector": {"rwsafe.io/tier": "x"}}},
+                         {"spec": {"url": "http://rwsafe/"}}):
+            with self.subTest(leftover):
+                self.assertNotEqual(mc.source_name_references(leftover), [])
+
+    # PR 33 review D-05: a LoadBalancer opens no node port and no health-check node port.
+    def test_load_balancer_node_ports_fail(self):
+        base = {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "rwsafe-lb", "namespace": "fixture"},
+                "spec": {"type": "LoadBalancer", "allocateLoadBalancerNodePorts": False,
+                         "externalTrafficPolicy": "Cluster", "ports": [{"port": 1344, "targetPort": 1344}]}}
+        objects = compliant() + [copy.deepcopy(base)]
+        failures, _ = mc.check(objects, CONTRACTS)
+        self.assertFalse(any("LoadBalancer" in f for f in failures), failures)
+        for field, value, fragment in (("allocateLoadBalancerNodePorts", None, "allocates node ports"),
+                                       ("allocateLoadBalancerNodePorts", True, "allocates node ports"),
+                                       ("externalTrafficPolicy", "Local", "health-check node port")):
+            with self.subTest(f"{field}={value}"):
+                svc = copy.deepcopy(base)
+                if value is None:
+                    svc["spec"].pop(field)
+                else:
+                    svc["spec"][field] = value
+                failures, _ = mc.check(compliant() + [svc], CONTRACTS)
+                self.assertTrue(any(fragment in f for f in failures), failures)
+
+    def test_invalid_product_exits_2(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = mc.main(["--product", "nexus"])
+        self.assertEqual(rc, 2)
+        self.assertIn("names neXus", out.getvalue())
+
+
 class CommittedOverlay(unittest.TestCase):
     def test_k3s_overlay_passes(self):
         out = io.StringIO()
@@ -434,6 +602,28 @@ class CommittedOverlay(unittest.TestCase):
         for policy in ("rwsafe-control-to-directory", "rwsafe-control-to-siem"):
             self.assertIn(f"NetworkPolicy/rwsafe/{policy}: egress ipBlock is a documentation-range placeholder in a "
                           f"release render", out.getvalue())
+
+    # PO 2026-10-31: another product name renders and passes, with nothing left of the source name.
+    def test_k3s_and_pilot_overlays_pass_under_another_product_name(self):
+        for overlay in ("k3s", "pilot"):
+            with self.subTest(overlay):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    rc = mc.main(["--overlay", str(mc.REPO_ROOT / "deploy/rwsafe/overlays" / overlay),
+                                  "--product", "acme"])
+                self.assertEqual(rc, 0, out.getvalue())
+                self.assertIn("product acme", out.getvalue())
+                self.assertNotIn("NetworkPolicy/rwsafe/", out.getvalue())
+
+    # The pilot needs no directory or SIEM placeholder: with --release only the two image digests remain.
+    def test_pilot_overlay_release_fails_only_on_the_image_digests(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = mc.main(["--overlay", str(mc.REPO_ROOT / "deploy/rwsafe/overlays/pilot"), "--release"])
+        self.assertEqual(rc, 1)
+        fails = [line for line in out.getvalue().splitlines() if line.startswith("FAIL")]
+        self.assertEqual(len(fails), 2, fails)
+        self.assertTrue(all("placeholder digest in a release render" in f for f in fails), fails)
 
 
 if __name__ == "__main__":

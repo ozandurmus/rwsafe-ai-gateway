@@ -1,0 +1,34 @@
+# Pilot values of the committed runtime ConfigMaps (base/20-configmaps.yaml). Paths and switches only; no estate value.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rwsafe-control-config
+  namespace: rwsafe
+data:
+  # The local break-glass account is the pilot's only sign-in (no directory). The control plane creates it at first
+  # start with a generated password, stored as a BCrypt hash, and writes the password once, owner-only, to this file on
+  # the PVC rwsafe-control-identity (BreakGlassAccounts); the root filesystem is read-only, so the base default path
+  # under /var/lib/rwsafe would not be writable.
+  RWSAFE_BREAK_GLASS_ENABLED: "true"
+  RWSAFE_BREAK_GLASS_PASSWORD_FILE: "/var/lib/rwsafe/identity/break-glass-initial-password"
+  # The committed seed (policy/kustomization.yaml), mounted at the application's default path.
+  RWSAFE_POLICY_SEED_FILE: "/etc/rwsafe/policy/registry-seed.yaml"
+  # No ingress in front of the admin UI: kubectl port-forward reaches the pod directly, so no forwarded header is
+  # trusted. The session cookie stays Secure (`__Host-` prefix); browsers accept a Secure cookie on http://localhost
+  # (UNVERIFIED 2026-10-31 for the PO's browser; PILOT_RUNBOOK.md step 14 says what to do if sign-in loops).
+  RWSAFE_FORWARD_HEADERS: "none"
+  # Off in the pilot (restating the committed defaults): no SIEM destination, no redacted capture.
+  RWSAFE_SIEM_ENABLED: "false"
+  RWSAFE_CAPTURE_MODE: "off"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rwsafe-icap-config
+  namespace: rwsafe
+data:
+  # Plain ICAP on 1344 under H-2 (at most 30 days); no Secure ICAP listener in the pilot (no TLS Secret is mounted).
+  RWSAFE_ICAP_PORT: "1344"
+  RWSAFE_ICAPS_PORT: null
+  # Off in the pilot (restating the committed defaults; RWSAFE_GROUP_CLAIM_ENCODING stays unset: group claims off).
+  RWSAFE_CAPTURE_MODE: "off"

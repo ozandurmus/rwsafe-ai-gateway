@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# The committed policy registry seed (AGENTS.md section 6) as the ConfigMap the control plane imports once into an empty
+# registry (RWSAFE_POLICY_SEED_FILE, default /etc/rwsafe/policy/registry-seed.yaml). It lives beside the fixture because
+# kustomize reads generator files only inside the kustomization's own directory; an overlay includes this directory as a
+# resource (deploy/rwsafe/overlays/pilot). The name carries a content hash, so a changed seed restarts the control plane;
+# the seed is imported only into an empty registry, so a change reaches a running registry only as a registry version.
+configMapGenerator:
+  - name: rwsafe-policy-seed
+    namespace: rwsafe
+    files:
+      - registry-seed.yaml
+    options:
+      labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-control }

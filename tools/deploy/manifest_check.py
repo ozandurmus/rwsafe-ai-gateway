@@ -24,16 +24,24 @@ cluster), and asserts the shared-host rules on every object:
     destination, no ipBlock is 0.0.0.0/0, and with --release no ipBlock is an RFC 5737 documentation placeholder; no
     placeholder is shared by two NetworkPolicies (the estate patch replaces each by one value); an ipBlock without a
     valid cidr, an ingress rule without `from`, an empty peer and an empty namespace or pod selector in a peer fail
-    (EMPTY_SELECTOR_EXCEPTIONS lists deliberate ones); no NodePort Service
+    (EMPTY_SELECTOR_EXCEPTIONS lists deliberate ones); no NodePort Service, and no LoadBalancer Service that
+    allocates a node port or a health-check node port
   - a PodDisruptionBudget for every multi-replica workload, keeping at least one pod and allowing at least one eviction
   - no Secret is ever rendered; every referenced Secret or uncommitted ConfigMap key (env, volume, projected volume)
     is in the runtime contract
-  - nothing anywhere in any object (keys, values, tokens of names, URLs and selectors) names a `ui2*` or `nexus-ui2`
-    object, namespace or label (neXus's)
+  - nothing anywhere in any object (keys, values, tokens of names, URLs and selectors) names a `ui2*` or `nexus*`
+    object, namespace, label, PriorityClass or registry repository (neXus's)
+  - the product name (deploy/rwsafe/product.env, or --product) drives every cluster-visible name (PO, 2026-10-31): the
+    committed manifests are written with `rwsafe` and renamed by `rename_objects`; under another name nothing rendered
+    still names rwsafe, every in-cluster registry image is a `<product>-*` repository, and the part-of label and the
+    build namespace follow the name
+  - no LoadBalancer port or hostPort is a port already in use on HOST-A (HOST_PORTS_IN_USE: Traefik owns 80/443), and no
+    container or Service port is one of neXus's cluster ports (NEXUS_CLUSTER_PORTS)
 
 Standard library only; needs kubectl (and optionally kustomize) on PATH.
 
 Usage: python3 -B tools/deploy/manifest_check.py [--overlay DIR] [--contracts FILE] [--release] [--rendered FILE]
+                                                 [--product NAME]
 """
 from __future__ import annotations
 
@@ -51,20 +59,35 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OVERLAY = REPO_ROOT / "deploy/rwsafe/overlays/k3s"
 DEFAULT_CONTRACTS = REPO_ROOT / "deploy/rwsafe/contracts/runtime-contracts.json"
+PRODUCT_FILE = REPO_ROOT / "deploy/rwsafe/product.env"
+# The name the committed manifests and the runtime contract are written with; a render under another product name renames
+# every cluster-visible occurrence (rename_objects). Application-internal identifiers keep it (environment variable names,
+# mount paths, Secret and ConfigMap keys, database and role names, the snapshot key id).
+SOURCE_PRODUCT = "rwsafe"
+IN_CLUSTER_REGISTRY = "registry.kube-system.svc.cluster.local"
+_PRODUCT_RE = re.compile(r"^[a-z][a-z0-9-]{0,18}[a-z0-9]$")
+_RESERVED_PRODUCTS = {"default", "system", "kube", "registry", "traefik", "local-path", "monitoring"}
+# HOSTA_MEASUREMENT_2026_10_31.md and PORTS_AND_RESOURCES §2.1: host ports in use on HOST-A (sshd 22, the MTA 25, the
+# resolver 53, Traefik's ServiceLB 80/443, chrony 323, the k3s API 6443/6444, flannel 8472, k3s internals and the kubelet
+# 10010 and 10248-10259). A LoadBalancer port or a hostPort on one of them would collide on the node.
+HOST_PORTS_IN_USE = {22, 25, 53, 80, 323, 443, 6443, 6444, 8472, 10010} | set(range(10248, 10260))
+# PORTS_AND_RESOURCES §2.2 and §5: neXus's cluster ports. 8080 and 5432 are shared by number inside separate namespaces
+# and Services (accepted in §5); these are never reused, so a mistaken cross-namespace request fails loudly.
+NEXUS_CLUSTER_PORTS = {8084, 8085, 8086, 8087}
 
 # neXus runs its services at system-cluster-critical (PORTS_AND_RESOURCES §4.1); rwsafe stays strictly below it. PO
 # decision Q-10 (PO_DECISION_RECORD_2026_10_30_MVP_BLOCKING_QUESTIONS item 8) places the data plane at 1000, above
 # neXus's packet-analysis class (-100) and below every other neXus class; no rwsafe class may exceed it.
 NEXUS_SERVICE_PRIORITY = 2_000_000_000
 RWSAFE_PRIORITY_CEILING = 1000
-# ADR-001 §3: emptyDir caps; the build namespace is the one PSA `baseline` exception (PLAT-F6).
-BUILD_NAMESPACES = {"rwsafe-build"}
+# ADR-001 §3: emptyDir caps; the build namespace (`<product>-build`) is the one PSA `baseline` exception (PLAT-F6).
 EMPTYDIR_CAP = 512 * 2**20
 BUILD_EMPTYDIR_CAP = 4 * 2**30
 PSA = "pod-security.kubernetes.io/"
 # RFC 5737 documentation ranges: the committed placeholder for estate addresses (the deploy patches the real ones in).
 DOCUMENTATION_NETS = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
-# neXus's objects (ADR-001 §7, NS-1): a token of a key or value that starts with `ui2`, or the label value `nexus-ui2`.
+# neXus's objects (ADR-001 §7, NS-1): a token of a key or value that starts with `ui2` or `nexus` (its namespaces `ui2*`,
+# its label value `nexus-ui2`, its PriorityClass `ui2-low`, its registry repositories `nexus-ui2-*`).
 _NAME_TOKENS = re.compile(r"[/.:=@?&#,;\s\-\"'()\[\]{}]+")
 PART_OF = "app.kubernetes.io/part-of"
 ZERO_DIGEST = "sha256:" + "0" * 64
@@ -75,11 +98,12 @@ OFFLINE_ENV = {**os.environ, "KUBECONFIG": os.devnull}
 # own namespace, or every namespace), as ident -> reason. Empty: no committed policy needs one (PR 27 review D-03); an
 # entry is added only with its reason and a review in the pull request that adds it.
 EMPTY_SELECTOR_EXCEPTIONS: dict[str, str] = {}
-# PR 27 review D-06: the storage all rwsafe namespaces may request together on HOST-A. PORTS_AND_RESOURCES §1 (measured
-# 2026-10-30): 189 GiB free on the one root filesystem, minus the kubelet's hard eviction reserve nodefs.available 5 %
-# of 1005 GiB (50.25 GiB) = 138.75 GiB, rounded down. local-path reserves nothing, so this is a budget, not a guarantee;
-# re-measure before raising it (a PO decision, DEPLOY_AND_SHARED_HOST_RUNBOOK §7.5).
-HOST_FREE_STORAGE_BUDGET = 138 * 2**30
+# PR 27 review D-06: the storage all rwsafe namespaces may request together on HOST-A. Measured 2026-10-31
+# (docs/operations/HOSTA_MEASUREMENT_2026_10_31.md, superseding the 2026-10-30 figure of PORTS_AND_RESOURCES §1): 305 GiB
+# free on the one 1005 GiB root filesystem, minus the kubelet's hard eviction reserve nodefs.available 5 % of 1005 GiB
+# (50.25 GiB) = 254.75 GiB, rounded down. local-path reserves nothing, so this is a budget, not a guarantee; re-measure
+# before raising it (a PO decision, DEPLOY_AND_SHARED_HOST_RUNBOOK §7.5). The capture cap does not follow it.
+HOST_FREE_STORAGE_BUDGET = 254 * 2**30
 
 
 # ---- rendering ---------------------------------------------------------------------------------------------------------
@@ -185,9 +209,9 @@ def selects(selector: dict, labels: dict) -> bool:
 
 
 def names_nexus(text: str) -> bool:
-    """True when a key or value names a neXus (`ui2*`) object: the whole string or any token of it."""
+    """True when a key or value names a neXus (`ui2*`, `nexus*`) object: the whole string or any token of it."""
     t = text.lower()
-    return "nexus-ui2" in t or any(tok.startswith("ui2") for tok in _NAME_TOKENS.split(t) if tok)
+    return "nexus-ui2" in t or any(tok.startswith(("ui2", "nexus")) for tok in _NAME_TOKENS.split(t) if tok)
 
 
 def nexus_references(node, path: str = "") -> list[str]:
@@ -260,13 +284,163 @@ def pod_count(obj: dict) -> int:
     return replicas
 
 
+# ---- the product name (PO, 2026-10-31: renameable from one place) ------------------------------------------------------
+
+def default_product() -> str:
+    """The `PRODUCT=` line of deploy/rwsafe/product.env, the one place the deployed name is set."""
+    for line in PRODUCT_FILE.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("PRODUCT="):
+            return line.split("=", 1)[1].strip().strip("\"'")
+    raise SystemExit(f"manifest check: no PRODUCT= line in {PRODUCT_FILE.name}")
+
+
+def validate_product(name: str) -> str | None:
+    """The reason a product name is refused, or None: lower case DNS label, 2-20 characters (so `<product>-security`
+    and every derived object name stay valid), never a neXus name or a Kubernetes or platform name."""
+    if not isinstance(name, str) or not _PRODUCT_RE.match(name) or "--" in name:
+        return "must be 2-20 characters of a-z, 0-9 and single hyphens, starting with a letter"
+    if names_nexus(name):
+        return "names neXus (ui2*, nexus*)"
+    if name in _RESERVED_PRODUCTS or name.startswith(("kube", "system", "k3s", "openshift")):
+        return "is a Kubernetes or platform name"
+    return None
+
+
+def swap_name(value: str, product: str) -> str:
+    """`rwsafe` -> product, `rwsafe-x` -> `<product>-x`; anything else unchanged."""
+    if value == SOURCE_PRODUCT:
+        return product
+    if value.startswith(SOURCE_PRODUCT + "-"):
+        return product + value[len(SOURCE_PRODUCT):]
+    return value
+
+
+def _swap_label_key(key: str, product: str) -> str:
+    prefix = SOURCE_PRODUCT + ".io/"
+    return product + ".io/" + key[len(prefix):] if key.startswith(prefix) else key
+
+
+_DNS_NAME = re.compile(r"(?<![A-Za-z0-9_-])" + SOURCE_PRODUCT + r"((?:-[a-z0-9]+)*)\." + SOURCE_PRODUCT + r"\.svc\b")
+_REGISTRY_REPO = re.compile(r"(?<=" + re.escape(IN_CLUSTER_REGISTRY + "/") + r")" + SOURCE_PRODUCT + "-")
+# A URL whose host is a short Service name (`//rwsafe-control:8091`, `//rwsafe/`); full DNS names go through _DNS_NAME.
+_URL_HOST = re.compile(r"(?<=//)" + SOURCE_PRODUCT + r"(?=(?:-[a-z0-9]+)*(?:[.:/]|$))")
+_SOURCE_URL = re.compile(r"//" + SOURCE_PRODUCT + r"(?:[-.:/]|$)")
+# Dicts whose `name` is a reference to another object (`service`: an Ingress backend), and keys whose string value is one.
+_NAME_HOLDERS = {"metadata", "configMapRef", "secretRef", "configMapKeyRef", "secretKeyRef", "configMap", "secret",
+                 "service"}
+_REF_KEYS = {"namespace", "serviceAccountName", "priorityClassName", "claimName", "secretName", "serviceName"}
+
+
+def _is_label_map(parent: str, node: dict) -> bool:
+    if parent in ("labels", "matchLabels"):
+        return True
+    # A Service's spec.selector is a plain label map; a workload's or PDB's has matchLabels/matchExpressions.
+    return parent == "selector" and bool(node) and all(isinstance(v, str) for v in node.values()) and not (
+        {"matchLabels", "matchExpressions"} & set(node))
+
+
+def _rename(node, product: str, parent: str = ""):
+    if isinstance(node, dict):
+        if _is_label_map(parent, node):
+            return {_swap_label_key(k, product): swap_name(v, product) if isinstance(v, str) else v
+                    for k, v in node.items()}
+        if parent == "annotations":
+            return {_swap_label_key(k, product): _rename(v, product, k) for k, v in node.items()}
+        out = {}
+        for k, v in node.items():
+            if isinstance(v, str) and ((k == "name" and parent in _NAME_HOLDERS) or k in _REF_KEYS):
+                out[k] = swap_name(v, product)
+            elif k == "key" and parent == "matchExpressions[]" and isinstance(v, str):
+                out[k] = _swap_label_key(v, product)
+            elif k == "values" and parent == "matchExpressions[]" and isinstance(v, list):
+                out[k] = [swap_name(x, product) if isinstance(x, str) else x for x in v]
+            else:
+                out[k] = _rename(v, product, k)
+        return out
+    if isinstance(node, list):
+        return [_rename(v, product, parent + "[]") for v in node]
+    if isinstance(node, str):
+        return _URL_HOST.sub(product, _REGISTRY_REPO.sub(product + "-", _DNS_NAME.sub(
+            lambda m: f"{product}{m.group(1)}.{product}.svc", node)))
+    return node
+
+
+def rename_objects(objects: list[dict], product: str) -> list[dict]:
+    """The rendered objects under the product name: object names, namespaces, references (ServiceAccount, PriorityClass,
+    Secret, ConfigMap, PVC, Service), label keys `rwsafe.io/*` and values, selectors, in-cluster Service DNS names and
+    in-cluster registry repositories. Free text, environment variable names, mount paths, keys and ConfigMap file
+    contents other than Service DNS names are left as they are."""
+    if product == SOURCE_PRODUCT:
+        return objects
+    return [_rename(o, product) for o in objects]
+
+
+def rename_contracts(contracts: dict, product: str) -> dict:
+    """The runtime contract's object names and namespaces under the product name; keys are unchanged."""
+    if product == SOURCE_PRODUCT:
+        return contracts
+    out = dict(contracts)
+    if "namespace" in out:
+        out["namespace"] = swap_name(out["namespace"], product)
+    for section in ("secrets", "configMaps"):
+        out[section] = {swap_name(n, product): v for n, v in (contracts.get(section) or {}).items()}
+    if isinstance(contracts.get("build"), dict):
+        build = dict(contracts["build"])
+        build["namespace"] = swap_name(build.get("namespace", ""), product)
+        build["configMaps"] = {swap_name(n, product): v for n, v in (build.get("configMaps") or {}).items()}
+        out["build"] = build
+    return out
+
+
+def _source_name_left(value: str) -> bool:
+    return (value == SOURCE_PRODUCT or value.startswith(SOURCE_PRODUCT + "-")
+            or f".{SOURCE_PRODUCT}.svc" in value or bool(_SOURCE_URL.search(value))
+            or f"{IN_CLUSTER_REGISTRY}/{SOURCE_PRODUCT}-" in value)
+
+
+def source_name_references(node, path: str = "", parent: str = "") -> list[str]:
+    """Paths (never values) where a render under another product name still names the source product: label keys
+    `rwsafe.io/*`, and string values that are `rwsafe`, start with `rwsafe-`, or hold an rwsafe Service DNS name or
+    registry repository. Not counted: map keys other than label keys, `key` and `path` fields (Secret and ConfigMap
+    keys), ConfigMap data (file contents), and environment values equal to `rwsafe` (the database name)."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            here = f"{path}.{k}" if path else str(k)
+            if (_is_label_map(parent, node) or parent == "annotations") and str(k).startswith(SOURCE_PRODUCT + ".io/"):
+                found.append(here)
+            if k == "key" and parent == "matchExpressions[]" and str(v).startswith(SOURCE_PRODUCT + ".io/"):
+                found.append(here)
+            if k in ("key", "path") and parent != "matchExpressions[]":
+                continue
+            if k in ("data", "binaryData") and path == "":
+                for dk, dv in (v or {}).items():
+                    if isinstance(dv, str) and (f".{SOURCE_PRODUCT}.svc" in dv or _SOURCE_URL.search(dv)
+                                                or f"{IN_CLUSTER_REGISTRY}/{SOURCE_PRODUCT}-" in dv):
+                        found.append(f"{here}.{dk}")
+                continue
+            if k == "value" and parent == "env[]" and v == SOURCE_PRODUCT:
+                continue
+            found.extend(source_name_references(v, here, k))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            found.extend(source_name_references(v, f"{path}[{i}]", parent + "[]"))
+    elif isinstance(node, str) and _source_name_left(node):
+        found.append(path)
+    return found
+
+
 # ---- the check ---------------------------------------------------------------------------------------------------------
 
-def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[list[str], list[str]]:
-    """Returns (failures, notes)."""
+def check(objects: list[dict], contracts: dict, release: bool = False,
+          product: str = SOURCE_PRODUCT) -> tuple[list[str], list[str]]:
+    """Returns (failures, notes). `objects` and `contracts` are already under the product name (rename_objects,
+    rename_contracts)."""
     failures: list[str] = []
     notes: list[str] = []
     fail = lambda obj, msg: failures.append(f"{ident(obj)}: {msg}")  # noqa: E731
+    build_namespaces = {f"{product}-build"}
 
     secret_contract = {n: set(v["keys"]) for n, v in contracts.get("secrets", {}).items()}
     configmap_contract = {n: set(v["keys"]) for n, v in contracts.get("configMaps", {}).items()}
@@ -280,15 +454,22 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
     for obj in objects:
         where = nexus_references(obj)
         if where:
-            fail(obj, f"names a ui2* (neXus) object or namespace at {', '.join(where[:5])}")
+            fail(obj, f"names a ui2* (neXus) object, namespace, label or repository (a ui2* or nexus* token) at "
+                      f"{', '.join(where[:5])}")
+    # PO 2026-10-31: under another product name nothing rendered still names the source product.
+    if product != SOURCE_PRODUCT:
+        for obj in objects:
+            where = source_name_references(obj)
+            if where:
+                fail(obj, f"still names {SOURCE_PRODUCT} under product {product} at {', '.join(where[:5])}")
 
     # Priority classes.
     rwsafe_classes = set()
     for obj in objects:
         if obj.get("kind") != "PriorityClass":
             continue
-        if obj.get("metadata", {}).get("labels", {}).get(PART_OF) != "rwsafe":
-            fail(obj, "PriorityClass is not labelled part-of rwsafe")
+        if obj.get("metadata", {}).get("labels", {}).get(PART_OF) != product:
+            fail(obj, f"PriorityClass is not labelled part-of {product}")
             continue
         rwsafe_classes.add(obj["metadata"]["name"])
         if int(obj.get("value", 0)) >= NEXUS_SERVICE_PRIORITY:
@@ -310,7 +491,9 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
         if kind == "Namespace":
             labels = obj["metadata"].get("labels") or {}
             enforce = labels.get(PSA + "enforce")
-            allowed = {"restricted", "baseline"} if obj["metadata"]["name"] in BUILD_NAMESPACES else {"restricted"}
+            allowed = {"restricted", "baseline"} if obj["metadata"]["name"] in build_namespaces else {"restricted"}
+            if labels.get(PART_OF) != product:
+                fail(obj, f"Namespace is not labelled part-of {product}")
             if enforce not in allowed:
                 fail(obj, f"PSA enforce is {enforce or 'unset'}, not {' or '.join(sorted(allowed, reverse=True))}")
             for mode in ("audit", "warn"):
@@ -325,6 +508,19 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
                 fail(obj, "NodePort Service")
             if spec.get("externalIPs"):
                 fail(obj, "externalIPs set")
+            if spec.get("type") == "LoadBalancer":
+                # PR 33 review D-05: a LoadBalancer Service would also open a port of the node-port range on every node
+                # address, outside the 1344 firewall rule; with externalTrafficPolicy Local Kubernetes adds a
+                # health-check node port as well.
+                if spec.get("allocateLoadBalancerNodePorts") is not False:
+                    fail(obj, "LoadBalancer allocates node ports (allocateLoadBalancerNodePorts is not false)")
+                if spec.get("externalTrafficPolicy") == "Local" or spec.get("healthCheckNodePort"):
+                    fail(obj, "LoadBalancer with externalTrafficPolicy Local allocates a health-check node port")
+            for p in spec.get("ports", []):
+                if spec.get("type") == "LoadBalancer" and p.get("port") in HOST_PORTS_IN_USE:
+                    fail(obj, f"LoadBalancer port {p.get('port')} is already in use on the host")
+                if p.get("port") in NEXUS_CLUSTER_PORTS or p.get("targetPort") in NEXUS_CLUSTER_PORTS:
+                    fail(obj, f"port {p.get('port')} is one of neXus's cluster ports")
         tpl = pod_template(obj)
         if tpl is None:
             continue
@@ -360,7 +556,7 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
                 fail(obj, f"volume {vol.get('name')} is a hostPath")
             if "emptyDir" in vol:
                 ed = vol["emptyDir"] or {}
-                cap = BUILD_EMPTYDIR_CAP if ns in BUILD_NAMESPACES else EMPTYDIR_CAP
+                cap = BUILD_EMPTYDIR_CAP if ns in build_namespaces else EMPTYDIR_CAP
                 if not ed.get("sizeLimit"):
                     fail(obj, f"emptyDir {vol.get('name')} has no sizeLimit")
                 elif quantity(ed["sizeLimit"]) > cap:
@@ -398,6 +594,10 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
             image = c.get("image", "")
             if image.endswith(":latest") or ("@" not in image and ":" not in image.rsplit("/", 1)[-1]):
                 fail(obj, f"{cname}: image is `latest` or untagged")
+            if image.startswith(IN_CLUSTER_REGISTRY + "/"):
+                repository = image[len(IN_CLUSTER_REGISTRY) + 1:].split("@", 1)[0].split(":", 1)[0]
+                if not repository.startswith(product + "-"):
+                    fail(obj, f"{cname}: in-cluster registry repository {repository} is not a {product}-* repository")
             if not DIGEST.search(image):
                 fail(obj, f"{cname}: image is not pinned by digest")
             elif image.endswith(ZERO_DIGEST):
@@ -428,6 +628,8 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
             for p in c.get("ports") or []:
                 if p.get("hostPort"):
                     fail(obj, f"{cname}: hostPort {p.get('hostPort')}")
+                if p.get("containerPort") in NEXUS_CLUSTER_PORTS:
+                    fail(obj, f"{cname}: containerPort {p.get('containerPort')} is one of neXus's cluster ports")
             res = c.get("resources") or {}
             for part in ("requests", "limits"):
                 for r in ("cpu", "memory"):
@@ -620,7 +822,7 @@ def check(objects: list[dict], contracts: dict, release: bool = False) -> tuple[
                 for v in obj["spec"].get("volumeClaimTemplates") or [])
     if requested > HOST_FREE_STORAGE_BUDGET:
         failures.append(f"requested storage of all namespaces is {requested / 2**30:g}Gi, above the host-free budget "
-                        f"{HOST_FREE_STORAGE_BUDGET / 2**30:g}Gi (PORTS_AND_RESOURCES §1)")
+                        f"{HOST_FREE_STORAGE_BUDGET / 2**30:g}Gi (HOSTA_MEASUREMENT_2026_10_31)")
     return failures, notes
 
 
@@ -647,14 +849,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--contracts", type=Path, default=DEFAULT_CONTRACTS)
     ap.add_argument("--rendered", type=Path, help="check this rendered YAML instead of building the overlay")
     ap.add_argument("--release", action="store_true", help="refuse placeholder image digests")
+    ap.add_argument("--product", help="the deployed product name (default: deploy/rwsafe/product.env); an overlay "
+                                      "render is renamed to it, a --rendered file must already carry it")
     args = ap.parse_args(argv)
+    product = args.product or default_product()
+    refused = validate_product(product)
+    if refused:
+        print(f"FAIL  product name {product!r} {refused}")
+        return 2
     if args.rendered:
         text, tool = args.rendered.read_text(), f"file {args.rendered.name}"
+        objects = to_objects(text)
     else:
         text, tool = render(args.overlay)
-    objects = to_objects(text)
-    contracts = json.loads(args.contracts.read_text())
-    failures, notes = check(objects, contracts, release=args.release)
+        objects = rename_objects(to_objects(text), product)
+    contracts = rename_contracts(json.loads(args.contracts.read_text()), product)
+    failures, notes = check(objects, contracts, release=args.release, product=product)
     for n in notes:
         print(f"note  {n}")
     for f in failures:
@@ -664,7 +874,7 @@ def main(argv: list[str] | None = None) -> int:
     if workloads == 0:
         print("FAIL  the render holds no workload")
     print(f"manifest check {verdict}: {len(objects)} objects, {workloads} workloads, {len(failures)} failure(s); "
-          f"rendered with {tool}")
+          f"product {product}; rendered with {tool}")
     return 1 if verdict == "FAIL" else 0
 
 
