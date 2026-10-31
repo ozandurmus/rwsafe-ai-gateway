@@ -15,7 +15,7 @@ through a PO decision record, so where the two disagree this record is the newer
 | Node ports 1344 and 11344 | not in use | not in use | the pilot's ICAP ServiceLB port 1344 does not collide |
 | In-cluster registry | a Service `registry` in `kube-system`, port 80 to 5000 | same | rwsafe images are pushed there by the build Jobs (`deploy/rwsafe/image-build`) |
 | How the other product builds images | kaniko Jobs in its own build namespace pushing to that registry; a build-cache repository exists | not recorded | the pilot's build follows the same pattern in `<product>-build`, with its own repositories `<product>-dataplane`, `<product>-control` and no cache repository |
-| Ingress | Traefik is the LoadBalancer for 80/443 through ServiceLB | same | the pilot adds no Ingress; the admin UI is reached by `kubectl port-forward` |
+| Ingress | Traefik is the LoadBalancer for 80/443 through ServiceLB | same; external traffic policy `Cluster`, no forwarded-header trust argument (read 2026-10-31, PILOT_RUNBOOK 14.2) | the pilot adds one Ingress for `ui.<product>.local` (PR 43, Q-46 amendment 1); the client address does not reach the product (go-live item) |
 | rwsafe namespaces | none (`rwsafe*` absent) | none | the pilot starts from nothing |
 | PriorityClasses | the system classes and the other product's low class (-100) | same | rwsafe's classes (1000, 500, -200) are unchanged (Q-10) |
 | ResourceQuota | none anywhere | none | rwsafe brings its own (k3s overlay) |
