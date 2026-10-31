@@ -97,6 +97,11 @@ def _build_contract(contracts: dict) -> dict[str, set[str]]:
     return {n: set(v.get("keys") or []) for n, v in ((contracts.get("build") or {}).get("configMaps") or {}).items()}
 
 
+# Public registries the pilot host cannot reach (2026-10-31); tools/pilot/mirror_images.py copies their pinned images,
+# digest for digest, to `<product>-mirror/` in the in-cluster registry and kaniko reads them there.
+MIRRORED_REGISTRIES = ("registry.access.redhat.com",)
+
+
 def _check_kaniko_args(where: str, args: list[str], product: str, proxy_keys: set[str]) -> list[str]:
     """PR 33 review D-02, D-03: one explicit `--destination=<registry>/<product>-*`, no short or split form, no
     blanket TLS skip, and proxy settings only as `--build-arg=KEY=$(KEY)` (expanded from the uncommitted ConfigMap at
@@ -115,8 +120,15 @@ def _check_kaniko_args(where: str, args: list[str], product: str, proxy_keys: se
             failures.append(f"{where}: {a.split('=', 1)[0]} relaxes TLS for every registry")
         if a.startswith("--insecure-registry=") and a.split("=", 1)[1] != mc.IN_CLUSTER_REGISTRY:
             failures.append(f"{where}: --insecure-registry names another registry than the in-cluster one")
+        if a.startswith("--registry-map="):
+            source, _, target = a.split("=", 1)[1].partition("=")
+            if source not in MIRRORED_REGISTRIES or target != f"{mc.IN_CLUSTER_REGISTRY}/{product}-mirror":
+                failures.append(f"{where}: --registry-map may only map a mirrored public registry to "
+                                f"{product}-mirror of the in-cluster registry")
         if a.startswith("--cache-repo=") and not a.split("=", 1)[1].startswith(f"{mc.IN_CLUSTER_REGISTRY}/{product}-"):
             failures.append(f"{where}: --cache-repo is not a {product}-* repository")
+        if a in ("--registry-map", "--insecure-registry", "--cache-repo"):
+            failures.append(f"{where}: {a} given in a split form")
         if a == "--build-arg":
             failures.append(f"{where}: --build-arg given in a split form")
         if a.startswith("--build-arg="):

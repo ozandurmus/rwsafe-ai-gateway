@@ -57,6 +57,7 @@ spec:
             - --destination=registry.kube-system.svc.cluster.local/rwsafe-dataplane:$(IMAGE_TAG)
             - --digest-file=/dev/termination-log
             - --insecure-registry=registry.kube-system.svc.cluster.local
+            - --registry-map=registry.access.redhat.com=registry.kube-system.svc.cluster.local/rwsafe-mirror
             - --cache=false
             - --image-download-retry=5
             - --snapshot-mode=redo
@@ -131,6 +132,7 @@ spec:
             - --destination=registry.kube-system.svc.cluster.local/rwsafe-control:$(IMAGE_TAG)
             - --digest-file=/dev/termination-log
             - --insecure-registry=registry.kube-system.svc.cluster.local
+            - --registry-map=registry.access.redhat.com=registry.kube-system.svc.cluster.local/rwsafe-mirror
             - --cache=false
             - --image-download-retry=5
             - --snapshot-mode=redo
