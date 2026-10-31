@@ -16,14 +16,23 @@ kind: Kustomization
 #   - SIEM export off and its egress NetworkPolicy removed; redacted capture off; group claims off (both already the
 #     committed defaults, restated in 10-pilot-config.yaml)
 #   - the committed policy registry seed mounted (policy/kustomization.yaml): TCKN REDACT, SECRET BLOCK, enforce
+#   - the synthetic probe (60-icap-probe.yaml): a CronJob every 15 minutes, from the data plane image, against the
+#     ClusterIP Service on 1344; its NetworkPolicy and the ICAP pods' ingress admit only it (and the e2e Job)
 #
 # Image digests stay the all-zero placeholder here; tools/pilot/render.py sets the built digests and the product name.
 resources:
   - ../k3s
   - ../../../../policy
   - 40-control-identity-pvc.yaml
+  - 60-icap-probe.yaml
 patches:
   - path: 10-pilot-config.yaml
   - path: 20-pilot-control.yaml
   - path: 30-pilot-icap.yaml
   - path: 50-pilot-removed.yaml
+# The k3s overlay's image transformer covers only its own resources; the probe (added here) names the data plane image
+# the same way, with the same all-zero placeholder digest that tools/pilot/render.py replaces.
+images:
+  - name: rwsafe-dataplane
+    newName: registry.kube-system.svc.cluster.local/rwsafe-dataplane
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

@@ -1,0 +1,129 @@
+# The in-cluster synthetic probe (PILOT_RUNBOOK.md "The synthetic probe"): every 15 minutes one Job sends ICAP OPTIONS and
+# the six synthetic REQMOD scenarios of tools/icap/replay.py to the ClusterIP Service rwsafe-icap:1344 and fails when an
+# outcome differs from the one the committed seed gives (allow, redact, block). It runs the data plane image with another
+# main class (io.rwsafe.dataplane.boot.IcapProbe): no other image is pulled. Synthetic values are built at runtime; the
+# requests carry the fixed synthetic identity SYNTHETIC\icap-probe and a documentation-range client address, so the probe's
+# verdict events sit under one stable USR- pseudonym in the Traffic screen. The result (scenario, expected, actual, ICAP
+# status; never a prompt or value) is the pod's termination message.
+#
+# Applied with the ICAP engine (`render.py --phase icap`, PILOT_RUNBOOK.md step 9b): no node port, no LoadBalancer.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rwsafe-icap-probe
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap-probe, app.kubernetes.io/component: probe }
+automountServiceAccountToken: false
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rwsafe-icap-probe
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap-probe, app.kubernetes.io/component: probe }
+spec:
+  schedule: "*/15 * * * *"
+  # A run that cannot start within 5 minutes is skipped; never two at once.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap-probe, app.kubernetes.io/component: probe }
+    spec:
+      # One attempt: a failed probe is evidence, not something to retry. Seven requests with a 10 s timeout each fit 120 s
+      # with the JVM start. A Job started by hand (`kubectl create job --from=cronjob/...`, tools/pilot/verify_firewall.sh)
+      # is removed a day after it finished; the CronJob's own Jobs follow the history limits above.
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap-probe, app.kubernetes.io/component: probe }
+        spec:
+          serviceAccountName: rwsafe-icap-probe
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          restartPolicy: Never
+          priorityClassName: rwsafe-batch
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: probe
+              image: rwsafe-dataplane
+              imagePullPolicy: IfNotPresent
+              # The image's JVM flags (dataplane.Containerfile) with the probe's main class; a small heap, no JIT tiers
+              # beyond C1 (a short run).
+              command:
+                - java
+                - -XX:MaxRAMPercentage=50.0
+                - -XX:TieredStopAtLevel=1
+                - -XX:+ExitOnOutOfMemoryError
+                - -XX:-HeapDumpOnOutOfMemoryError
+                - -XX:-UsePerfData
+                - -Djava.io.tmpdir=/tmp
+                - -Duser.home=/tmp
+                - -cp
+                - /app/lib/*
+                - io.rwsafe.dataplane.boot.IcapProbe
+              env:
+                # The ClusterIP Service by its short name (the render renames it with the product).
+                - name: RWSAFE_PROBE_TARGET
+                  value: icap://rwsafe-icap:1344
+                - name: RWSAFE_PROBE_TIMEOUT_MILLIS
+                  value: "10000"
+              terminationMessagePath: /dev/termination-log
+              terminationMessagePolicy: File
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { cpu: 250m, memory: 256Mi }
+              securityContext:
+                runAsNonRoot: true
+                privileged: false
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: { sizeLimit: 16Mi }
+---
+# The probe's pods reach the ICAP pods on 1344 (through the ClusterIP Service) and the cluster DNS to resolve the Service
+# name, nothing else; no ingress at all. The default deny stays; the ICAP pods admit the probe on 1344 (30-pilot-icap.yaml).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-icap-probe
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap-probe }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-icap-probe
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rwsafe-icap
+              app.kubernetes.io/component: icap
+      ports:
+        - { protocol: TCP, port: 1344 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

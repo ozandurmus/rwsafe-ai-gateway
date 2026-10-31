@@ -2,7 +2,8 @@
 
 **Status:** DRAFT operator procedure (2026-10-31) for the first pilot. It applies the ratified
 `DEPLOY_AND_SHARED_HOST_RUNBOOK.md` (sections 1-4 and 7) to the pilot overlay; where it differs, the difference is named.
-The Turkish checklist of the same steps is `PILOT_ADIMLAR.md`.
+The Turkish copy-paste checklist of the Product Owner's remaining steps (10 if not yet done, 11 with its one-line check,
+14 (the admin UI, with the probe's pseudonym), 15-17, the one-step undo, and what to tell the orchestrator after each) is `PILOT_ADIMLAR.md`; step numbers match.
 
 **Scope.** The corporate web proxy (Broadcom ProxySG, SGOS 7.4.15.x, three appliances, PHASE0_PROXYSG_RECORD F-1)
 sends the AI-category requests of **one test user** to the ICAP engine over **plain ICAP on 1344** (decision Q-28,
@@ -59,8 +60,10 @@ that the root filesystem is below 85 % used (`df -h /`; 69 % on 2026-10-31, HOST
 | H6 | 7 | four Secrets/ConfigMaps of generated values plus the estate dictionary ConfigMap in `${PRODUCT}` | deleted with the namespace |
 | (PO) | 10 | **PO only**: the break-glass password copied to a file in the PO's home; the copy in the pod's PVC removed | step 18 |
 | H7 | 9 | database, control plane and their Services, PVCs and NetworkPolicies in `${PRODUCT}` | step 18 |
+| H9a | 9b | the ICAP engine (2 pods), its ClusterIP Service and the synthetic probe CronJob `${PRODUCT}-icap-probe` (every 15 minutes, in-cluster only); **nothing on the node's 1344** | step 18 |
 | H8 | 11 | **root, PO only**: a separate nftables table `<product>_pilot` (hyphens as underscores) that drops new TCP 1344 connections **to the node's own addresses** from every source except the ProxySG appliances (pod-to-pod and ServiceLB traffic untouched; neXus's own table is not touched) | `sudo nft delete table inet <product>_pilot` |
-| H9 | 12 | the ICAP engine (2 pods) and the ServiceLB Service that opens **1344 on the node** (no node-port range port: `allocateLoadBalancerNodePorts: false`, externalTrafficPolicy Cluster) | step 18 |
+| H8b | 11.3 | one probe Job created from the CronJob by `tools/pilot/verify_firewall.sh` (removed by its TTL after a day); `--latest` instead changes nothing | the TTL |
+| H9 | 12 | the ServiceLB Service that opens **1344 on the node** (no node-port range port: `allocateLoadBalancerNodePorts: false`, externalTrafficPolicy Cluster) | step 18 |
 | P1 | 15 | **proxy**: a new ICAP service pointing at `<node-address>:1344` | delete the service |
 | P2 | 16 | **proxy**: one policy rule sending only the test user's AI-category requests to it, fail-closed | step 17.6, one step |
 
@@ -263,17 +266,18 @@ python3 -B tools/deploy/manifest_check.py --rendered ~/pilot/app.json --release 
 kubectl diff --server-side -f ~/pilot/app.json | grep -c '^+++ '
 ```
 
-Expected: `render: target pilot, product ..., 38 objects (...)`; `manifest check PASS: 38 objects, 3 workloads, 0
-failure(s); product ...`; the diff shows the new objects (the 12 isolation objects are unchanged). The rendered file
+Expected: `render: target pilot, product ..., 41 objects (...)`; `manifest check PASS: 41 objects, 4 workloads, 0
+failure(s); product ...` (the fourth workload is the synthetic probe's CronJob, inside the quota); the diff shows the new objects (the 12 isolation objects are unchanged). The rendered file
 holds no Secret, no estate value and no address (the pilot has no directory or SIEM CIDR to patch in), so it may stay on
 disk in `~/pilot/`.
 
 ## 9. HOST CHANGE H7: database and control plane
 
-Everything except the ICAP step's objects (the ICAP Deployment, ConfigMap, ServiceAccount, Services, PDB and
-NetworkPolicies, and every LoadBalancer Service): the ServiceLB Service would open 1344 on the node, which waits for the
-firewall rule of step 11. The split is made by the render (`--phase control`, PR 33 review D-05), not by a label
-selector, and `tools/pilot/test_render.py` proves that the control part holds no LoadBalancer Service and no ICAP object.
+Everything except the ICAP steps' objects (the ICAP Deployment, ConfigMap, ServiceAccount, Services, PDB and
+NetworkPolicies, the synthetic probe, and every LoadBalancer Service): the ServiceLB Service would open 1344 on the node,
+which waits for the firewall rule of step 11. The split is made by the render (`--phase control`, then `icap` in step
+9b and `servicelb` in step 12; PR 33 review D-05), not by a label selector, and `tools/pilot/test_render.py` proves that
+the three phases are disjoint, together are the whole render, and that only `servicelb` holds a LoadBalancer Service.
 
 ```bash
 python3 -B tools/pilot/render.py --product "${PRODUCT}" --phase control \
@@ -290,6 +294,53 @@ migrations, seeds the policy registry and creates the break-glass account); `2 C
 plane; no LoadBalancer yet). If the control plane does not become ready: `kubectl -n "${PRODUCT}" logs
 "deploy/${PRODUCT}-control" --tail=40 | sh tools/hosta/mask.sh` (no log line carries a secret or a prompt, AGENTS.md
 4.14). UNVERIFIED (2026-10-31) on the pinned database digest: the start script creates both roles (runbook §4).
+
+## 9b. HOST CHANGE H9a: the ICAP engine and the synthetic probe (in-cluster only)
+
+The ICAP engine, its ClusterIP Service `${PRODUCT}-icap` (1344, cluster-internal) and the synthetic probe; no
+LoadBalancer Service, so nothing answers on the node's 1344 yet. May run before or after step 11.
+
+```bash
+python3 -B tools/pilot/render.py --product "${PRODUCT}" --phase icap \
+  --dataplane-digest "$(cat ~/pilot/dataplane.digest)" --control-digest "$(cat ~/pilot/control.digest)" \
+  --output ~/pilot/app-icap.json
+kubectl apply --server-side -f ~/pilot/app-icap.json
+kubectl -n "${PRODUCT}" rollout status "deploy/${PRODUCT}-icap" --timeout=10m
+kubectl -n "${PRODUCT}" get service -o jsonpath='{range .items[*]}{.spec.type}{"\n"}{end}' | sort | uniq -c
+kubectl -n "${PRODUCT}" get cronjob "${PRODUCT}-icap-probe" --no-headers | wc -l
+```
+
+Expected: `render: ... 11 objects (1 ConfigMap, 1 CronJob, 1 Deployment, 4 NetworkPolicy, 1 PodDisruptionBudget, 1
+Service, 2 ServiceAccount)` and the objects applied; `successfully rolled out` (the two ICAP pods are ready
+only once they hold the signed policy snapshot from the control plane: fail closed; the PDB keeps one of them through
+any eviction); `3 ClusterIP`; `1`.
+
+### The synthetic probe
+
+`${PRODUCT}-icap-probe` (`deploy/rwsafe/overlays/pilot/60-icap-probe.yaml`) runs every 15 minutes (`*/15`, concurrency
+Forbid, one attempt, 120 s deadline, history 1 succeeded and 3 failed Jobs) from the **data plane image** with another
+main class (`io.rwsafe.dataplane.boot.IcapProbe`; no other image is pulled). It sends ICAP OPTIONS and the six synthetic
+REQMOD scenarios of `tools/icap/replay.py` to `icap://${PRODUCT}-icap:1344` and **fails the Job** when an outcome differs
+from the committed seed's: clean chat allow, TCKN redact, IBAN redact, cloud key block, key after the 4096-byte preview
+block, clean prompt inside the preview allow. Every value is synthetic and built at runtime. Its NetworkPolicy lets the
+probe's pods reach only the ICAP pods on 1344 and the cluster DNS (to resolve the Service name); the ICAP pods admit only
+the probe and the ICAP e2e Job on in-cluster 1344; the namespace's default deny stays.
+
+Result (scenario, expected, actual, ICAP status; never a prompt, value or address), from the newest probe Job:
+
+```bash
+tools/pilot/verify_firewall.sh --latest 2>&1 | grep 'through svc'
+kubectl -n "${PRODUCT}" get jobs -l "app.kubernetes.io/name=${PRODUCT}-icap-probe" --no-headers | awk '{print $2}' | sort | uniq -c
+```
+
+Probe events in the admin UI (step 14): every probe request carries the fixed synthetic identity `SYNTHETIC\icap-probe`
+and the documentation-range client address `192.0.2.250`, so all its events sit under **one** `USR-...` pseudonym and
+one masked subnet (the pseudonym is keyed by the estate's HMAC key, so it cannot be written down in advance). Find it
+once: Traffic screen, window 1 hour, platform `gemini`, verdict `BLOCK`; the probe's cloud-key event appears there
+within a minute after every :00, :15, :30 and :45, and its user column shows the probe's pseudonym. Put it in the user filter to see only the probe (six events per
+run: two ALLOW, two REDACT, two BLOCK); the test user's own events are the ones under the other pseudonym. The probe's
+events also count in `check_pilot.sh`'s events line (576 a day). To stop the probe, delete its CronJob (a deletion,
+confirmed on its own); the next apply of this step brings it back.
 
 ## 10. PO ONLY: the break-glass password
 
@@ -312,9 +363,20 @@ worth keeping, so step 18 and a fresh install is the reset (a password-reset com
 
 ServiceLB answers on the node's 1344 for every source, and plain ICAP has no peer authentication, so the ProxySG
 allowlist (H-1) must be in place before step 12. The rule lives in its **own** nftables table; neXus's table
-`inet nexus_host` is neither read nor changed. Fill the three addresses on the host only:
+`inet nexus_host` is neither read nor changed. Fill the three addresses on the host only; nothing else in the block is
+edited. The block derives the product name itself from `~/rwsafe/deploy/rwsafe/product.env` and runs in a subshell
+with `set -euo pipefail` (PR 40 review D-04): it refuses to run when `~/rwsafe` or the name is missing or the name is not
+a product name (an empty name would otherwise create a table `inet _pilot`), and stops at the first failing command
+without closing the PO's terminal.
 
 ```bash
+(
+set -euo pipefail
+cd ~/rwsafe
+PRODUCT="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)"
+case "${PRODUCT}" in
+  ""|*[!a-z0-9-]*) echo "stopped: no valid PRODUCT in ~/rwsafe/deploy/rwsafe/product.env"; exit 1 ;;
+esac
 T="${PRODUCT//-/_}_pilot"   # nftables names take no hyphen: rwsafe_pilot
 sudo nft -f - <<EOF
 table inet ${T} {}
@@ -332,11 +394,63 @@ table inet ${T} {
   }
 }
 EOF
-sudo nft list table inet "${T}" | sh tools/hosta/mask.sh | grep -c '<ip>'
+echo "table ${T} written"
+)
 ```
 
-Expected: no output from the first command; `3`. Running it again replaces the table's content (the empty `table`
-line and `flush` make it idempotent; no duplicate rules).
+The one-line check (read only; it derives the name the same way and may be run again at any time):
+
+```bash
+(set -euo pipefail; cd ~/rwsafe; P="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)"; test -n "${P}"; sudo nft -j list table inet "${P//-/_}_pilot" | tools/pilot/verify_firewall.sh --table)
+```
+
+Expected: `table rwsafe_pilot written` from the block; then from the check (counts only, never an address):
+
+```text
+firewall table check, product rwsafe
+objects        ok   0 object(s) of another kind than table, set, chain, rule
+table          ok   inet rwsafe_pilot: 1 table(s) in the input, exactly 1 expected
+set            ok   icap_clients: 1 set(s), 3 element(s), all single addresses (values not shown; exactly 3 single IPv4 addresses expected)
+chain          ok   1 chain(s); exactly 1 expected: prerouting, type filter, hook prerouting, priority -150, policy accept
+rules          ok   2 rule(s); exactly 2 expected, each equal to step 11 in every field and operator: IPv4 1, IPv6 1, other 0
+result: PASS
+```
+
+Running the block again replaces the table's content (the empty `table` line and `flush` make it idempotent; no
+duplicate rules). The check passes only the exact table above (PR 40 review D-02): exactly three single IPv4 addresses
+(no prefix or range), the one chain, and exactly the two rules with every field, expression and operator as written
+(every match `==`, `ct state new` printed by nft as `in`; the only negation is the designed `ip saddr != @icap_clients`);
+an extra object, chain, rule, expression or field fails, and so does a shape it does not recognise (UNVERIFIED
+2026-10-31 on HOST-A's nft release; an `unrecognised nft JSON` or `other 1` line means: stop and report, never edit the
+rule to fit). The PO tells the orchestrator only the `result:` line and the element count.
+
+**11.3 (the orchestrator) Verify that pod traffic still flows and 1344 is still closed.** Right after the PO's check,
+with the ICAP engine and the probe of step 9b in place:
+
+```bash
+tools/pilot/verify_firewall.sh            # creates one probe Job from the CronJob (H8b, confirmed on its own)
+tools/pilot/verify_firewall.sh --latest   # alternative that changes nothing: the newest scheduled probe Job
+```
+
+Expected:
+
+```text
+firewall verification, product rwsafe
+table          not read here (root only): the PO's one-line check of step 11 (--table) proves it
+icap pods      ok   2/2 ready
+through svc    ok   probe Job (now), Job Complete: PASS (7/7 as expected)
+node 1344      ok   no LoadBalancer Service, no ServiceLB pod, no listening socket
+node 1344      ok   a connection from this host to the node address on 1344 is refused (nothing serves it yet)
+result: PASS
+```
+
+`through svc` is a pod reaching the ClusterIP Service on 1344 through the prerouting hook the rule sits on: if the rule
+also matched pod or Service traffic (for example with Service addresses bound to a local interface), the probe fails
+here, before any proxy traffic. Then the PO deletes the table (the undo below) and reports. `--latest` judges the newest
+probe Job by creation time whatever its outcome (PR 40 review D-01): a Failed or unfinished newest Job is a FAIL, never
+hidden by an older PASS; use it only when that Job was created after the PO's check (the line shows its time). Optional cross-check by the PO
+from the workstation (not a ProxySG appliance): `nc -vz -w 3 <node-address> 1344` must **time out** (dropped by the
+rule); "connection refused" means the rule does not match on this host: stop.
 
 Why exactly this rule (PR 33 review D-01, P0):
 
@@ -354,19 +468,24 @@ Why exactly this rule (PR 33 review D-01, P0):
 
 The rule is not persistent: **after a host reboot run this step again before the proxy sends traffic** (until then:
 `kubectl -n "${PRODUCT}" scale deploy "${PRODUCT}-icap" --replicas=0`, and the proxy denies the test user's AI requests,
-fail-closed). UNVERIFIED (2026-10-31) on HOST-A's kernel and k3s release, proved by step 13 in both directions. Undo:
-`sudo nft delete table inet "${T}"`.
+fail-closed). UNVERIFIED (2026-10-31) on HOST-A's kernel and k3s release, proved by step 11.3 and step 13 in both
+directions. Undo (the PO; it derives the name the same way):
+`(set -euo pipefail; cd ~/rwsafe; P="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)"; test -n "${P}"; sudo nft delete table inet "${P//-/_}_pilot")`.
 
-## 12. HOST CHANGE H9: the ICAP engine (opens 1344 on the node)
+## 12. HOST CHANGE H9: the ServiceLB Service (opens 1344 on the node)
+
+Only after step 11's `result: PASS` and step 11.3's `result: PASS`.
 
 ```bash
-kubectl apply --server-side -f ~/pilot/app.json
-kubectl -n "${PRODUCT}" rollout status "deploy/${PRODUCT}-icap" --timeout=10m
+python3 -B tools/pilot/render.py --product "${PRODUCT}" --phase servicelb \
+  --dataplane-digest "$(cat ~/pilot/dataplane.digest)" --control-digest "$(cat ~/pilot/control.digest)" \
+  --output ~/pilot/app-servicelb.json
+kubectl apply --server-side -f ~/pilot/app-servicelb.json
+kubectl -n kube-system get pods -l "svccontroller.k3s.cattle.io/svcname=${PRODUCT}-icap-lb" --no-headers | grep -c Running
 ```
 
-Expected: the remaining objects applied (the earlier ones unchanged); `successfully rolled out`. The two ICAP pods are
-ready only once they hold the signed policy snapshot from the control plane (fail closed); the PDB keeps one of them
-through any eviction.
+Expected: `render: ... 1 objects (1 Service)`; `service/${PRODUCT}-icap-lb serverside-applied`; `1` (the ServiceLB
+pod). `kubectl apply --server-side -f ~/pilot/app.json` (step 8) is the same end state: every earlier object unchanged.
 
 ## 13. Pilot check (READ)
 
@@ -382,24 +501,29 @@ pods           ok   db: 1/1 ready
 pods           ok   control: 1/1 ready
 pods           ok   icap: 2/2 ready
 control        ok   /readyz 200
-icap pod 1     ok   /ready 200, snapshot version 1, transactions 0, queue 0, dropped 0, spool bytes 0
-icap pod 2     ok   /ready 200, snapshot version 1, transactions 0, queue 0, dropped 0, spool bytes 0
-(the snapshot version may be any number above 0)
+icap pod 1     ok   /ready 200, snapshot version 1, transactions 12, queue 0, dropped 0, spool bytes 0
+icap pod 2     ok   /ready 200, snapshot version 1, transactions 12, queue 0, dropped 0, spool bytes 0
+(the snapshot version may be any number above 0; the transactions are the synthetic probe's, split between the pods)
 servicelb      ok   1 node address(es) assigned, 1 ServiceLB pod(s) ready
 icap options   ok   status 200, Methods REQMOD, Preview 4096, Allow 204
-events         none yet in the last 24 hours (expected before the first proxied request)
+events         24 in the last 24 hours: ALLOW 8; BLOCK 8; REDACT 8;
 result: PASS
 ```
+
+The counts are an example: before the first proxied request every event is the probe's, six per run (two each ALLOW,
+REDACT and BLOCK), so they grow by six every 15 minutes; the Traffic screen separates them by the probe's pseudonym
+(step 9b, "The synthetic probe").
 
 Then prove the firewall of step 11 in both directions (PR 33 review D-01):
 
 1. **Blocked for others.** From a machine that is **not** a ProxySG appliance (your workstation):
    `nc -vz -w 3 <node-address> 1344` must **time out** (dropped by the `fib daddr type local` rule; a "connection
    refused" or "succeeded" means the rule does not match on this host: stop and tell the PO).
-2. **Pod traffic untouched.** The `icap pod` lines above count `/ready 200`, and after step 15 the proxy's health check
-   is healthy: the ProxySG reaches the engine only through the ServiceLB pod's forward to an ICAP pod on 1344, a
+2. **Pod traffic untouched.** Step 11.3's `through svc` line passed, the probe keeps passing every 15 minutes
+   (`tools/pilot/verify_firewall.sh --latest`), the `icap pod` lines above count `/ready 200`, and after step 15 the
+   proxy's health check is healthy: the ProxySG reaches the engine only through the ServiceLB pod's forward to an ICAP pod on 1344, a
    pod-to-pod packet through the same prerouting hook. If the proxy's health check fails while the ICAP pods are ready,
-   delete the table (`sudo nft delete table inet "${T}"`) and report: the rule caught pod traffic.
+   delete the table (the undo of step 11) and report: the rule caught pod traffic.
 
 The ICAP OPTIONS line above is sent from the host itself, which the prerouting rule does not filter. UNVERIFIED (2026-10-31): the database pod's local `psql` access the events line uses;
 if that line says the query failed, the transactions counts of the ICAP pods and the Traffic screen (step 14) are the
@@ -502,8 +626,10 @@ rule, so nobody else's traffic changes.
    The test user sends a prompt that contains it. **Pass:** the browser shows the product's Turkish block page and the
    AI site never receives the request.
 4. **Events in the admin UI.** In the Traffic screen (step 14): one `REDACT` and one `BLOCK` event, platform `openai` or
-   `claude`, the user shown as a pseudonym `USR-...` (never the name); `tools/pilot/check_pilot.sh` now counts them in
-   its `events` line and the ICAP pods' transaction counts rose.
+   `claude`, the user shown as a pseudonym `USR-...` (never the name). That pseudonym must be the test user's, **not**
+   the probe's of step 9b (PR 40 review D-04): the probe also writes `claude` REDACT and `openai` BLOCK events every 15
+   minutes, so filter the user column by the other pseudonym, or check the two events' time against the trial.
+   `tools/pilot/check_pilot.sh` counts every event, the probe's included, in its `events` line.
 5. **neXus untouched.** Every applied object is in `${PRODUCT}`, `${PRODUCT}-build` or `${PRODUCT}-security`, or is a
    PriorityClass named `${PRODUCT}-*` (`kubectl get priorityclass -l "app.kubernetes.io/part-of=${PRODUCT}" --no-headers
    | wc -l` says `3`); the only host change is the table `<product>_pilot`; neXus's UI works as before (open it as you
@@ -544,4 +670,5 @@ neXus is touched; they go with the registry GC of SHIP_PIPELINE_PLAN §4, or sta
 
 Secure ICAP (H-2 closes within 30 days: the TLS Secret and 11344 return with the k3s overlay), the directory sign-in,
 SIEM export, redacted capture, group claims, RESPMOD, the in-cluster ICAP e2e and masked-role e2e Jobs of runbook §4
-step 5 (not yet built), and more than one user. Each is a later, separate change.
+step 5 (not yet built; the synthetic probe of step 9b covers six REQMOD scenarios and OPTIONS, not the e2e suite), and
+more than one user. Each is a later, separate change.

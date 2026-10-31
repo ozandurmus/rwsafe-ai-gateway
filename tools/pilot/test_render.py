@@ -123,21 +123,30 @@ class PilotTarget(unittest.TestCase):
             self.assertEqual(rc, 0, out.getvalue())
 
 
+def is_lb(o: dict) -> bool:
+    return o["kind"] == "Service" and o["spec"].get("type") == "LoadBalancer"
+
+
 class Phases(unittest.TestCase):
-    """PR 33 review D-05: step 9 (control) applies nothing that opens 1344 on the node; step 12 adds the ICAP objects."""
+    """PR 33 review D-05: step 9 (control) and step 9b (icap) apply nothing that opens 1344 on the node; step 12
+    (servicelb) applies only the LoadBalancer Service, after the firewall rule of step 11 is verified."""
 
     def test_control_phase_holds_no_icap_object_and_no_load_balancer(self):
         for product, objects in _PILOT.items():
             with self.subTest(product):
                 control = render.select_phase(objects, product, "control")
                 icap = render.select_phase(objects, product, "icap")
-                self.assertEqual(len(control) + len(icap), len(objects))
-                self.assertFalse(any(o["kind"] == "Service" and o["spec"].get("type") == "LoadBalancer"
-                                     for o in control))
+                servicelb = render.select_phase(objects, product, "servicelb")
+                self.assertEqual(sorted(mc.ident(o) for o in control + icap + servicelb),
+                                 sorted(mc.ident(o) for o in objects))
+                self.assertFalse(any(is_lb(o) for o in control + icap))
+                self.assertEqual([mc.ident(o) for o in servicelb], [f"Service/{product}/{product}-icap-lb"])
                 self.assertFalse(any(o["metadata"]["name"].startswith(f"{product}-icap") for o in control))
                 self.assertEqual({o["metadata"]["name"] for o in icap if o["kind"] != "ConfigMap"} | {"cm"}, {
-                    f"{product}-icap", f"{product}-icap-lb", f"{product}-icap-from-servicelb",
-                    f"{product}-icap-metrics-from-scraper", "cm"})
+                    f"{product}-icap", f"{product}-icap-from-servicelb", f"{product}-icap-metrics-from-scraper",
+                    f"{product}-icap-probe", "cm"})
+                self.assertEqual({o["kind"] for o in icap if o["metadata"]["name"] == f"{product}-icap-probe"},
+                                 {"ServiceAccount", "CronJob", "NetworkPolicy"})
                 kinds = {o["kind"] for o in control}
                 self.assertTrue({"StatefulSet", "Deployment", "Namespace", "PriorityClass"} <= kinds)
                 self.assertFalse(any(o["kind"] == "Deployment" and o["metadata"]["name"] == f"{product}-icap"
@@ -149,6 +158,62 @@ class Phases(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         items = json.loads(out)["items"]
         self.assertFalse(any(o["metadata"]["name"].startswith("acme-icap") for o in items))
+
+    def test_main_phase_icap_and_servicelb(self):
+        args = ["--product", "acme", "--dataplane-digest", DIGESTS["dataplane"], "--control-digest", DIGESTS["control"]]
+        rc, out, err = run(args + ["--phase", "icap"])
+        self.assertEqual(rc, 0, err)
+        items = json.loads(out)["items"]
+        self.assertFalse(any(is_lb(o) for o in items))
+        self.assertIn("CronJob/acme/acme-icap-probe", [mc.ident(o) for o in items])
+        rc, out, err = run(args + ["--phase", "servicelb"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([mc.ident(o) for o in json.loads(out)["items"]], ["Service/acme/acme-icap-lb"])
+
+
+class Probe(unittest.TestCase):
+    """The synthetic probe (60-icap-probe.yaml): the data plane image with the probe's main class, its own
+    ServiceAccount without a token, the ICAP Service as its only destination besides DNS, under both product names."""
+
+    def test_probe_shape(self):
+        for product, objects in _PILOT.items():
+            with self.subTest(product):
+                cron = next(o for o in objects if mc.ident(o) == f"CronJob/{product}/{product}-icap-probe")
+                self.assertEqual(cron["spec"]["concurrencyPolicy"], "Forbid")
+                self.assertLessEqual(cron["spec"]["successfulJobsHistoryLimit"], 3)
+                self.assertLessEqual(cron["spec"]["failedJobsHistoryLimit"], 3)
+                self.assertLessEqual(cron["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"], 300)
+                self.assertEqual(cron["spec"]["jobTemplate"]["spec"]["backoffLimit"], 0)
+                spec = mc.pod_template(cron)[1]
+                self.assertEqual(spec["priorityClassName"], f"{product}-batch")
+                self.assertEqual(spec["serviceAccountName"], f"{product}-icap-probe")
+                c = spec["containers"][0]
+                self.assertEqual(c["image"], f"{mc.IN_CLUSTER_REGISTRY}/{product}-dataplane@{DIGESTS['dataplane']}")
+                self.assertEqual(c["command"][-1], "io.rwsafe.dataplane.boot.IcapProbe")
+                self.assertEqual({e["name"]: e["value"] for e in c["env"]}["RWSAFE_PROBE_TARGET"],
+                                 f"icap://{product}-icap:1344")
+                labels = mc.pod_template(cron)[0]["labels"]
+                self.assertEqual(labels["app.kubernetes.io/name"], f"{product}-icap-probe")
+                # Never selected by the ICAP Services or the PDB (they select component icap).
+                self.assertNotEqual(labels.get("app.kubernetes.io/component"), "icap")
+
+    def test_only_the_probe_and_the_e2e_job_reach_icap_and_the_probe_reaches_nothing_else(self):
+        for product, objects in _PILOT.items():
+            with self.subTest(product):
+                policies = {o["metadata"]["name"]: o["spec"] for o in objects if o["kind"] == "NetworkPolicy"}
+                icap_from = [p["podSelector"]["matchLabels"]["app.kubernetes.io/name"]
+                             for r in policies[f"{product}-icap"]["ingress"] for p in r["from"]]
+                self.assertEqual(icap_from, [f"{product}-icap-e2e", f"{product}-icap-probe"])
+                probe = policies[f"{product}-icap-probe"]
+                self.assertEqual(set(probe["policyTypes"]), {"Ingress", "Egress"})
+                self.assertNotIn("ingress", probe)
+                egress = [(json.dumps(r["to"], sort_keys=True), sorted((p["protocol"], p["port"]) for p in r["ports"]))
+                          for r in probe["egress"]]
+                self.assertEqual(len(egress), 2)
+                self.assertIn(f'"app.kubernetes.io/name": "{product}-icap"', egress[0][0])
+                self.assertEqual(egress[0][1], [("TCP", 1344)])
+                self.assertIn('"k8s-app": "kube-dns"', egress[1][0])
+                self.assertEqual(egress[1][1], [("TCP", 53), ("UDP", 53)])
 
 
 class K3sTarget(unittest.TestCase):
