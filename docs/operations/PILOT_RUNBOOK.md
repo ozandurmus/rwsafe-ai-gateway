@@ -148,6 +148,22 @@ Expected: `render: target build, ... 4 objects (2 Job, 1 PersistentVolumeClaim, 
 `condition met`; `3`; the pod deleted (the build quota holds one 3-CPU build and nothing else, so the loader must be
 gone before step 5).
 
+## 4b. HOST CHANGE H3b: mirror the pinned base images (orchestrator workstation)
+
+The pilot host cannot pull from registry.access.redhat.com (the corporate network refuses the connection, 2026-10-31;
+kaniko failed with `x509` / connect errors). The orchestrator's workstation copies the pinned base images, digest for
+digest, into the in-cluster registry under `${PRODUCT}-mirror/`, and the build Jobs read them there through
+`--registry-map=registry.access.redhat.com=<in-cluster registry>/${PRODUCT}-mirror` (the build check allows no other
+mapping). Through an SSH tunnel to a port-forward of the registry Service on the host:
+
+```bash
+# on the host: kubectl -n kube-system port-forward svc/registry 15000:80 (loopback only), then on the workstation:
+ssh -N -L 15000:127.0.0.1:15000 <host> &
+SSL_CERT_FILE=/etc/ssl/cert.pem python3 -I tools/pilot/mirror_images.py --dest http://127.0.0.1:15000 --product "${PRODUCT}"
+```
+
+Expected: one `mirrored ... -> ${PRODUCT}-mirror/...` line per pinned image; digests are checked on every manifest and blob.
+
 ## 5. HOST CHANGE H4: build the data plane image
 
 ```bash

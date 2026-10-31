@@ -257,6 +257,10 @@ class BuildTarget(unittest.TestCase):
             "short form": lambda o: (without_destination(o), kaniko(o)["args"].extend(["-d", dest[14:]])),
             "split form": lambda o: (without_destination(o), kaniko(o)["args"].extend(["--destination", dest[14:]])),
             "blanket tls skip": lambda o: kaniko(o)["args"].append("--skip-tls-verify"),
+            "registry map to another repository": lambda o: kaniko(o)["args"].append(
+                f"--registry-map=registry.access.redhat.com={registry}/other-mirror"),
+            "registry map of an unmirrored registry": lambda o: kaniko(o)["args"].append(
+                f"--registry-map=quay.io={registry}/acme-mirror"),
             "literal build arg": lambda o: kaniko(o)["args"].append("--build-arg=HTTP_PROXY=http://p.example.invalid:3128"),
             "unknown build arg": lambda o: kaniko(o)["args"].append("--build-arg=TOKEN=$(TOKEN)"),
             "tag": lambda o: kaniko(o).__setitem__("image", "gcr.io/kaniko-project/executor:latest"),
