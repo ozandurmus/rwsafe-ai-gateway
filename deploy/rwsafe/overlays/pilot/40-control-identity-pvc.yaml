@@ -1,0 +1,15 @@
+# The control plane's identity state on disk: only the break-glass initial password file (BreakGlassAccounts writes it
+# owner-only, once, when it creates the account). A PVC, not an emptyDir: the account exists in the database after the
+# first start, so a lost file would leave nobody able to sign in. 1Gi is the smallest request; the file is a few bytes.
+# One writer only (the Recreate control plane). Deleted with the namespace at the pilot's rollback.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rwsafe-control-identity
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-control }
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi

@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# The first pilot on HOST-A (docs/operations/PILOT_RUNBOOK.md): the k3s overlay with what one test user's AI-category
+# traffic over plain ICAP needs and nothing else (decision Q-28 / exception H-2: plain ICAP for at most 30 days, REQMOD
+# fail-closed on the proxy).
+#
+#   - plain ICAP only: no Secure ICAP listener, no rwsafe-icap-tls Secret, 1344 alone on the ServiceLB Service, the
+#     ClusterIP Service and the ICAP NetworkPolicies (the engine opens no TLS listener without RWSAFE_TLS_CERT)
+#   - two ICAP replicas kept: with one, the PodDisruptionBudget (minAvailable 1) would forbid every eviction and the
+#     manifest check refuses it; the rollout rules (maxSurge 1, maxUnavailable 0) stay as in the base
+#   - sign-in with the local break-glass account only: no directory (no LDAP environment, no rwsafe-ldap-bind Secret,
+#     no rwsafe-control-to-directory NetworkPolicy, no directory CIDR); the generated initial password is written by the
+#     control plane to its own small PVC (tools/pilot/fetch_break_glass.sh copies it to an owner-only file on the host)
+#   - the admin UI only through `kubectl port-forward` (no Ingress, no Traefik NetworkPolicy, no forwarded headers), so
+#     neXus's catch-all Ingress (Q-13) is not touched
+#   - SIEM export off and its egress NetworkPolicy removed; redacted capture off; group claims off (both already the
+#     committed defaults, restated in 10-pilot-config.yaml)
+#   - the committed policy registry seed mounted (policy/kustomization.yaml): TCKN REDACT, SECRET BLOCK, enforce
+#
+# Image digests stay the all-zero placeholder here; tools/pilot/render.py sets the built digests and the product name.
+resources:
+  - ../k3s
+  - ../../../../policy
+  - 40-control-identity-pvc.yaml
+patches:
+  - path: 10-pilot-config.yaml
+  - path: 20-pilot-control.yaml
+  - path: 30-pilot-icap.yaml
+  - path: 50-pilot-removed.yaml

@@ -525,6 +525,26 @@ the orchestrator's interim Q-41 decision (two approvals) in `docs/reviews/PR21_2
   supersedes a pending draft only for a newer draft of its own mode and scope, a withdrawal of it in the same
   transaction or a retirement) and D-02 (the masked role reads the withdrawal reason withheld).
 
+## Done (pilot kit, branch `feature/pilot-kit`)
+
+- `deploy/rwsafe/overlays/pilot`: the k3s overlay for one test user over plain ICAP (H-2): 1344 only (no TLS Secret,
+  no 11344), two ICAP replicas (one would break the PDB rule), break-glass sign-in without a directory (no LDAP env,
+  Secret or egress; the generated password on the PVC `rwsafe-control-identity`), no SIEM env or egress, no Traefik
+  policy or Ingress (admin UI by `kubectl port-forward`), and the committed policy seed mounted
+  (`policy/kustomization.yaml`; the k3s overlay mounts none, so its control plane cannot issue a snapshot: a gap the
+  pilot closes for itself only). `--release` fails only on the two image digests.
+- Product name in one place, `deploy/rwsafe/product.env` (PO, 2026-10-31): `tools/pilot/render.py` renames every
+  cluster-visible name; `manifest_check.py --product` passes under another name, refuses any leftover source name, any
+  `ui2*`/`nexus*` token (PriorityClass descriptions made product-neutral for it), a LoadBalancer port in use on the host,
+  neXus's cluster ports and a foreign in-cluster registry repository. `.rwsafe-delivery.json` (ship pipeline) still
+  names rwsafe.
+- `deploy/rwsafe/build`: kaniko Jobs per image (the executor digest neXus pins), context PVC and loader, proxy and CA from
+  uncommitted ConfigMaps (contract section `build`); both Containerfiles take optional CA anchors from
+  `deploy/images/ca/` in the build stage only.
+- `tools/pilot/bootstrap_secrets.sh`, `fetch_break_glass.sh`, `check_pilot.sh`; `docs/operations/PILOT_RUNBOOK.md`
+  (DRAFT; host changes H1-H9 and proxy changes P1-P2 confirmed one at a time) and `PILOT_ADIMLAR.md` (Turkish).
+- `HOSTA_MEASUREMENT_2026_10_31.md`: 69 % used, 305 GiB free; `HOST_FREE_STORAGE_BUDGET` 254 GiB (capture cap unchanged).
+
 ## Held (pseudonym registry, Q-44)
 
 The B3 pseudonym registry is built on branch `feature/pseudonym-registry` (V10) and not merged: with the frozen

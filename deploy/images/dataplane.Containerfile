@@ -1,8 +1,9 @@
 # rwsafe-dataplane: the ICAP engine (Netty). Runtime contract: deploy/rwsafe/base/30-dataplane.yaml; environment in
 # docs/operations/LOCAL_RUN.md and DataPlaneApplication.
 #
-# Build context: the repository root (only java/ is copied). Built by the ship pipeline's kaniko Job in rwsafe-build
-# (SHIP_PIPELINE_PLAN.md), never on a workstation for a release. Locally, for a smoke check only:
+# Build context: the repository root (only java/ and the optional CA directory deploy/images/ca/ are copied).
+# Built by the kaniko Job in rwsafe-build (deploy/rwsafe/build, SHIP_PIPELINE_PLAN.md), never on a workstation
+# for a release. Locally, for a smoke check only:
 #   podman build -f deploy/images/dataplane.Containerfile -t rwsafe-dataplane:dev .
 #
 # Base images: the Red Hat UBI 9 OpenJDK 21 family neXus ships on (ADR-001 §6: arbitrary-UID images, group-0 ownership;
@@ -18,6 +19,13 @@ USER 0
 ENV GRADLE_USER_HOME=/build/.gradle-home
 WORKDIR /build
 COPY java/ /build/java/
+# Optional CA anchors for this stage's own downloads behind a TLS-intercepting proxy (the way neXus's build on the same
+# host does it): deploy/images/ca/ is committed empty (.gitkeep) and git-ignored otherwise; the pilot runbook copies the
+# host's CA bundle into the build context only. Nothing from it reaches the runtime image.
+COPY deploy/images/ca/ /tmp/corp-ca/
+RUN if ls /tmp/corp-ca/*.pem >/dev/null 2>&1; then \
+      cp /tmp/corp-ca/*.pem /etc/pki/ca-trust/source/anchors/ && update-ca-trust; \
+    fi
 # The wrapper fetches the pinned Gradle distribution and every artifact is checked against
 # gradle/verification-metadata.xml. No test runs here: CI ran them on the same commit.
 RUN ./java/gradlew -p java --no-daemon --console=plain --dependency-verification strict :dataplane:imageDist \

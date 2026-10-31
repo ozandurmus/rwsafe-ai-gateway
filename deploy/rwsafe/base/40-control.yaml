@@ -242,7 +242,7 @@ spec:
 ---
 # The capture store (ADR-009 §3, PORTS_AND_RESOURCES §4.2 storage caps): 40Gi, below the frozen plan's 100Gi until the
 # PO decides on HOST-A's disk (PR 27 review D-06, Q-2). With rwsafe-db-data's 20Gi the namespace requests 60Gi of its
-# 150Gi requests.storage quota, within the 138Gi host-free budget manifest_check.py enforces (PORTS_AND_RESOURCES §1
+# 150Gi requests.storage quota, within the 254Gi host-free budget manifest_check.py enforces (HOSTA_MEASUREMENT_2026_10_31
 # free space minus the kubelet's eviction reserve). The application caps the store at 32 GiB
 # (RWSAFE_CAPTURE_MAX_STORE_BYTES, oldest records without a hold evicted first), so the claim is 25 % above the cap, room for the file-system overhead of 8-64 KiB chunk files and the hourly orphan
 # sweep. local-path enforces no size (measured), so the binding limits are the application's cap and the disk watermark

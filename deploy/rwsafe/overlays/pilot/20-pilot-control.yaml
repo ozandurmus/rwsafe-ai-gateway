@@ -1,0 +1,41 @@
+# The control plane without a directory and without SIEM (IdentityService: with RWSAFE_LDAP_URL unset the directory
+# front is not created and the break-glass account is the only sign-in). The policy seed and the identity PVC are added.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rwsafe-control
+  namespace: rwsafe
+spec:
+  template:
+    spec:
+      containers:
+        - name: control
+          env:
+            - { name: RWSAFE_LDAP_BIND_PASSWORD_FILE, $patch: delete }
+            - { name: RWSAFE_LDAP_URL, $patch: delete }
+            - { name: RWSAFE_LDAP_BIND_DN, $patch: delete }
+            - { name: RWSAFE_LDAP_USER_SEARCH_BASE, $patch: delete }
+            - { name: RWSAFE_TRUSTED_PROXIES, $patch: delete }
+            - { name: RWSAFE_SIEM_ENABLED, $patch: delete }
+            - { name: RWSAFE_SIEM_SYSLOG_HOST, $patch: delete }
+            - { name: RWSAFE_SIEM_SYSLOG_PORT, $patch: delete }
+            - { name: RWSAFE_SIEM_SYSLOG_FORMAT, $patch: delete }
+            - { name: RWSAFE_SIEM_HEC_URL, $patch: delete }
+            - { name: RWSAFE_SIEM_HEC_INDEX, $patch: delete }
+          volumeMounts:
+            - { mountPath: /run/secrets/rwsafe-ldap, $patch: delete }
+            - { mountPath: /etc/rwsafe/siem, $patch: delete }
+            - { mountPath: /run/secrets/rwsafe-siem, $patch: delete }
+            - { name: policy-seed, mountPath: /etc/rwsafe/policy, readOnly: true }
+            - { name: identity, mountPath: /var/lib/rwsafe/identity }
+      volumes:
+        - { name: ldap-bind, $patch: delete }
+        - { name: siem-ca, $patch: delete }
+        - { name: siem-credentials, $patch: delete }
+        - name: policy-seed
+          configMap:
+            name: rwsafe-policy-seed
+            defaultMode: 292   # 0444 octal
+        - name: identity
+          persistentVolumeClaim:
+            claimName: rwsafe-control-identity

@@ -87,6 +87,17 @@ jobs:
           python3 -B tools/deploy/test_manifest_check.py
       - name: Manifest check on the k3s overlay
         run: python3 -B tools/deploy/manifest_check.py
+      # The pilot (docs/operations/PILOT_RUNBOOK.md): its overlay under the default and another product name, the render
+      # wrapper's self-test, and the pilot scripts (the runner image ships shellcheck).
+      - name: Manifest check on the pilot overlay, and under another product name
+        run: |
+          python3 -B tools/deploy/manifest_check.py --overlay deploy/rwsafe/overlays/pilot
+          python3 -B tools/deploy/manifest_check.py --overlay deploy/rwsafe/overlays/pilot --product acme
+      - name: Pilot render self-test and scripts
+        run: |
+          python3 -B tools/pilot/test_render.py
+          for f in tools/pilot/*.sh; do bash -n "$f"; done
+          shellcheck -x tools/pilot/*.sh
 
   gitleaks:
     runs-on: ubuntu-24.04

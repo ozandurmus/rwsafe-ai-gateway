@@ -55,5 +55,23 @@
       "keys": ["controller-name", "dpo-contact", "policy-link", "retention-metadata", "retention-redacted"],
       "purpose": "the end-user texts' configured values (docs/i18n/README.md placeholders) as RWSAFE_ENDUSER_CONTROLLER_NAME, _DPO_CONTACT, _POLICY_LINK, _RETENTION_METADATA, _RETENTION_REDACTED (retention figures in whole days) for the data plane's pages and the control plane's notice; while one is missing the notice has no version and capture stays off"
     }
+  },
+  "build": {
+    "_comment": "The image build's uncommitted ConfigMaps in the build namespace (deploy/rwsafe/build, PILOT_RUNBOOK.md steps 3-6). Names are renamed with the product name like every other contract name.",
+    "namespace": "rwsafe-build",
+    "configMaps": {
+      "rwsafe-build-config": {
+        "keys": ["image-tag"],
+        "purpose": "the tag the build Jobs push (the short commit id being built, `git rev-parse --short=12 HEAD`); not secret, recreated for every build"
+      },
+      "rwsafe-build-proxy": {
+        "keys": ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "GRADLE_OPTS"],
+        "purpose": "the corporate proxy for kaniko's base-image pulls and Gradle's downloads in the build stage (GRADLE_OPTS: -Dhttps.proxyHost/-Dhttps.proxyPort/-Dhttp.proxyHost/-Dhttp.proxyPort/-Dhttp.nonProxyHosts); NO_PROXY holds the in-cluster registry; an estate value, created from the operator's store; optional"
+      },
+      "rwsafe-build-ca": {
+        "keys": ["ca-certificates.crt"],
+        "purpose": "the CA bundle kaniko trusts for registry and proxy TLS: the host's own system bundle (public CA material, no secret); required by the build Jobs"
+      }
+    }
   }
 }

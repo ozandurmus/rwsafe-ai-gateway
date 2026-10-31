@@ -40,3 +40,7 @@ frontend/dist/
 
 # Local trial runtime state: logs, PID files, spool, snapshot cache (tools/trial/README.md).
 tools/trial/.run/
+
+# Build-time CA anchors copied into the image build context by the pilot runbook; never committed.
+deploy/images/ca/*
+!deploy/images/ca/.gitkeep

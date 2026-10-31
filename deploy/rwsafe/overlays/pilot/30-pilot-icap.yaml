@@ -1,0 +1,73 @@
+# Plain ICAP on 1344 only (H-2): no TLS environment, Secret, container port, Service port or NetworkPolicy port for
+# Secure ICAP (11344). Secure ICAP returns with the TLS Secret when H-2 closes (k3s overlay).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rwsafe-icap
+  namespace: rwsafe
+spec:
+  template:
+    spec:
+      containers:
+        - name: icap
+          env:
+            - { name: RWSAFE_TLS_CERT, $patch: delete }
+            - { name: RWSAFE_TLS_KEY, $patch: delete }
+            - { name: RWSAFE_TLS_CLIENT_CA, $patch: delete }
+          ports:
+            - { containerPort: 11344, protocol: TCP, $patch: delete }
+          volumeMounts:
+            - { mountPath: /run/secrets/rwsafe-icap-tls, $patch: delete }
+      volumes:
+        - { name: icap-tls, $patch: delete }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rwsafe-icap
+  namespace: rwsafe
+spec:
+  ports:
+    - { port: 11344, protocol: TCP, $patch: delete }
+---
+# The node's 1344 only (ServiceLB). The ProxySG allowlist is the host firewall's (H-1; PILOT_RUNBOOK.md step 11).
+apiVersion: v1
+kind: Service
+metadata:
+  name: rwsafe-icap-lb
+  namespace: rwsafe
+spec:
+  ports:
+    - { port: 11344, protocol: TCP, $patch: delete }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-icap
+  namespace: rwsafe
+spec:
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rwsafe-icap-e2e
+      ports:
+        - { protocol: TCP, port: 1344 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-icap-from-servicelb
+  namespace: rwsafe
+spec:
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              svccontroller.k3s.cattle.io/svcname: rwsafe-icap-lb
+              svccontroller.k3s.cattle.io/svcnamespace: rwsafe
+      ports:
+        - { protocol: TCP, port: 1344 }
