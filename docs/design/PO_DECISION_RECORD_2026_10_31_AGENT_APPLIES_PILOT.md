@@ -33,3 +33,10 @@ first, every time, and that an agent never holds `sudo`. The PO wants the orches
 
 ## Supersedes
 Runbook section 7's "No agent runs `kubectl apply` ... against HOST-A" for the product's own namespaces, under this record.
+
+## Amendment 2026-10-31 (same day)
+
+The PO, during the install: "Abi nexuss dokunmadan herşeyi yapabilirsin silerken haber ver bana." (You can do everything
+without touching neXus; tell me when you delete.) Point 2 of the decision is replaced: the orchestrating agent runs the
+host-changing pilot steps without waiting for a per-step confirmation, inside points 1, 3 and 5, and announces every
+deletion in chat when it makes it. Root-only steps (the firewall) and the proxy console stay the PO's.
