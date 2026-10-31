@@ -530,7 +530,7 @@ the orchestrator's interim Q-41 decision (two approvals) in `docs/reviews/PR21_2
 - `deploy/rwsafe/overlays/pilot`: the k3s overlay for one test user over plain ICAP (H-2): 1344 only (no TLS Secret,
   no 11344), two ICAP replicas (one would break the PDB rule), break-glass sign-in without a directory (no LDAP env,
   Secret or egress; the generated password on the PVC `rwsafe-control-identity`), no SIEM env or egress, no Traefik
-  policy or Ingress (admin UI by `kubectl port-forward`), and the committed policy seed mounted
+  policy or Ingress at first (superseded by PR 43: "Done (pilot admin UI through Traefik)"), and the committed policy seed mounted
   (`policy/kustomization.yaml`; the k3s overlay mounts none, so its control plane cannot issue a snapshot: a gap the
   pilot closes for itself only). `--release` fails only on the two image digests.
 - Product name in one place, `deploy/rwsafe/product.env` (PO, 2026-10-31): `tools/pilot/render.py` renames every
@@ -581,6 +581,24 @@ The B3 pseudonym registry is built on branch `feature/pseudonym-registry` (V10) 
 scale, after which masked pages fail closed (503). Per the PO's rule of 2026-10-31 (prove the product end to end first,
 decide governance details at go-live), the token width is decided at go-live; until then the 4-hex tokens may collide
 (no leak, an auditor may see two values share a token).
+
+## Done (pilot admin UI through Traefik, pull request 43)
+
+- The admin UI is served at `https://ui.<product>.local` through the host's Traefik (PO decision record Q-46 and its
+  amendment 1): one Ingress in the product namespace (one Host() rule, backend `<product>-control:8080` only, TLS from
+  `<product>-admin-tls`), the NetworkPolicy `<product>-control-from-traefik`, and forwarded headers trusted from the pod
+  range only. `tools/pilot/admin_tls.sh` makes the pilot's own CA on the host (key never in the cluster), constrained to
+  that one name and to no IP address, serverAuth only. The manifest check allows at most one Ingress and no Traefik
+  annotation; the privacy gate accepts the exact `.rwsafe.local` suffix.
+- Applied on HOST-A 2026-10-31 from main `eaa36ae` (images still from `3532f13`): CA and leaf Secret created, control
+  ConfigMap re-applied and its pod restarted, Ingress and NetworkPolicy applied. From the host through Traefik: https 200
+  with the certificate verifying against the pilot CA, health 200, http 301 to https, HSTS and CSP present.
+- Second review: Argon (`docs/reviews/PR43_2026_10_31_ARGON_PILOT_ADMIN_INGRESS.md`), no P0; D-01..D-05 fixed (CA name
+  constraints and EKU, the login throttle never evicts the two keys of one attempt and fails closed when full, one
+  Ingress at most, the Traefik forwarded-header read checks, the decision record amendment).
+- Open: the host's Traefik Service keeps external traffic policy `Cluster`, so the client's address is lost at the
+  ServiceLB and the login throttle counts every browser as one client (a go-live item, not decided). The throttle fix
+  reaches the pilot with the next image build. The PO imports the CA and adds one hosts-file line (runbook 14.4).
 
 ## Not done
 
