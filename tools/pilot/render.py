@@ -127,6 +127,8 @@ def _check_kaniko_args(where: str, args: list[str], product: str, proxy_keys: se
                                 f"{product}-mirror of the in-cluster registry")
         if a.startswith("--cache-repo=") and not a.split("=", 1)[1].startswith(f"{mc.IN_CLUSTER_REGISTRY}/{product}-"):
             failures.append(f"{where}: --cache-repo is not a {product}-* repository")
+        if a in ("--registry-map", "--insecure-registry", "--cache-repo"):
+            failures.append(f"{where}: {a} given in a split form")
         if a == "--build-arg":
             failures.append(f"{where}: --build-arg given in a split form")
         if a.startswith("--build-arg="):

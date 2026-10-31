@@ -148,21 +148,27 @@ Expected: `render: target build, ... 4 objects (2 Job, 1 PersistentVolumeClaim, 
 `condition met`; `3`; the pod deleted (the build quota holds one 3-CPU build and nothing else, so the loader must be
 gone before step 5).
 
-## 4b. HOST CHANGE H3b: mirror the pinned base images (orchestrator workstation)
+## 4b. HOST CHANGE H3b: mirror the pinned base images (orchestrator workstation, then the host)
 
 The pilot host cannot pull from registry.access.redhat.com (the corporate network refuses the connection, 2026-10-31;
-kaniko failed with `x509` / connect errors). The orchestrator's workstation copies the pinned base images, digest for
-digest, into the in-cluster registry under `${PRODUCT}-mirror/`, and the build Jobs read them there through
-`--registry-map=registry.access.redhat.com=<in-cluster registry>/${PRODUCT}-mirror` (the build check allows no other
-mapping). Through an SSH tunnel to a port-forward of the registry Service on the host:
+kaniko failed with `x509` / connect errors), and HOST-A's sshd allows no port forwarding. The workstation exports the
+pinned images (the linux/amd64 manifests the Containerfiles pin, their configs and layers; every digest verified) to a
+directory, the directory is copied to the host, and the host pushes it into the in-cluster registry under
+`${PRODUCT}-mirror/` through a short-lived loopback port-forward, verifying every digest again. The build Jobs read the
+mirror through `--registry-map=registry.access.redhat.com=<in-cluster registry>/${PRODUCT}-mirror` (the build check
+allows no other mapping, and no split form).
 
 ```bash
-# on the host: kubectl -n kube-system port-forward svc/registry 15000:80 (loopback only), then on the workstation:
-ssh -N -L 15000:127.0.0.1:15000 <host> &
-SSL_CERT_FILE=/etc/ssl/cert.pem python3 -I tools/pilot/mirror_images.py --dest http://127.0.0.1:15000 --product "${PRODUCT}"
+# workstation
+SSL_CERT_FILE=/etc/ssl/cert.pem python3 -I tools/pilot/mirror_images.py --export "${work}/mirror" --product "${PRODUCT}"
+tar -C "${work}" -cf - mirror | ssh <host> 'rm -rf ~/pilot/mirror && tar -x -C ~/pilot'
+# host: a loopback-only port-forward that ends by itself, the import, then the forward and the copy are removed
+(timeout 600 kubectl -n kube-system port-forward --address 127.0.0.1 svc/registry 15007:80 >/dev/null 2>&1 &)
+python3 -I tools/pilot/mirror_images.py --import ~/pilot/mirror --dest http://127.0.0.1:15007
+pkill -u "$(id -u)" -f 'port-forward --address 127.0.0.1 svc/registry 15007:80'; rm -rf ~/pilot/mirror
 ```
 
-Expected: one `mirrored ... -> ${PRODUCT}-mirror/...` line per pinned image; digests are checked on every manifest and blob.
+Expected: one `pushed ${PRODUCT}-mirror/...` line per manifest and `import done`.
 
 ## 5. HOST CHANGE H4: build the data plane image
 

@@ -10,14 +10,13 @@
 # classpath (`imageDist`) with the main class instead of a Boot fat jar; Spring Boot runs the same either way.
 #
 # Base images: the Red Hat UBI 9 OpenJDK 21 family neXus ships on (ADR-001 §6: arbitrary-UID images, group-0 ownership;
-# ADR-011: shared delivery discipline). The digests are the ones neXus pins in its own Containerfile (neXus
-# ui2/Containerfile, read 2026-10-30). Re-resolve them before a release with
-#   skopeo inspect --format '{{.Digest}}' docker://registry.access.redhat.com/ubi9/openjdk-21:<tag>
-#   skopeo inspect --format '{{.Digest}}' docker://registry.access.redhat.com/ubi9/openjdk-21-runtime:<tag>
-# and record the new digest here. JRE 21, the Gradle toolchain's language version.
+# ADR-011: shared delivery discipline). The digests are the linux/amd64 image manifests of the tags neXus ships on (not
+# the multi-platform lists), so the pilot's mirror (tools/pilot/mirror_images.py) can hold them byte for byte. Re-resolve
+# them before a release with `skopeo inspect --raw docker://registry.access.redhat.com/ubi9/<image>:<tag>` (the amd64
+# entry's digest) and record the new digest here. JRE 21, the Gradle toolchain's language version.
 
 # ---- build: Gradle with the committed lockfiles and verification metadata --------------------------------------------
-FROM registry.access.redhat.com/ubi9/openjdk-21@sha256:645710be17ff582b0f2eb5d52f572556a2b73f4367290548bbc89431213e3ece AS build
+FROM registry.access.redhat.com/ubi9/openjdk-21@sha256:e951a00f457675ece98d132ef08a94421cb030ec59e307163e671bf11516715d AS build
 USER 0
 ENV GRADLE_USER_HOME=/build/.gradle-home
 # The corporate proxy for this stage's downloads (PR 33 review D-03): build arguments of this stage only, never ENV, so
@@ -45,7 +44,7 @@ RUN ./java/gradlew -p java --no-daemon --console=plain --dependency-verification
  && chmod 0644 /out/app/lib/*.jar
 
 # ---- runtime: JRE only, no build tool, no shell entry point ------------------------------------------------------------
-FROM registry.access.redhat.com/ubi9/openjdk-21-runtime@sha256:45af2087488812260f0cb6c744fadfe0b4e16c6f46232a05a57d7d0ddf1aa55d
+FROM registry.access.redhat.com/ubi9/openjdk-21-runtime@sha256:4c654beca849328155fd790bf5e0b01fb079ef2295b7b22dba429f0f8169711e
 USER 0
 # Owned by root with group 0 and read-only for the process: the image runs under any UID with GID 0 and with
 # readOnlyRootFilesystem. The only writable path (/tmp, Tomcat's work directory) is an emptyDir mount in the pod.
