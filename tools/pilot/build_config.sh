@@ -52,7 +52,18 @@ if ! k get namespace "${BNS}" >/dev/null 2>&1; then
   echo "namespace ${BNS} does not exist: apply the isolation objects first (PILOT_RUNBOOK.md step 2)" >&2
   exit 1
 fi
-TAG="$(git -C "${PILOT_REPO}" rev-parse --short=12 HEAD)"
+# A checkout has .git; a copy made with `git archive` (the host cannot reach GitHub) carries the commit id in .pilot-commit.
+if [ -d "${PILOT_REPO}/.git" ]; then
+  TAG="$(git -C "${PILOT_REPO}" rev-parse --short=12 HEAD)"
+elif [ -f "${PILOT_REPO}/.pilot-commit" ]; then
+  TAG="$(head -c 12 "${PILOT_REPO}/.pilot-commit")"
+else
+  echo "refused: neither a git checkout nor a .pilot-commit file" >&2; exit 2
+fi
+case "${TAG}" in
+  *[!0-9a-f]*|'') echo "refused: the commit id is not 12 hex characters" >&2; exit 2 ;;
+esac
+[ "${#TAG}" -eq 12 ] || { echo "refused: the commit id is not 12 hex characters" >&2; exit 2; }
 
 labelled apply "${BNS}" configmap "${PRODUCT}-build-config" --from-literal=image-tag="${TAG}" \
   || { echo "storing ${PRODUCT}-build-config failed (kubectl output withheld)" >&2; exit 1; }
