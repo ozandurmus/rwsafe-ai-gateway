@@ -66,7 +66,7 @@
       },
       "rwsafe-build-proxy": {
         "keys": ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "GRADLE_OPTS"],
-        "purpose": "the corporate proxy for kaniko's base-image pulls and Gradle's downloads in the build stage (GRADLE_OPTS: -Dhttps.proxyHost/-Dhttps.proxyPort/-Dhttp.proxyHost/-Dhttp.proxyPort/-Dhttp.nonProxyHosts); NO_PROXY holds the in-cluster registry; an estate value, created from the operator's store; optional"
+        "purpose": "the corporate proxy for kaniko's base-image pulls and, as stage-scoped build arguments, Gradle's downloads in the Containerfiles' build stage (GRADLE_OPTS: -Dhttps.proxyHost/-Dhttps.proxyPort/-Dhttp.proxyHost/-Dhttp.proxyPort/-Dhttp.nonProxyHosts); NO_PROXY holds the in-cluster registry; an estate value, created by tools/pilot/build_config.sh from the operator's store; required, with all four keys present (empty on a network without a proxy); never credentials: no userinfo in a proxy URL and no proxyUser/proxyPassword in GRADLE_OPTS (the script refuses them)"
       },
       "rwsafe-build-ca": {
         "keys": ["ca-certificates.crt"],

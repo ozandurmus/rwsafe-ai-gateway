@@ -26,6 +26,7 @@ set -uo pipefail
 
 PORT_BASE="${CHECK_PORT_BASE:-19080}"
 FAILED=0
+FWD_PID=""
 
 say() { printf '%-14s %s\n' "$1" "$2"; }
 bad() { say "$1" "FAIL $2"; FAILED=1; }
@@ -42,8 +43,11 @@ forward() {   # forward <target> <remote port> <local port>; sets FWD_PID
 }
 
 unforward() {
-  kill "${FWD_PID}" 2>/dev/null || true
-  wait "${FWD_PID}" 2>/dev/null || true
+  if [ -n "${FWD_PID}" ]; then
+    kill "${FWD_PID}" 2>/dev/null || true
+    wait "${FWD_PID}" 2>/dev/null || true
+    FWD_PID=""
+  fi
 }
 
 http_code() {   # http_code <url>
@@ -145,7 +149,7 @@ check_icap_options() {
 check_events() {
   local rows total
   # Counts by verdict class only; the database name is the application's internal one.
-  rows="$(k -n "${NS}" exec "statefulset/${PRODUCT}-db" -c database -- psql -X -A -t -F ' ' -d rwsafe -c \
+  rows="$(k -n "${NS}" exec "statefulset/${PRODUCT}-db" -c database -- psql -X -A -t -F ' ' -U postgres -d rwsafe -c \
     "SELECT verdict, count(*) FROM verdict_event WHERE received_at > now() - interval '24 hours' GROUP BY verdict ORDER BY verdict" \
     2>/dev/null)" || { bad "events" "the counting query failed (UNVERIFIED local psql access, PILOT_RUNBOOK.md step 13)"; return; }
   total="$(printf '%s\n' "${rows}" | awk 'NF == 2 && $2 ~ /^[0-9]+$/ { s += $2 } END { printf "%d", s }')"
@@ -157,6 +161,9 @@ check_events() {
 }
 
 main() {
+  # PR 33 review D-07: no port-forward outlives the check, also on an interrupt.
+  trap unforward EXIT
+  trap 'unforward; exit 130' INT TERM HUP
   for tool in curl awk timeout; do
     command -v "${tool}" >/dev/null 2>&1 || { echo "missing tool: ${tool}"; return 2; }
   done

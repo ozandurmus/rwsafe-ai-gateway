@@ -18,7 +18,9 @@
 # uses the masked role (runbook step 7); the pilot's own checks do not need it.
 #
 # Values are generated in a `mktemp -d` directory (mode 0700, umask 077), passed to kubectl only as files
-# (`--from-file`), never as an argument, and shredded on exit. Nothing prints a value. Idempotent: an object that exists
+# (`--from-file`), never as an argument, and shredded on exit (also on an interrupt). Nothing prints a value: every
+# kubectl and openssl output, stdout and stderr, is discarded and the script prints its own status line (PR 33 review
+# D-03). Each object is created already labelled part-of the product (common.sh `labelled`, PR 33 review D-07). Idempotent: an object that exists
 # is left as it is (the signing key and its public key only as a pair; one without the other is refused). The database
 # passwords are read by the database only at its first initialisation, so never recreate rwsafe-db-credentials while the
 # database PVC exists.
@@ -75,13 +77,10 @@ cleanup() {
   rm -rf "${WORK}"
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
 
 exists() {   # exists <kind> <name>
   k -n "${NS}" get "$1" "$2" >/dev/null 2>&1
-}
-
-label() {    # label <kind> <name>
-  k -n "${NS}" label "$1" "$2" "app.kubernetes.io/part-of=${PRODUCT}" --overwrite >/dev/null
 }
 
 created=0
@@ -90,16 +89,20 @@ planned=0
 
 create_secret() {   # create_secret <name> <dir holding one file per key>
   if [ "${PLAN}" = 1 ]; then echo "would create secret ${1}"; planned=$((planned + 1)); return; fi
-  k -n "${NS}" create secret generic "$1" --from-file="$2" >/dev/null || return 1
-  label secret "$1" || return 1
+  if ! labelled create "${NS}" secret generic "$1" --from-file="$2"; then
+    echo "creating secret ${1} failed (kubectl output withheld; check access with: kubectl -n ${NS} auth can-i create secrets)" >&2
+    return 1
+  fi
   echo "created secret ${1}"
   created=$((created + 1))
 }
 
 create_configmap() {   # create_configmap <name> <dir holding one file per key>
   if [ "${PLAN}" = 1 ]; then echo "would create configmap ${1}"; planned=$((planned + 1)); return; fi
-  k -n "${NS}" create configmap "$1" --from-file="$2" >/dev/null || return 1
-  label configmap "$1" || return 1
+  if ! labelled create "${NS}" configmap "$1" --from-file="$2"; then
+    echo "creating configmap ${1} failed (kubectl output withheld)" >&2
+    return 1
+  fi
   echo "created configmap ${1}"
   created=$((created + 1))
 }
@@ -126,7 +129,7 @@ else
     echo "openssl could not make an Ed25519 key pair (OpenSSL 1.1.1 or later is needed; LibreSSL is not enough)" >&2
     exit 2
   fi
-  create_secret "${SIGNING}" "${WORK}/signing"
+  create_secret "${SIGNING}" "${WORK}/signing" || exit 1
   if ! create_configmap "${PUBLIC}" "${WORK}/public"; then
     k -n "${NS}" delete secret "${SIGNING}" >/dev/null 2>&1 || true
     echo "the public key could not be stored; the signing key was removed again" >&2
@@ -141,7 +144,7 @@ if exists secret "${HMAC}"; then
 else
   mkdir -p "${WORK}/hmac"
   head -c 32 /dev/urandom > "${WORK}/hmac/key"
-  create_secret "${HMAC}" "${WORK}/hmac"
+  create_secret "${HMAC}" "${WORK}/hmac" || exit 1
 fi
 
 # 3. The two database role passwords (ADR-002): no trailing newline, the way the config tree and the image read them.
@@ -150,9 +153,9 @@ if exists secret "${DB}"; then
   skip "secret ${DB}"
 else
   mkdir -p "${WORK}/db"
-  openssl rand -hex 24 | tr -d '\n' > "${WORK}/db/spring.datasource.password"
-  openssl rand -hex 24 | tr -d '\n' > "${WORK}/db/rwsafe.migration.password"
-  create_secret "${DB}" "${WORK}/db"
+  openssl rand -hex 24 2>/dev/null | tr -d '\n' > "${WORK}/db/spring.datasource.password"
+  openssl rand -hex 24 2>/dev/null | tr -d '\n' > "${WORK}/db/rwsafe.migration.password"
+  create_secret "${DB}" "${WORK}/db" || exit 1
 fi
 
 # 4. The estate dictionary with one synthetic placeholder term (a real term never comes from this repository).
@@ -164,7 +167,7 @@ else
   printf '%s\n' "# Pilot placeholder (tools/pilot/bootstrap_secrets.sh): replace with the estate's real terms," \
     "# one per line, before anyone uses the masked role (PILOT_RUNBOOK.md step 7)." \
     "pilot-placeholder-term-replace-me" > "${WORK}/estate/estate-dictionary.txt"
-  create_configmap "${ESTATE}" "${WORK}/estate"
+  create_configmap "${ESTATE}" "${WORK}/estate" || exit 1
 fi
 
 if [ "${PLAN}" = 1 ]; then

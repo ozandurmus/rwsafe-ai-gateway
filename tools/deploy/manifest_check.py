@@ -24,7 +24,8 @@ cluster), and asserts the shared-host rules on every object:
     destination, no ipBlock is 0.0.0.0/0, and with --release no ipBlock is an RFC 5737 documentation placeholder; no
     placeholder is shared by two NetworkPolicies (the estate patch replaces each by one value); an ipBlock without a
     valid cidr, an ingress rule without `from`, an empty peer and an empty namespace or pod selector in a peer fail
-    (EMPTY_SELECTOR_EXCEPTIONS lists deliberate ones); no NodePort Service
+    (EMPTY_SELECTOR_EXCEPTIONS lists deliberate ones); no NodePort Service, and no LoadBalancer Service that
+    allocates a node port or a health-check node port
   - a PodDisruptionBudget for every multi-replica workload, keeping at least one pod and allowing at least one eviction
   - no Secret is ever rendered; every referenced Secret or uncommitted ConfigMap key (env, volume, projected volume)
     is in the runtime contract
@@ -322,8 +323,12 @@ def _swap_label_key(key: str, product: str) -> str:
 
 _DNS_NAME = re.compile(r"(?<![A-Za-z0-9_-])" + SOURCE_PRODUCT + r"((?:-[a-z0-9]+)*)\." + SOURCE_PRODUCT + r"\.svc\b")
 _REGISTRY_REPO = re.compile(r"(?<=" + re.escape(IN_CLUSTER_REGISTRY + "/") + r")" + SOURCE_PRODUCT + "-")
-# Dicts whose `name` is a reference to another object, and keys whose string value is one.
-_NAME_HOLDERS = {"metadata", "configMapRef", "secretRef", "configMapKeyRef", "secretKeyRef", "configMap", "secret"}
+# A URL whose host is a short Service name (`//rwsafe-control:8091`, `//rwsafe/`); full DNS names go through _DNS_NAME.
+_URL_HOST = re.compile(r"(?<=//)" + SOURCE_PRODUCT + r"(?=(?:-[a-z0-9]+)*(?:[.:/]|$))")
+_SOURCE_URL = re.compile(r"//" + SOURCE_PRODUCT + r"(?:[-.:/]|$)")
+# Dicts whose `name` is a reference to another object (`service`: an Ingress backend), and keys whose string value is one.
+_NAME_HOLDERS = {"metadata", "configMapRef", "secretRef", "configMapKeyRef", "secretKeyRef", "configMap", "secret",
+                 "service"}
 _REF_KEYS = {"namespace", "serviceAccountName", "priorityClassName", "claimName", "secretName", "serviceName"}
 
 
@@ -340,6 +345,8 @@ def _rename(node, product: str, parent: str = ""):
         if _is_label_map(parent, node):
             return {_swap_label_key(k, product): swap_name(v, product) if isinstance(v, str) else v
                     for k, v in node.items()}
+        if parent == "annotations":
+            return {_swap_label_key(k, product): _rename(v, product, k) for k, v in node.items()}
         out = {}
         for k, v in node.items():
             if isinstance(v, str) and ((k == "name" and parent in _NAME_HOLDERS) or k in _REF_KEYS):
@@ -354,8 +361,8 @@ def _rename(node, product: str, parent: str = ""):
     if isinstance(node, list):
         return [_rename(v, product, parent + "[]") for v in node]
     if isinstance(node, str):
-        return _REGISTRY_REPO.sub(product + "-", _DNS_NAME.sub(
-            lambda m: f"{product}{m.group(1)}.{product}.svc", node))
+        return _URL_HOST.sub(product, _REGISTRY_REPO.sub(product + "-", _DNS_NAME.sub(
+            lambda m: f"{product}{m.group(1)}.{product}.svc", node)))
     return node
 
 
@@ -388,7 +395,7 @@ def rename_contracts(contracts: dict, product: str) -> dict:
 
 def _source_name_left(value: str) -> bool:
     return (value == SOURCE_PRODUCT or value.startswith(SOURCE_PRODUCT + "-")
-            or f".{SOURCE_PRODUCT}.svc" in value or f"//{SOURCE_PRODUCT}-" in value
+            or f".{SOURCE_PRODUCT}.svc" in value or bool(_SOURCE_URL.search(value))
             or f"{IN_CLUSTER_REGISTRY}/{SOURCE_PRODUCT}-" in value)
 
 
@@ -401,7 +408,7 @@ def source_name_references(node, path: str = "", parent: str = "") -> list[str]:
     if isinstance(node, dict):
         for k, v in node.items():
             here = f"{path}.{k}" if path else str(k)
-            if parent in ("labels", "matchLabels") and str(k).startswith(SOURCE_PRODUCT + ".io/"):
+            if (_is_label_map(parent, node) or parent == "annotations") and str(k).startswith(SOURCE_PRODUCT + ".io/"):
                 found.append(here)
             if k == "key" and parent == "matchExpressions[]" and str(v).startswith(SOURCE_PRODUCT + ".io/"):
                 found.append(here)
@@ -409,7 +416,7 @@ def source_name_references(node, path: str = "", parent: str = "") -> list[str]:
                 continue
             if k in ("data", "binaryData") and path == "":
                 for dk, dv in (v or {}).items():
-                    if isinstance(dv, str) and (f".{SOURCE_PRODUCT}.svc" in dv
+                    if isinstance(dv, str) and (f".{SOURCE_PRODUCT}.svc" in dv or _SOURCE_URL.search(dv)
                                                 or f"{IN_CLUSTER_REGISTRY}/{SOURCE_PRODUCT}-" in dv):
                         found.append(f"{here}.{dk}")
                 continue
@@ -501,6 +508,14 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
                 fail(obj, "NodePort Service")
             if spec.get("externalIPs"):
                 fail(obj, "externalIPs set")
+            if spec.get("type") == "LoadBalancer":
+                # PR 33 review D-05: a LoadBalancer Service would also open a port of the node-port range on every node
+                # address, outside the 1344 firewall rule; with externalTrafficPolicy Local Kubernetes adds a
+                # health-check node port as well.
+                if spec.get("allocateLoadBalancerNodePorts") is not False:
+                    fail(obj, "LoadBalancer allocates node ports (allocateLoadBalancerNodePorts is not false)")
+                if spec.get("externalTrafficPolicy") == "Local" or spec.get("healthCheckNodePort"):
+                    fail(obj, "LoadBalancer with externalTrafficPolicy Local allocates a health-check node port")
             for p in spec.get("ports", []):
                 if spec.get("type") == "LoadBalancer" and p.get("port") in HOST_PORTS_IN_USE:
                     fail(obj, f"LoadBalancer port {p.get('port')} is already in use on the host")

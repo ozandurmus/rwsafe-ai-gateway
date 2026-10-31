@@ -17,6 +17,13 @@
 FROM registry.access.redhat.com/ubi9/openjdk-21@sha256:645710be17ff582b0f2eb5d52f572556a2b73f4367290548bbc89431213e3ece AS build
 USER 0
 ENV GRADLE_USER_HOME=/build/.gradle-home
+# The corporate proxy for this stage's downloads (PR 33 review D-03): build arguments of this stage only, never ENV, so
+# they reach the RUN steps below and no layer or history entry of the runtime image (the runtime stage declares none and
+# copies only /out/app/). Empty when the network has no proxy. tools/pilot/test_render.py checks this structure.
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG GRADLE_OPTS
 WORKDIR /build
 COPY java/ /build/java/
 # Optional CA anchors for this stage's own downloads behind a TLS-intercepting proxy (the way neXus's build on the same

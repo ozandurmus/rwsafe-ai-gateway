@@ -11,11 +11,13 @@ H-2) ve istek değiştirme hizmeti erişilemezse istek reddedilir (kapalı kalma
 adresi, `<vekil-adresi-1>` ile `<vekil-adresi-3>` arası üç ProxySG cihazının adresi, `<ALAN>\<test-kullanıcısı>` test
 kullanıcısı, `<yapay zekâ kategorisi>` konsolda görünen kategori adı, `<yönetici-hesabı>` sizin SSH hesabınızdır.
 
-**Kim çalıştırır:** "SUNUCU DEĞİŞİKLİĞİ" ve "VEKİL DEĞİŞİKLİĞİ" yazan her adım tek tek onaylanır. Ajan bir adımı ancak siz
-sohbette o adım için "evet" dedikten sonra çalıştırır ve yalnızca maskelenmiş sonucu bildirir. Onaylanmış dağıtım
-kılavuzu (DEPLOY_AND_SHARED_HOST_RUNBOOK §7) uygulama adımını size bıraktığı için, bu kural bir karar kaydıyla
-değişene kadar sunucu değişikliklerini siz çalıştırırsınız. Kök yetkisi isteyen 11. adım ve vekil konsolu adımları
-(15, 16, 17) her zaman sizindir. "OKUMA" yazan adımları herkes onaysız çalıştırabilir.
+**Kim çalıştırır** (karar Q-45, `PO_DECISION_RECORD_2026_10_31_AGENT_APPLIES_PILOT.md`, onaylı): "SUNUCU DEĞİŞİKLİĞİ"
+yazan her adımı siz ya da düzenleyici ajan çalıştırır. Ajan her adımdan önce adımı sohbette tek satırla söyler ve sizin o
+adım için onayınızı bekler; iki değişikliği tek onayla yapmaz, silme adımlarını ayrıca sorar ve yalnızca maskelenmiş
+sonucu bildirir. Her `kubectl` sunucudaki kullanıcının kendi yetkisiyle çalışır, hiçbir zaman `sudo` ile değil; betikler
+`sudo` içeren bir `KUBECTL` değerini reddeder. **Yalnızca siz:** 10. adım (acil durum parolası: ajan bu adımı hiç
+çalıştırmaz ve dosyasını hiç okumaz), kök yetkisi isteyen 11. adım ve vekil konsolu adımları (15, 16, 17). "OKUMA" yazan
+adımları herkes onaysız çalıştırabilir.
 
 **Her adımdan önce:** Kilit dosyası `~/.locks/hosta-build.lock` alınmış olsun; 00:00-00:20, 06:00-06:20, 12:00-12:20,
 18:00-18:20 ve 02:00-02:59 (İstanbul saati) arasında çalışmayın; `df -h /` kök dosya sisteminin yüzde 85'in altında
@@ -34,7 +36,8 @@ python3 -B tools/pilot/test_render.py 2>&1 | tail -1
 python3 -B tools/deploy/manifest_check.py --overlay deploy/rwsafe/overlays/pilot --product "${PRODUCT}" | tail -1
 ```
 
-Görmeniz gereken: `urun rwsafe`, `3`, `0`, `OK`, `OK`, `manifest check PASS`.
+Görmeniz gereken: `urun rwsafe`, `3`, `0`, `OK`, `OK`, `manifest check PASS`. `kubectl` komutlarının başına hiçbir
+zaman `sudo` yazılmaz.
 
 ## 2. SUNUCU DEĞİŞİKLİĞİ: ad alanları ve yalıtım nesneleri
 
@@ -49,15 +52,17 @@ Görmeniz gereken: 12 nesne için `serverside-applied` (üç ad alanı, üç ön
 ## 3. SUNUCU DEĞİŞİKLİĞİ: derleme ayarları
 
 Önce `~/.config/${PRODUCT}/build-proxy.env` dosyasına vekil ayarlarını dört satır olarak yazın (`HTTP_PROXY`,
-`HTTPS_PROXY`, `NO_PROXY`, `GRADLE_OPTS`; ayrıntı kılavuzun 3. adımında). Dosyayı ekrana basmayın.
+`HTTPS_PROXY`, `NO_PROXY`, `GRADLE_OPTS`; ayrıntı kılavuzun 3. adımında) ve izinlerini `chmod 0600` yapın. Dosyada hiçbir
+zaman kullanıcı adı ya da parola bulunmaz (`kullanıcı:parola@` biçimi, `proxyUser`, `proxyPassword`); betik bunları
+reddeder. Vekil yoksa dört anahtar boş değerle yazılır. Dosyayı ekrana basmayın.
 
 ```bash
-kubectl -n "${PRODUCT}-build" create configmap "${PRODUCT}-build-config" --from-literal=image-tag="$(git rev-parse --short=12 HEAD)"
-kubectl -n "${PRODUCT}-build" create configmap "${PRODUCT}-build-ca" --from-file=ca-certificates.crt=/etc/ssl/certs/ca-certificates.crt
-kubectl -n "${PRODUCT}-build" create configmap "${PRODUCT}-build-proxy" --from-env-file="${HOME}/.config/${PRODUCT}/build-proxy.env" >/dev/null && echo "vekil ayarlari kaydedildi"
+tools/pilot/build_config.sh --check
+tools/pilot/build_config.sh
 ```
 
-Görmeniz gereken: iki `created` satırı ve `vekil ayarlari kaydedildi`.
+Görmeniz gereken: `proxy settings: valid (values not shown)` ve üç `stored configmap` satırı. Bir ret yalnızca kuralın ve
+anahtarın adını söyler, değeri asla göstermez.
 
 ## 4. SUNUCU DEĞİŞİKLİĞİ: derleme bağlamı
 
@@ -81,7 +86,8 @@ kubectl -n "${PRODUCT}-build" get pod -l "job-name=${PRODUCT}-build-dataplane" -
 grep -cE '^sha256:[0-9a-f]{64}$' ~/pilot/dataplane.digest
 ```
 
-Görmeniz gereken: 5 ile 15 dakika sonra `condition met`, ardından `1`.
+Görmeniz gereken: 5 ile 15 dakika sonra `condition met`, ardından `1`. Başarısız olursa ajan ham günlüğü okumaz,
+yalnızca hata sınıflarını sayar (kılavuzun 5. adımındaki komut); ham günlüğü yalnızca siz okursunuz.
 
 ## 6. SUNUCU DEĞİŞİKLİĞİ: denetim düzlemi görüntüsünü derleme
 
@@ -117,20 +123,26 @@ Görmeniz gereken: `38 objects` ve `manifest check PASS: 38 objects, 3 workloads
 ## 9. SUNUCU DEĞİŞİKLİĞİ: veritabanı ve denetim düzlemi
 
 ```bash
-kubectl apply --server-side -f ~/pilot/app.json -l "app.kubernetes.io/component!=icap,app.kubernetes.io/name!=${PRODUCT}-icap"
+python3 -B tools/pilot/render.py --product "${PRODUCT}" --phase control --dataplane-digest "$(cat ~/pilot/dataplane.digest)" --control-digest "$(cat ~/pilot/control.digest)" --output ~/pilot/app-control.json
+kubectl apply --server-side -f ~/pilot/app-control.json
 kubectl -n "${PRODUCT}" rollout status "statefulset/${PRODUCT}-db" --timeout=10m
 kubectl -n "${PRODUCT}" rollout status "deploy/${PRODUCT}-control" --timeout=10m
 ```
 
-Görmeniz gereken: iki kez `successfully rolled out`. ICAP motoru bu adımda kurulmaz.
+Görmeniz gereken: iki kez `successfully rolled out`. ICAP motoru ve sunucuda 1344'ü açan hizmet bu adımda kurulmaz;
+ayrımı hazırlama aracı yapar ve sınamalar bunu kanıtlar.
 
-## 10. Acil durum hesabının parolası (yalnızca ev dizininize bir dosya yazar)
+## 10. YALNIZCA SİZ: acil durum hesabının parolası
+
+Ajan bu adımı hiçbir zaman çalıştırmaz ve yazdığı dosyayı hiçbir zaman okumaz. Betik etkileşimli bir terminal olmadan
+çalışmayı reddeder; kendi terminalinizde çalıştırın.
 
 ```bash
 tools/pilot/fetch_break_glass.sh
 ```
 
-Görmeniz gereken: `written: ~/.config/rwsafe/pilot/break-glass-initial-password (mode 0600)`. Hesap adı `breakglass`'tır.
+Görmeniz gereken: `written: ~/.config/rwsafe/pilot/break-glass-initial-password (mode 0600)` ve `removed the copy in the
+control plane's PVC` (kapsayıcıdaki kopya silinir, tek kopya sizin ev dizininizde kalır). Hesap adı `breakglass`'tır.
 Parolayı yalnızca kendi terminalinizde okuyun, hiçbir yere yapıştırmayın.
 
 ## 11. SUNUCU DEĞİŞİKLİĞİ (kök yetkisi, yalnızca siz): 1344 için güvenlik duvarı
@@ -140,6 +152,8 @@ Parolayı yalnızca kendi terminalinizde okuyun, hiçbir yere yapıştırmayın.
 ```bash
 T="${PRODUCT//-/_}_pilot"
 sudo nft -f - <<EOF
+table inet ${T} {}
+flush table inet ${T}
 table inet ${T} {
   set icap_clients {
     type ipv4_addr
@@ -148,16 +162,18 @@ table inet ${T} {
   }
   chain prerouting {
     type filter hook prerouting priority -150; policy accept;
-    tcp dport 1344 ip saddr != @icap_clients drop
-    meta nfproto ipv6 tcp dport 1344 drop
+    fib daddr type local tcp dport 1344 ct state new ip saddr != @icap_clients drop
+    fib daddr type local meta nfproto ipv6 tcp dport 1344 drop
   }
 }
 EOF
 sudo nft list table inet "${T}" | sh tools/hosta/mask.sh | grep -c '<ip>'
 ```
 
-Görmeniz gereken: ilk komut sessiz biter, ikincisi `3` yazar. Kural kalıcı değildir: sunucu yeniden başlarsa vekil trafik
-göndermeden önce bu adımı tekrarlayın.
+Görmeniz gereken: ilk komut sessiz biter, ikincisi `3` yazar. Yeniden çalıştırmak kuralları çoğaltmaz. Kural yalnızca
+sunucunun kendi adreslerine gelen yeni bağlantıları süzer (`fib daddr type local`): kapsayıcılar arasındaki trafik, ICAP
+motoruna giden iç yönlendirme dahil, hiç etkilenmez; 13. adım bunu iki yönden kanıtlar. Kural kalıcı değildir: sunucu
+yeniden başlarsa vekil trafik göndermeden önce bu adımı tekrarlayın.
 
 ## 12. SUNUCU DEĞİŞİKLİĞİ: ICAP motoru (sunucuda 1344 açılır)
 
@@ -175,8 +191,13 @@ tools/pilot/check_pilot.sh
 ```
 
 Görmeniz gereken: her satırda `ok`, `icap options ok status 200, Methods REQMOD, Preview 4096, Allow 204` ve en sonda
-`result: PASS`. Ardından vekil olmayan bir makineden (kendi bilgisayarınız) `nc -vz -w 3 <sunucu-adresi> 1344` zaman
-aşımına uğramalıdır; bu, güvenlik duvarının çalıştığını gösterir.
+`result: PASS`. Ardından güvenlik duvarını iki yönden doğrulayın:
+
+1. Vekil olmayan bir makineden (kendi bilgisayarınız) `nc -vz -w 3 <sunucu-adresi> 1344` zaman aşımına uğramalıdır.
+   "Connection refused" ya da "succeeded" görürseniz kural bu sunucuda eşleşmiyor demektir; durun.
+2. ICAP kapsülleri `/ready 200` gösterir ve 15. adımdan sonra vekilin sağlık denetimi "sağlıklı"dır. Kapsüller hazırken
+   sağlık denetimi başarısızsa tabloyu silin (`sudo nft delete table inet "${T}"`) ve bildirin: kural iç trafiği
+   yakalamıştır.
 
 ## 14. Yönetim arayüzü (OKUMA)
 
@@ -234,12 +255,14 @@ Görmeniz gereken: başka hiçbir kullanıcının trafiği değişmez.
 ## 18. Pilotun tamamını geri alma
 
 ```bash
-kubectl delete namespace "${PRODUCT}" "${PRODUCT}-build" "${PRODUCT}-security" --wait=true
-kubectl delete priorityclass "${PRODUCT}-dataplane" "${PRODUCT}-control" "${PRODUCT}-batch"
-sudo nft delete table inet "${PRODUCT//-/_}_pilot"
-shred -u ~/pilot/* "${HOME}/.config/${PRODUCT}/pilot/break-glass-initial-password"; rmdir ~/pilot
+kubectl delete namespace "${PRODUCT}" "${PRODUCT}-build" "${PRODUCT}-security" --ignore-not-found=true --wait=true
+kubectl delete priorityclass "${PRODUCT}-dataplane" "${PRODUCT}-control" "${PRODUCT}-batch" --ignore-not-found=true
+sudo nft delete table inet "${PRODUCT//-/_}_pilot" 2>/dev/null || echo "guvenlik duvari tablosu zaten yok"
+find ~/pilot -type f -exec shred -u {} + 2>/dev/null; rmdir ~/pilot 2>/dev/null
+find "${HOME}/.config/${PRODUCT}/pilot" -type f -exec shred -u {} + 2>/dev/null; true
 ```
 
-Önce vekildeki kuralı ve ICAP hizmetini konsoldan kaldırın. Görmeniz gereken: ad alanları ve öncelik sınıfları silinir,
+Önce vekildeki kuralı ve ICAP hizmetini konsoldan kaldırın. Her silme satırı ayrıca onaylanır; hangi adımlar yapılmış
+olursa olsun hata vermeden çalışır. Güvenlik duvarı satırını ve parola dosyasını yalnızca siz silersiniz. Görmeniz gereken: ad alanları ve öncelik sınıfları silinir,
 `ss -ltn 'sport = :1344'` hiçbir şey göstermez. Paylaşılan iç kayıt defterinde iki görüntü deposu
 (`rwsafe-dataplane`, `rwsafe-control`) kalır; neXus'un hiçbir şeyine dokunulmaz.

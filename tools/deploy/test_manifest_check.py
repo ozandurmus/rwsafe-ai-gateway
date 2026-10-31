@@ -535,6 +535,48 @@ class ProductName(unittest.TestCase):
         self.assertEqual((renamed["build"]["namespace"], set(renamed["build"]["configMaps"])),
                          ("acme-build", {"acme-b"}))
 
+    # PR 33 review D-06: Ingress backends, short Service names in URLs, annotation keys and Service selectors.
+    def test_rename_covers_ingress_urls_annotations_and_service_selectors(self):
+        ingress = {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress",
+                   "metadata": {"name": "rwsafe-admin", "namespace": "rwsafe",
+                                "annotations": {"rwsafe.io/route": "admin"}},
+                   "spec": {"rules": [{"http": {"paths": [{"path": "/", "pathType": "Prefix", "backend": {
+                       "service": {"name": "rwsafe-control", "port": {"number": 8080}}}}]}}]}}
+        cm = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "rwsafe-x", "namespace": "rwsafe"},
+              "data": {"URL": "http://rwsafe-control:8091/x", "BARE": "http://rwsafe/x"}}
+        out = mc.rename_objects([ingress, cm], "acme")
+        backend = out[0]["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"]
+        self.assertEqual(backend["name"], "acme-control")
+        self.assertEqual(out[0]["metadata"]["annotations"], {"acme.io/route": "admin"})
+        self.assertEqual(out[1]["data"], {"URL": "http://acme-control:8091/x", "BARE": "http://acme/x"})
+        self.assertEqual(mc.source_name_references(out[0]) + mc.source_name_references(out[1]), [])
+        for leftover in ({"data": {"URL": "http://rwsafe:8091/"}},
+                         {"metadata": {"annotations": {"rwsafe.io/x": "1"}}},
+                         {"spec": {"selector": {"rwsafe.io/tier": "x"}}},
+                         {"spec": {"url": "http://rwsafe/"}}):
+            with self.subTest(leftover):
+                self.assertNotEqual(mc.source_name_references(leftover), [])
+
+    # PR 33 review D-05: a LoadBalancer opens no node port and no health-check node port.
+    def test_load_balancer_node_ports_fail(self):
+        base = {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "rwsafe-lb", "namespace": "fixture"},
+                "spec": {"type": "LoadBalancer", "allocateLoadBalancerNodePorts": False,
+                         "externalTrafficPolicy": "Cluster", "ports": [{"port": 1344, "targetPort": 1344}]}}
+        objects = compliant() + [copy.deepcopy(base)]
+        failures, _ = mc.check(objects, CONTRACTS)
+        self.assertFalse(any("LoadBalancer" in f for f in failures), failures)
+        for field, value, fragment in (("allocateLoadBalancerNodePorts", None, "allocates node ports"),
+                                       ("allocateLoadBalancerNodePorts", True, "allocates node ports"),
+                                       ("externalTrafficPolicy", "Local", "health-check node port")):
+            with self.subTest(f"{field}={value}"):
+                svc = copy.deepcopy(base)
+                if value is None:
+                    svc["spec"].pop(field)
+                else:
+                    svc["spec"][field] = value
+                failures, _ = mc.check(compliant() + [svc], CONTRACTS)
+                self.assertTrue(any(fragment in f for f in failures), failures)
+
     def test_invalid_product_exits_2(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

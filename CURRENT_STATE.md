@@ -544,6 +544,11 @@ the orchestrator's interim Q-41 decision (two approvals) in `docs/reviews/PR21_2
 - `tools/pilot/bootstrap_secrets.sh`, `fetch_break_glass.sh`, `check_pilot.sh`; `docs/operations/PILOT_RUNBOOK.md`
   (DRAFT; host changes H1-H9 and proxy changes P1-P2 confirmed one at a time) and `PILOT_ADIMLAR.md` (Turkish).
 - `HOSTA_MEASUREMENT_2026_10_31.md`: 69 % used, 305 GiB free; `HOST_FREE_STORAGE_BUDGET` 254 GiB (capture cap unchanged).
+- Second review (Argon, `docs/reviews/PR33_2026_10_31_*`): the 1344 firewall rule matches only the node's own addresses
+  (`fib daddr type local`, idempotent table), the build check enforces the build contract and the core pod rules, proxy
+  settings reach only the Containerfiles' build stage as ARG (credentials refused, `build_config.sh`), no sudo in
+  KUBECTL, step 10 PO only, the ICAP LoadBalancer allocates no node port (`externalTrafficPolicy: Cluster`; the check
+  refuses node ports), step 9 by `render.py --phase control`. The runbooks follow Q-45 (PO or orchestrator per step).
 
 ## Held (pseudonym registry, Q-44)
 

@@ -4,15 +4,23 @@
 # (PLAT-F2), so the ProxySG allowlist is enforced by the host firewall (@icap_clients, HARDENING H-1) and the peer is
 # identified by its client certificate on 11344; the engine and the NetworkPolicy admit the ServiceLB pods. The ICAP
 # header X-Client-IP (the end user's address, set by ProxySG) is unaffected. 1344 exists only while H-2 is open.
+#
+# PR 33 review D-05: no node port. `allocateLoadBalancerNodePorts: false` keeps Kubernetes from opening a port of the
+# node-port range on every node address beside 1344 (outside the 1344 firewall rule), and externalTrafficPolicy Cluster
+# avoids the health-check node port that Local allocates. On one node the two policies route the same way; that
+# ServiceLB then forwards to the Service's cluster address rather than to a node port is UNVERIFIED (2026-10-31) on
+# HOST-A's k3s release and is proved by the pilot check (PILOT_RUNBOOK.md step 13: ICAP OPTIONS through the node's 1344).
+# manifest_check.py refuses a LoadBalancer Service without both settings.
 apiVersion: v1
 kind: Service
 metadata:
   name: rwsafe-icap-lb
   namespace: rwsafe
-  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/component: icap }
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap-lb, app.kubernetes.io/component: icap }
 spec:
   type: LoadBalancer
-  externalTrafficPolicy: Local
+  allocateLoadBalancerNodePorts: false
+  externalTrafficPolicy: Cluster
   selector:
     app.kubernetes.io/part-of: rwsafe
     app.kubernetes.io/component: icap
