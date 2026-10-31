@@ -57,7 +57,7 @@
     }
   },
   "build": {
-    "_comment": "The image build's uncommitted ConfigMaps in the build namespace (deploy/rwsafe/build, PILOT_RUNBOOK.md steps 3-6). Names are renamed with the product name like every other contract name.",
+    "_comment": "The image build's uncommitted ConfigMaps in the build namespace (deploy/rwsafe/image-build, PILOT_RUNBOOK.md steps 3-6). Names are renamed with the product name like every other contract name.",
     "namespace": "rwsafe-build",
     "configMaps": {
       "rwsafe-build-config": {

@@ -9,7 +9,7 @@ ConfigMap names, the part-of label, selectors, in-cluster Service DNS names and 
 Targets:
   pilot  deploy/rwsafe/overlays/pilot (default)
   k3s    deploy/rwsafe/overlays/k3s
-  build  deploy/rwsafe/build (the kaniko Jobs and their context loader)
+  build  deploy/rwsafe/image-build (the kaniko Jobs and their context loader)
 
 For `pilot` and `k3s` the whole render passes the manifest check first (with --release semantics when both digests are
 given) and nothing is printed otherwise; `build` passes its own build check. The output is one JSON `List` that
@@ -38,7 +38,7 @@ import manifest_check as mc  # noqa: E402
 TARGETS = {
     "pilot": mc.REPO_ROOT / "deploy/rwsafe/overlays/pilot",
     "k3s": mc.REPO_ROOT / "deploy/rwsafe/overlays/k3s",
-    "build": mc.REPO_ROOT / "deploy/rwsafe/build",
+    "build": mc.REPO_ROOT / "deploy/rwsafe/image-build",
 }
 DIGEST_VALUE = re.compile(r"^sha256:[0-9a-f]{64}$")
 # The images the deploy pins, by their source (committed) repository name.

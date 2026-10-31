@@ -1,0 +1,60 @@
+# The build context: a PVC holding `git archive` of the commit being built (java/ and deploy/images/ only), streamed in
+# through the loader pod (`kubectl exec -i ... tar -x`). The loader runs unprivileged and sleeps for at most an hour; it
+# is deleted before a build Job starts, because the build namespace's quota holds one 3-CPU build and nothing else.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rwsafe-build-context
+  namespace: rwsafe-build
+  labels:
+    app.kubernetes.io/part-of: rwsafe
+    app.kubernetes.io/component: image-build
+    app.kubernetes.io/name: rwsafe-build-context
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rwsafe-build-context-loader
+  namespace: rwsafe-build
+  labels:
+    app.kubernetes.io/part-of: rwsafe
+    app.kubernetes.io/component: image-build
+    app.kubernetes.io/name: rwsafe-build-context-loader
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  priorityClassName: rwsafe-batch
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: loader
+      # The build stage's own base (deploy/images/*.Containerfile): it has sh and tar, and is already on the node.
+      image: registry.access.redhat.com/ubi9/openjdk-21@sha256:645710be17ff582b0f2eb5d52f572556a2b73f4367290548bbc89431213e3ece
+      command: ["sleep", "3600"]
+      securityContext:
+        runAsNonRoot: true
+        privileged: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests: { cpu: 10m, memory: 64Mi, ephemeral-storage: 64Mi }
+        limits: { cpu: 200m, memory: 256Mi, ephemeral-storage: 256Mi }
+      volumeMounts:
+        - name: context
+          mountPath: /workspace
+  volumes:
+    - name: context
+      persistentVolumeClaim:
+        claimName: rwsafe-build-context
