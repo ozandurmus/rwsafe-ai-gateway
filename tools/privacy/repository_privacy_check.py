@@ -101,10 +101,14 @@ _TCKN_RE = re.compile(r"(?<!\d)[1-9]\d{10}(?!\d)")
 # A lower-case hex run of 32 or more characters is a digest (sha256 in verification metadata, a commit id): the digit runs
 # inside it are not identifiers, so the number rules do not read them (PR 12 review D-11, replacing a path allowlist).
 _HEX_DIGEST_RE = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{32,}(?![0-9A-Za-z])")
-# Cluster-internal DNS (svc.cluster.local) and the documented placeholder zone nexus.local are repository-safe shapes.
+# Cluster-internal DNS (svc.cluster.local), the documented placeholder zone nexus.local and the product's synthetic admin
+# zone rwsafe.local (the pilot's admin host `ui.rwsafe.local`, deploy/rwsafe/overlays/pilot/70-admin-ingress.yaml; the
+# committed manifests carry the source product name, a render under another name is never committed) are repository-safe
+# shapes.
 _INTERNAL_HOST_RE = re.compile(
     r"(?i)\b[a-z0-9][a-z0-9.-]{0,252}\.(?:corp|lan|intra|internal)\b|\b[a-z0-9][a-z0-9.-]{0,252}\.local\b")
-_SAFE_HOST_SUFFIXES = (".svc.cluster.local", ".cluster.local", ".nexus.local", ".example.invalid", ".localhost", ".test")
+_SAFE_HOST_SUFFIXES = (".svc.cluster.local", ".cluster.local", ".nexus.local", ".rwsafe.local", ".example.invalid",
+                       ".localhost", ".test")
 _PROMPT_FIXTURE_HINT_RE = re.compile(r"(?i)\"(?:messages|prompt|contents|input)\"\s*:\s*[\[{\"]")
 
 

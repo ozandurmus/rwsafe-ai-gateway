@@ -168,6 +168,9 @@ class ContentRules(GateTestCase):
             ("TR_MOBILE_NUMBER", "masked 05xx xxx xx xx, real " + _tr_mobile()),
             ("NON_DOCUMENTATION_IPV4", f"{_ip(192, 0, 2, 1)} then {_ip(10, 0, 0, 7)}"),
             ("INTERNAL_HOST_NAME", "api.rwsafe.svc.cluster.local and " + "db01" + ".corp"),
+            ("INTERNAL_HOST_NAME", "ui.rwsafe.local and " + "db01" + ".local"),
+            ("INTERNAL_HOST_NAME", "ui.rwsafe.local" + ".bank" + ".local"),
+            ("INTERNAL_HOST_NAME", "ui." + "rwsafe-x" + ".local"),
         ]
         for rule, line in cases:
             with self.subTest(rule=rule):
@@ -217,6 +220,7 @@ class ContentRules(GateTestCase):
             "phone 05xx xxx xx xx",
             "mail someone" + "@" + "example.invalid and noreply" + "@" + "anthropic.com",
             "service api.rwsafe.svc.cluster.local, the placeholder zone nexus.local, <masked-host>.corp",
+            "the pilot's admin host ui.rwsafe.local, its zone rwsafe.local, a placeholder ui.<product>.local",
             "key sk-" + "ant-synthetic-" + "0" * 24,
             "password" + ' = "' + "synthetic-password" + '"',
             "serial" + ' = "' + "<masked-serial>" + '", ' + "account_name" + ' = "' + "USR-1a2b" + '"',

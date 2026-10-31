@@ -37,6 +37,10 @@ cluster), and asserts the shared-host rules on every object:
     build namespace follow the name
   - no LoadBalancer port or hostPort is a port already in use on HOST-A (HOST_PORTS_IN_USE: Traefik owns 80/443), and no
     container or Service port is one of neXus's cluster ports (NEXUS_CLUSTER_PORTS)
+  - an Ingress (the admin UI through the host's Traefik, PILOT_RUNBOOK.md step 14) is class `traefik`, in the product
+    namespace, with exactly one rule whose host is `ui.<product>.local`, never a host-less (catch-all) rule or a
+    defaultBackend, every backend `<product>-control:8080` (a rendered Service port), one TLS entry for that host from
+    the Secret `<product>-admin-tls` of the runtime contract, and no Traefik annotation; no Traefik CRD is rendered
 
 Standard library only; needs kubectl (and optionally kustomize) on PATH.
 
@@ -74,6 +78,19 @@ HOST_PORTS_IN_USE = {22, 25, 53, 80, 323, 443, 6443, 6444, 8472, 10010} | set(ra
 # PORTS_AND_RESOURCES §2.2 and §5: neXus's cluster ports. 8080 and 5432 are shared by number inside separate namespaces
 # and Services (accepted in §5); these are never reused, so a mistaken cross-namespace request fails loudly.
 NEXUS_CLUSTER_PORTS = {8084, 8085, 8086, 8087}
+# The admin UI through the host's Traefik (deploy/rwsafe/overlays/pilot/70-admin-ingress.yaml). The host is a synthetic
+# `.local` name the PO maps in his hosts file (PO, 2026-10-31); a real DNS name is a later, separate change (an estate
+# name is never committed, so the check would then take it from the uncommitted estate ConfigMap at render time).
+INGRESS_CLASS = "traefik"
+ADMIN_PORT = 8080
+
+
+def admin_host(product: str) -> str:
+    return f"ui.{product}.local"
+
+
+def admin_tls_secret(product: str) -> str:
+    return f"{product}-admin-tls"
 
 # neXus runs its services at system-cluster-critical (PORTS_AND_RESOURCES §4.1); rwsafe stays strictly below it. PO
 # decision Q-10 (PO_DECISION_RECORD_2026_10_30_MVP_BLOCKING_QUESTIONS item 8) places the data plane at 1000, above
@@ -326,6 +343,8 @@ _REGISTRY_REPO = re.compile(r"(?<=" + re.escape(IN_CLUSTER_REGISTRY + "/") + r")
 # A URL whose host is a short Service name (`//rwsafe-control:8091`, `//rwsafe/`); full DNS names go through _DNS_NAME.
 _URL_HOST = re.compile(r"(?<=//)" + SOURCE_PRODUCT + r"(?=(?:-[a-z0-9]+)*(?:[.:/]|$))")
 _SOURCE_URL = re.compile(r"//" + SOURCE_PRODUCT + r"(?:[-.:/]|$)")
+# The admin Ingress host (`ui.rwsafe.local`), renamed whole: rules[].host and tls[].hosts[].
+_ADMIN_HOST = re.compile(r"^ui\." + SOURCE_PRODUCT + r"\.local$")
 # Dicts whose `name` is a reference to another object (`service`: an Ingress backend), and keys whose string value is one.
 _NAME_HOLDERS = {"metadata", "configMapRef", "secretRef", "configMapKeyRef", "secretKeyRef", "configMap", "secret",
                  "service"}
@@ -361,6 +380,8 @@ def _rename(node, product: str, parent: str = ""):
     if isinstance(node, list):
         return [_rename(v, product, parent + "[]") for v in node]
     if isinstance(node, str):
+        if _ADMIN_HOST.match(node):
+            return admin_host(product)
         return _URL_HOST.sub(product, _REGISTRY_REPO.sub(product + "-", _DNS_NAME.sub(
             lambda m: f"{product}{m.group(1)}.{product}.svc", node)))
     return node
@@ -395,7 +416,8 @@ def rename_contracts(contracts: dict, product: str) -> dict:
 
 def _source_name_left(value: str) -> bool:
     return (value == SOURCE_PRODUCT or value.startswith(SOURCE_PRODUCT + "-")
-            or f".{SOURCE_PRODUCT}.svc" in value or bool(_SOURCE_URL.search(value))
+            or f".{SOURCE_PRODUCT}.svc" in value or f".{SOURCE_PRODUCT}.local" in value
+            or bool(_SOURCE_URL.search(value))
             or f"{IN_CLUSTER_REGISTRY}/{SOURCE_PRODUCT}-" in value)
 
 
@@ -449,6 +471,9 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
         for o in objects if o.get("kind") == "ConfigMap"}
     rendered_claims = {(o["metadata"].get("namespace"), o["metadata"]["name"])
                        for o in objects if o.get("kind") == "PersistentVolumeClaim"}
+    service_ports = {(o["metadata"].get("namespace"), o["metadata"]["name"]):
+                     {p.get("port") for p in (o.get("spec") or {}).get("ports") or []}
+                     for o in objects if o.get("kind") == "Service"}
 
     # neXus's objects are out of bounds (ADR-001 §7, NS-1): the whole object, keys and values (PR 18 review D-04).
     for obj in objects:
@@ -501,6 +526,10 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
                     fail(obj, f"PSA {mode} is not restricted")
         if kind == "ConfigMap" and obj["metadata"]["name"] in configmap_contract:
             fail(obj, "an uncommitted contract ConfigMap is rendered; its values never live in the repository")
+        if str(obj.get("apiVersion", "")).startswith("traefik."):
+            fail(obj, "a Traefik CRD object is rendered; the admin UI is reached through one Ingress only")
+        if kind == "Ingress":
+            check_ingress(obj, fail, product, secret_contract, service_ports)
         if kind == "Service":
             spec = obj.get("spec", {})
             if spec.get("type") == "NodePort" or any(p.get("nodePort") for p in spec.get("ports", [])
@@ -824,6 +853,55 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
         failures.append(f"requested storage of all namespaces is {requested / 2**30:g}Gi, above the host-free budget "
                         f"{HOST_FREE_STORAGE_BUDGET / 2**30:g}Gi (HOSTA_MEASUREMENT_2026_10_31)")
     return failures, notes
+
+
+def check_ingress(obj: dict, fail, product: str, secret_contract: dict, service_ports: dict) -> None:
+    """The admin Ingress (70-admin-ingress.yaml): one Host() rule for `ui.<product>.local` to `<product>-control:8080`.
+    Traefik ranks a Host() rule above the other product's catch-all for this host only, so a host-less rule or a
+    defaultBackend here would compete with that catch-all for every other name; both are refused."""
+    md = obj.get("metadata") or {}
+    spec = obj.get("spec") or {}
+    host = admin_host(product)
+    if md.get("namespace") != product:
+        fail(obj, f"Ingress is not in namespace {product}")
+    if spec.get("ingressClassName") != INGRESS_CLASS:
+        fail(obj, f"Ingress class is {spec.get('ingressClassName') or 'unset'}, not {INGRESS_CLASS}")
+    for key in (md.get("annotations") or {}):
+        if "traefik" in key or key == "kubernetes.io/ingress.class":
+            fail(obj, f"Ingress annotation {key} (no Traefik annotation is needed; one changes routing or the class)")
+    if spec.get("defaultBackend"):
+        fail(obj, "Ingress has a defaultBackend (a catch-all for every host)")
+    rules = spec.get("rules") or []
+    if len(rules) != 1:
+        fail(obj, f"Ingress has {len(rules)} rules, not exactly one")
+    for rule in rules:
+        if not rule.get("host"):
+            fail(obj, "Ingress rule without a host (a catch-all rule)")
+        elif rule["host"] != host:
+            fail(obj, f"Ingress rule host is not {host}")
+        paths = ((rule.get("http") or {}).get("paths")) or []
+        if not paths:
+            fail(obj, "Ingress rule without paths")
+        for path in paths:
+            backend = path.get("backend") or {}
+            service = backend.get("service") or {}
+            port = (service.get("port") or {}).get("number")
+            if backend.get("resource") or service.get("name") != f"{product}-control" or port != ADMIN_PORT:
+                fail(obj, f"Ingress backend is not {product}-control:{ADMIN_PORT} (the admin port only)")
+            elif ADMIN_PORT not in service_ports.get((md.get("namespace"), service["name"]), set()):
+                fail(obj, f"Ingress backend Service {service['name']} with port {ADMIN_PORT} is not rendered")
+    tls = spec.get("tls") or []
+    if len(tls) != 1:
+        fail(obj, f"Ingress has {len(tls)} TLS entries, not exactly one (without one the admin UI is plain http)")
+    for entry in tls:
+        if (entry.get("hosts") or []) != [host]:
+            fail(obj, f"Ingress TLS hosts are not exactly [{host}]")
+        secret = entry.get("secretName")
+        if secret != admin_tls_secret(product):
+            fail(obj, f"Ingress TLS Secret is not {admin_tls_secret(product)} (never another product's or the "
+                      f"default store's certificate)")
+        elif secret not in secret_contract:
+            fail(obj, f"Ingress TLS Secret {secret} is not in the runtime contract")
 
 
 def check_ref(obj, fail, kind, name, keys, contract, rendered, ns, optional) -> None:

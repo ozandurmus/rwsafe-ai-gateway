@@ -68,9 +68,9 @@ class PilotTarget(unittest.TestCase):
         self.assertNotIn("rwsafe-icap-tls", text)
         self.assertNotIn("rwsafe-ldap-bind", text)
         policies = {o["metadata"]["name"] for o in objects if o["kind"] == "NetworkPolicy"}
-        self.assertFalse({"rwsafe-control-to-directory", "rwsafe-control-to-siem",
-                          "rwsafe-control-from-traefik"} & policies)
-        self.assertFalse(any(o["kind"] == "Ingress" for o in objects))
+        self.assertFalse({"rwsafe-control-to-directory", "rwsafe-control-to-siem"} & policies)
+        self.assertIn("rwsafe-control-from-traefik", policies)
+        self.assertEqual([mc.ident(o) for o in objects if o["kind"] == "Ingress"], ["Ingress/rwsafe/rwsafe-admin"])
         icap = next(o for o in objects if o["kind"] == "Deployment" and o["metadata"]["name"] == "rwsafe-icap")
         self.assertEqual(icap["spec"]["replicas"], 2)
         lb = next(o for o in objects if o["kind"] == "Service" and o["metadata"]["name"] == "rwsafe-icap-lb")
@@ -137,9 +137,13 @@ class Phases(unittest.TestCase):
                 control = render.select_phase(objects, product, "control")
                 icap = render.select_phase(objects, product, "icap")
                 servicelb = render.select_phase(objects, product, "servicelb")
-                self.assertEqual(sorted(mc.ident(o) for o in control + icap + servicelb),
+                ingress = render.select_phase(objects, product, "ingress")
+                self.assertEqual(sorted(mc.ident(o) for o in control + icap + servicelb + ingress),
                                  sorted(mc.ident(o) for o in objects))
-                self.assertFalse(any(is_lb(o) for o in control + icap))
+                self.assertFalse(any(is_lb(o) for o in control + icap + ingress))
+                self.assertEqual(sorted(mc.ident(o) for o in ingress), [
+                    f"Ingress/{product}/{product}-admin", f"NetworkPolicy/{product}/{product}-control-from-traefik"])
+                self.assertFalse(any(o["kind"] == "Ingress" for o in control + icap + servicelb))
                 self.assertEqual([mc.ident(o) for o in servicelb], [f"Service/{product}/{product}-icap-lb"])
                 self.assertFalse(any(o["metadata"]["name"].startswith(f"{product}-icap") for o in control))
                 self.assertEqual({o["metadata"]["name"] for o in icap if o["kind"] != "ConfigMap"} | {"cm"}, {
@@ -169,6 +173,45 @@ class Phases(unittest.TestCase):
         rc, out, err = run(args + ["--phase", "servicelb"])
         self.assertEqual(rc, 0, err)
         self.assertEqual([mc.ident(o) for o in json.loads(out)["items"]], ["Service/acme/acme-icap-lb"])
+
+    def test_main_phase_ingress(self):
+        rc, out, err = run(["--product", "acme", "--dataplane-digest", DIGESTS["dataplane"],
+                            "--control-digest", DIGESTS["control"], "--phase", "ingress"])
+        self.assertEqual(rc, 0, err)
+        items = json.loads(out)["items"]
+        self.assertEqual(sorted(mc.ident(o) for o in items),
+                         ["Ingress/acme/acme-admin", "NetworkPolicy/acme/acme-control-from-traefik"])
+        ingress = next(o for o in items if o["kind"] == "Ingress")
+        self.assertEqual(ingress["spec"]["rules"][0]["host"], mc.admin_host("acme"))
+        self.assertEqual(ingress["spec"]["tls"][0]["secretName"], "acme-admin-tls")
+        self.assertIn("2 objects (1 Ingress, 1 NetworkPolicy)", err)
+
+
+class ForwardedHeaders(unittest.TestCase):
+    """Behind Traefik the control plane trusts X-Forwarded-* only from a pod address (10-pilot-config.yaml); Tomcat's
+    remote-IP valve matches the TCP peer's address against the whole expression (Java `matches()`, here fullmatch)."""
+
+    @staticmethod
+    def address(*octets: int) -> str:
+        return ".".join(str(o) for o in octets)
+
+    def test_pilot_trusts_forwarded_headers_from_the_pod_network_only(self):
+        import re
+        for product, objects in _PILOT.items():
+            with self.subTest(product):
+                data = next(o for o in objects if o["kind"] == "ConfigMap"
+                            and o["metadata"]["name"] == f"{product}-control-config")["data"]
+                self.assertEqual(data["RWSAFE_FORWARD_HEADERS"], "native")
+                self.assertEqual(data["RWSAFE_COOKIE_SECURE"], "true")
+                trusted = re.compile(data["RWSAFE_TRUSTED_PROXIES"])
+                for octets in ((10, 42, 0, 9), (10, 42, 255, 254)):
+                    self.assertTrue(trusted.fullmatch(self.address(*octets)), octets)
+                # The port-forward's loopback peer, other private and documentation ranges, IPv6 loopback, and a pod
+                # address with something appended: never trusted.
+                for peer in (self.address(127, 0, 0, 1), self.address(10, 43, 0, 1), self.address(10, 4, 2, 1),
+                             self.address(192, 0, 2, 10), self.address(198, 51, 100, 7), "::1", "0:0:0:0:0:0:0:1",
+                             self.address(10, 42, 0, 9) + ".1", "1" + self.address(10, 42, 0, 9)):
+                    self.assertIsNone(trusted.fullmatch(peer), peer)
 
 
 class Probe(unittest.TestCase):

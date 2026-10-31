@@ -682,5 +682,173 @@ class CommittedOverlay(unittest.TestCase):
                                     for f in failures), failures)
 
 
+def pilot_objects(product: str) -> tuple[list[dict], dict]:
+    text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays/pilot")
+    return mc.rename_objects(mc.to_objects(text), product), mc.rename_contracts(CONTRACTS_FILE_JSON, product)
+
+
+_PILOT_RENDER = {p: pilot_objects(p) for p in ("rwsafe", "acme")}
+
+
+class AdminIngress(unittest.TestCase):
+    """The admin UI through the host's Traefik (70-admin-ingress.yaml): one Host() rule for `ui.<product>.local` to
+    `<product>-control:8080`, TLS from `<product>-admin-tls`; every deviation is refused under both product names."""
+
+    def setUp(self):
+        self.renders = copy.deepcopy(_PILOT_RENDER)
+
+    def ingress(self, objects: list[dict]) -> dict:
+        found = [o for o in objects if o["kind"] == "Ingress"]
+        self.assertEqual(len(found), 1)
+        return found[0]
+
+    def failures_after(self, product: str, mutate) -> list[str]:
+        objects, contracts = self.renders[product]
+        mutate(self.ingress(objects), objects, contracts)
+        failures, _ = mc.check(objects, contracts, product=product)
+        return failures
+
+    def assert_refused(self, mutate, expected: str):
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                self.renders = copy.deepcopy(_PILOT_RENDER)
+                failures = self.failures_after(product, mutate)
+                self.assertTrue(any(f.startswith(f"Ingress/{product}/{product}-admin:") and expected in f
+                                    for f in failures), failures)
+
+    def test_committed_ingress_is_renamed_and_passes(self):
+        for product, (objects, contracts) in self.renders.items():
+            with self.subTest(product):
+                ing = self.ingress(objects)
+                self.assertEqual(mc.ident(ing), f"Ingress/{product}/{product}-admin")
+                self.assertEqual(ing["spec"]["ingressClassName"], "traefik")
+                self.assertEqual(ing["spec"]["rules"][0]["host"], f"ui.{product}.local")
+                self.assertEqual(ing["spec"]["tls"], [{"hosts": [f"ui.{product}.local"],
+                                                       "secretName": f"{product}-admin-tls"}])
+                self.assertEqual(ing["spec"]["rules"][0]["http"]["paths"][0]["backend"],
+                                 {"service": {"name": f"{product}-control", "port": {"number": 8080}}})
+                self.assertNotIn("defaultBackend", ing["spec"])
+                if product != mc.SOURCE_PRODUCT:
+                    self.assertEqual(mc.source_name_references(ing), [])
+                self.assertEqual(mc.check(objects, contracts, product=product)[0], [])
+                self.assertIn(f"{product}-admin-tls", contracts["secrets"])
+
+    def test_a_leftover_source_host_fails_under_another_product(self):
+        objects, contracts = self.renders["acme"]
+        self.ingress(objects)["spec"]["rules"][0]["host"] = "ui.rwsafe.local"
+        failures, _ = mc.check(objects, contracts, product="acme")
+        self.assertTrue(any("still names rwsafe" in f for f in failures), failures)
+        self.assertTrue(any(f"rule host is not {mc.admin_host('acme')}" in f for f in failures), failures)
+
+    def test_catch_all_rule_is_refused(self):
+        def catch_all(ing, *_):
+            ing["spec"]["rules"][0].pop("host")
+        self.assert_refused(catch_all, "rule without a host (a catch-all rule)")
+
+        def second_catch_all(ing, *_):
+            ing["spec"]["rules"].append({"http": copy.deepcopy(ing["spec"]["rules"][0]["http"])})
+        self.assert_refused(second_catch_all, "2 rules, not exactly one")
+        self.assert_refused(second_catch_all, "catch-all rule")
+
+        def default_backend(ing, *_):
+            ing["spec"]["defaultBackend"] = copy.deepcopy(ing["spec"]["rules"][0]["http"]["paths"][0]["backend"])
+        self.assert_refused(default_backend, "defaultBackend")
+
+    def test_foreign_backend_is_refused(self):
+        def foreign_service(ing, *_):
+            ing["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"]["name"] = "other-frontend"
+        self.assert_refused(foreign_service, "backend is not")
+
+        for port in (8091, 8092, 9400):
+            def internal_port(ing, *_, port=port):
+                ing["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"]["port"] = {"number": port}
+            self.assert_refused(internal_port, "(the admin port only)")
+
+        def named_port(ing, *_):
+            ing["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"]["port"] = {"name": "http"}
+        self.assert_refused(named_port, "backend is not")
+
+        def resource_backend(ing, *_):
+            ing["spec"]["rules"][0]["http"]["paths"][0]["backend"] = {
+                "resource": {"apiGroup": "example.test", "kind": "Bucket", "name": "x"}}
+        self.assert_refused(resource_backend, "backend is not")
+
+        def service_not_rendered(_, objects, __):
+            objects[:] = [o for o in objects if not (o["kind"] == "Service" and o["metadata"]["name"].endswith("-control"))]
+        self.assert_refused(service_not_rendered, "is not rendered")
+
+    def test_other_hosts_are_refused(self):
+        for host in (mc.admin_host("other"), "rwsafe.pilot.test", "*.rwsafe.local", "ui.rwsafe.local.example.test", ""):
+            def other(ing, *_, host=host):
+                ing["spec"]["rules"][0]["host"] = host.replace("rwsafe", ing["metadata"]["namespace"])
+            self.assert_refused(other, "rule host is not" if host else "catch-all")
+
+    def test_class_namespace_and_annotations(self):
+        def other_class(ing, *_):
+            ing["spec"]["ingressClassName"] = "nginx"
+        self.assert_refused(other_class, "class is nginx, not traefik")
+
+        def no_class(ing, *_):
+            ing["spec"].pop("ingressClassName")
+        self.assert_refused(no_class, "class is unset")
+
+        def other_namespace(ing, *_):
+            ing["metadata"]["namespace"] = "default"
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                self.renders = copy.deepcopy(_PILOT_RENDER)
+                failures = self.failures_after(product, other_namespace)
+                self.assertTrue(any(f.startswith(f"Ingress/default/{product}-admin: Ingress is not in namespace")
+                                    for f in failures), failures)
+
+        for key in ("traefik.ingress.kubernetes.io/router.middlewares", "traefik.ingress.kubernetes.io/router.priority",
+                    "kubernetes.io/ingress.class"):
+            def annotated(ing, *_, key=key):
+                ing["metadata"].setdefault("annotations", {})[key] = "x"
+            self.assert_refused(annotated, f"annotation {key}")
+
+    def test_tls_must_be_the_products_secret_for_the_one_host(self):
+        def no_tls(ing, *_):
+            ing["spec"].pop("tls")
+        self.assert_refused(no_tls, "0 TLS entries")
+
+        def default_store(ing, *_):
+            ing["spec"]["tls"][0].pop("secretName")
+        self.assert_refused(default_store, "TLS Secret is not")
+
+        for secret in ("other-frontend-tls", "rwsafe-icap-tls", "default-cert"):
+            def foreign(ing, *_, secret=secret):
+                ing["spec"]["tls"][0]["secretName"] = secret.replace("rwsafe", ing["metadata"]["namespace"])
+            self.assert_refused(foreign, "TLS Secret is not")
+
+        def extra_host(ing, *_):
+            ing["spec"]["tls"][0]["hosts"].append(mc.admin_host("other"))
+        self.assert_refused(extra_host, "TLS hosts are not exactly")
+
+        def not_in_contract(_, __, contracts):
+            contracts["secrets"] = {n: v for n, v in contracts["secrets"].items() if not n.endswith("-admin-tls")}
+        self.assert_refused(not_in_contract, "not in the runtime contract")
+
+    def test_traefik_crd_is_refused(self):
+        objects, contracts = self.renders["rwsafe"]
+        objects.append({"apiVersion": "traefik.io/v1alpha1", "kind": "IngressRoute",
+                        "metadata": {"name": "rwsafe-admin", "namespace": "rwsafe"}, "spec": {}})
+        failures, _ = mc.check(objects, contracts)
+        self.assertIn("IngressRoute/rwsafe/rwsafe-admin: a Traefik CRD object is rendered; the admin UI is reached "
+                      "through one Ingress only", failures)
+
+    def test_traefik_is_admitted_to_the_admin_port_only(self):
+        for product, (objects, _) in self.renders.items():
+            with self.subTest(product):
+                policy = next(o for o in objects if mc.ident(o) == f"NetworkPolicy/{product}/{product}-control-from-traefik")
+                self.assertEqual(policy["spec"]["podSelector"], {"matchLabels": {
+                    "app.kubernetes.io/name": f"{product}-control"}})
+                [rule] = policy["spec"]["ingress"]
+                self.assertEqual(rule["ports"], [{"protocol": "TCP", "port": 8080}])
+                self.assertEqual(rule["from"], [{
+                    "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+                    "podSelector": {"matchLabels": {"app.kubernetes.io/name": "traefik"}}}])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

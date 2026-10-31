@@ -1,0 +1,40 @@
+# The admin UI through the host's Traefik (PILOT_RUNBOOK.md step 14), the way the other product on the host is reached:
+# k3s's default ingress controller, LoadBalancer on 80/443, `web` redirecting to `websecure`. One Host() rule only, for
+# the synthetic name `ui.rwsafe.local` (the render renames it to `ui.<product>.local`); the PO maps it to the node address
+# with one hosts-file line on his own computer. No DNS name exists yet.
+#
+#   - one rule with a host, never a host-less (catch-all) rule and never a defaultBackend: Traefik's router priority
+#     makes a Host() rule win over the other product's catch-all for this host only, so nothing of the other product
+#     changes (its Ingress, its namespace and its certificate are neither read nor referenced)
+#   - the backend is the control plane's admin port only (`rwsafe-control:8080`); 8091, 8092 and 9400 stay unexposed
+#   - TLS from the Secret `rwsafe-admin-tls` in this namespace: a leaf certificate for this one name, issued by the
+#     pilot's own small CA (tools/pilot/admin_tls.sh; the CA key never enters the cluster), which the PO trusts on his
+#     computer. With a `tls` section Traefik makes the router HTTPS-only, so no entrypoint annotation is needed; plain
+#     http on 80 meets the host's own redirect to websecure.
+#   - the forwarded headers Traefik sets are trusted from the pod network only (10-pilot-config.yaml), and only Traefik's
+#     pods are admitted to 8080 (the k3s overlay's `rwsafe-control-from-traefik`, kept in the pilot)
+#
+# Applied on its own (`render.py --phase ingress`, PILOT_RUNBOOK.md step 14), after the Secret exists.
+# tools/deploy/manifest_check.py refuses any other host, class, backend, Secret or a catch-all rule.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rwsafe-admin
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-control, app.kubernetes.io/component: admin-ingress }
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [ui.rwsafe.local]
+      secretName: rwsafe-admin-tls
+  rules:
+    - host: ui.rwsafe.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rwsafe-control
+                port:
+                  number: 8080

@@ -13,10 +13,17 @@ data:
   RWSAFE_BREAK_GLASS_PASSWORD_FILE: "/var/lib/rwsafe/identity/break-glass-initial-password"
   # The committed seed (policy/kustomization.yaml), mounted at the application's default path.
   RWSAFE_POLICY_SEED_FILE: "/etc/rwsafe/policy/registry-seed.yaml"
-  # No ingress in front of the admin UI: kubectl port-forward reaches the pod directly, so no forwarded header is
-  # trusted. The session cookie stays Secure (`__Host-` prefix); browsers accept a Secure cookie on http://localhost
-  # (UNVERIFIED 2026-10-31 for the PO's browser; PILOT_RUNBOOK.md step 14 says what to do if sign-in loops).
-  RWSAFE_FORWARD_HEADERS: "none"
+  # Traefik in front of the admin UI (70-admin-ingress.yaml) terminates https and forwards plain http to 8080 with
+  # X-Forwarded-For/-Proto/-Host. Tomcat's remote-IP valve trusts them only when the TCP peer is a pod address of the k3s
+  # default cluster CIDR (10.42/16; UNVERIFIED on HOST-A 2026-10-31, a masked inventory of the pod addresses' shape
+  # verifies it), and the NetworkPolicy `rwsafe-control-from-traefik` admits only Traefik's pods to 8080 from the pod
+  # network; so the login throttle's client address (never stored or logged) is the one Traefik saw, and nobody else can
+  # choose it. A port-forward connects from 127.0.0.1, which is not trusted: its headers are ignored. If HOST-A's pod
+  # range differs, nothing is trusted (every Traefik client shares Traefik's address in the throttle) until this line
+  # is corrected; it never trusts more. The session and CSRF cookies are Secure by configuration (RWSAFE_COOKIE_SECURE),
+  # not by the request's scheme, so sign-in works over https://ui.<product>.local either way (ForwardedHeadersIntegrationTest).
+  RWSAFE_FORWARD_HEADERS: "native"
+  RWSAFE_TRUSTED_PROXIES: "10\\.42\\.\\d{1,3}\\.\\d{1,3}"
   # Off in the pilot (restating the committed defaults): no SIEM destination, no redacted capture.
   RWSAFE_SIEM_ENABLED: "false"
   RWSAFE_CAPTURE_MODE: "off"
