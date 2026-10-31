@@ -525,6 +525,14 @@ the orchestrator's interim Q-41 decision (two approvals) in `docs/reviews/PR21_2
   supersedes a pending draft only for a newer draft of its own mode and scope, a withdrawal of it in the same
   transaction or a retirement) and D-02 (the masked role reads the withdrawal reason withheld).
 
+## Held (pseudonym registry, Q-44)
+
+The B3 pseudonym registry is built on branch `feature/pseudonym-registry` (V10) and not merged: with the frozen
+4-hex class tokens a kind holds 65 536 tokens per key, and `NUM-` (every run of six or more digits) can fill it at bank
+scale, after which masked pages fail closed (503). Per the PO's rule of 2026-10-31 (prove the product end to end first,
+decide governance details at go-live), the token width is decided at go-live; until then the 4-hex tokens may collide
+(no leak, an auditor may see two values share a token).
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
