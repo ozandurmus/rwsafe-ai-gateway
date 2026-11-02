@@ -9,7 +9,6 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
@@ -41,8 +40,10 @@ public final class CaptureWatermark {
         check();
     }
 
-    /** Reads every path now; the highest used fraction counts, an unreadable path is no reading. */
-    @Scheduled(initialDelayString = "PT30S", fixedDelayString = "PT30S")
+    /**
+     * Reads every path now; the highest used fraction counts, an unreadable path is no reading. Scheduled by
+     * {@code io.rwsafe.control.ops.ScheduledJobs}.
+     */
     public void check() {
         double highest = Double.NaN;
         for (Path p : paths) {

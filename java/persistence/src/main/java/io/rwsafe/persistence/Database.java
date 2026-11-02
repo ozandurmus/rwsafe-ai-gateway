@@ -2,6 +2,7 @@ package io.rwsafe.persistence;
 
 import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationInfo;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
 import org.jooq.conf.Settings;
@@ -17,9 +18,11 @@ public final class Database {
     }
 
     private final DSLContext dsl;
+    private final String schemaVersion;
 
-    private Database(DataSource dataSource) {
+    private Database(DataSource dataSource, String schemaVersion) {
         this.dsl = DSL.using(dataSource, SQLDialect.POSTGRES, new Settings().withExecuteLogging(false));
+        this.schemaVersion = schemaVersion;
     }
 
     /** Applies the pending migrations from {@code db/migration}, then opens the query context, on one data source. */
@@ -32,14 +35,22 @@ public final class Database {
      * the query context on the application's DML role ({@code application}).
      */
     public static Database migrateAndOpen(DataSource migrate, DataSource application) {
-        Flyway.configure()
+        Flyway flyway = Flyway.configure()
             .dataSource(migrate)
             .locations("classpath:db/migration")
             .cleanDisabled(true)
             .validateMigrationNaming(true)
-            .load()
-            .migrate();
-        return new Database(application);
+            .load();
+        flyway.migrate();
+        // Read once, as the migrate role, right after the migration: the application role need not read Flyway's table.
+        MigrationInfo current = flyway.info().current();
+        return new Database(application, current == null || current.getVersion() == null ? null
+            : current.getVersion().getVersion());
+    }
+
+    /** The schema version Flyway reported after the start's migration (for example {@code 11}); null when unknown. */
+    public String schemaVersion() {
+        return schemaVersion;
     }
 
     DSLContext dsl() {
@@ -87,6 +98,11 @@ public final class Database {
 
     public PolicySnapshotStore policySnapshots() {
         return new PolicySnapshotStore(dsl, policyRegistry());
+    }
+
+    /** Read-only pages of the audit ledger (Administration -> Records). */
+    public AuditLedgerQueries auditLedger() {
+        return new AuditLedgerQueries(dsl);
     }
 
     public SiemExportStore siemExport() {

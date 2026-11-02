@@ -24,7 +24,6 @@ import javax.crypto.spec.SecretKeySpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
@@ -75,8 +74,10 @@ public final class CaptureKeyring {
         reload();
     }
 
-    /** Re-reads the Secret (rotation and shredding take effect without a restart). */
-    @Scheduled(initialDelayString = "PT5M", fixedDelayString = "PT5M")
+    /**
+     * Re-reads the Secret (rotation and shredding take effect without a restart); scheduled by
+     * {@code io.rwsafe.control.ops.ScheduledJobs}.
+     */
     public synchronized void reload() {
         Map<String, SecretKeySpec> loaded = new HashMap<>();
         Set<String> shreddedIds = new TreeSet<>();

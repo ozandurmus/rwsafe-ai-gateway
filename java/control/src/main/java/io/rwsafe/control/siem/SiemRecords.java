@@ -86,23 +86,50 @@ public final class SiemRecords {
             severity(e.verdict()), e.receivedAt(), v, row.position(), null);
     }
 
-    public SiemRecord ledger(LedgerRow row) {
-        List<Value> v = new ArrayList<>();
+    /**
+     * One ledger row as it may leave the ledger: the SIEM export and the Audit log screen (Administration -> Records,
+     * PO decision Q-47) both show exactly these values, so the screen cannot show more than the SIEM receives.
+     */
+    public record LedgerEntry(String action, String actor, String table, String operation, String rowKey,
+                              String reason, String correlationId) {
+
+        /** Never prints the reason or the row key. */
+        @Override
+        public String toString() {
+            return "LedgerEntry[" + action + ", " + table + ", " + operation + "]";
+        }
+    }
+
+    public LedgerEntry ledgerEntry(LedgerRow row) {
         String action = actionId(row.actionId()) && !estate(row.actionId()) ? row.actionId() : WITHHELD;
         String table = tableName(row.tableName()) && !estate(row.tableName()) ? row.tableName() : WITHHELD;
+        String correlation = row.correlationId();
+        return new LedgerEntry(action,
+            exportableActor(row.actorFingerprint()) ? row.actorFingerprint() : WITHHELD, table,
+            oneOf(row.operation(), Set.of("INSERT", "UPDATE", "DELETE")), rowKey(row.tableName(), row.rowKey()),
+            ledgerReason(row.reasonCode()), correlation == null || correlation.isEmpty() ? null
+                : canonicalUuid(correlation) ? correlation : vocabulary(correlation, 64));
+    }
+
+    public SiemRecord ledger(LedgerRow row) {
+        LedgerEntry e = ledgerEntry(row);
+        List<Value> v = new ArrayList<>();
         v.add(new Value(SiemField.EVENT_ID, "audit-" + row.auditId()));
         v.add(new Value(SiemField.STREAM, "audit"));
-        v.add(new Value(SiemField.ACTION, action));
-        v.add(new Value(SiemField.REASON, ledgerReason(row.reasonCode())));
-        v.add(new Value(SiemField.USER, exportableActor(row.actorFingerprint()) ? row.actorFingerprint() : WITHHELD));
-        v.add(new Value(SiemField.AUDITED_TABLE, table));
-        v.add(new Value(SiemField.OPERATION, oneOf(row.operation(), Set.of("INSERT", "UPDATE", "DELETE"))));
-        v.add(new Value(SiemField.ROW_KEY, rowKey(row.tableName(), row.rowKey())));
-        String correlation = row.correlationId();
-        v.add(new Value(SiemField.CORRELATION_ID, correlation == null || correlation.isEmpty() ? null
-            : canonicalUuid(correlation) ? correlation : vocabulary(correlation, 64)));
-        return new SiemRecord(SiemStream.AUDIT, "audit." + action, "Audit " + action, 3, row.occurredAt(), v, null,
-            row.position());
+        v.add(new Value(SiemField.ACTION, e.action()));
+        v.add(new Value(SiemField.REASON, e.reason()));
+        v.add(new Value(SiemField.USER, e.actor()));
+        v.add(new Value(SiemField.AUDITED_TABLE, e.table()));
+        v.add(new Value(SiemField.OPERATION, e.operation()));
+        v.add(new Value(SiemField.ROW_KEY, e.rowKey()));
+        v.add(new Value(SiemField.CORRELATION_ID, e.correlationId()));
+        return new SiemRecord(SiemStream.AUDIT, "audit." + e.action(), "Audit " + e.action(), 3, row.occurredAt(), v,
+            null, row.position());
+    }
+
+    /** True when an action id may be shown as written: the code's action-id shape and no estate term. */
+    public boolean exportableAction(String s) {
+        return actionId(s) && !estate(s);
     }
 
     /** CEF severity: allow 1, warn 4, redact 5, non-verdicts 6, block and an aborted stream 7. */

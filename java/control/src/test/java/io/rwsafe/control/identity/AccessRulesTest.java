@@ -37,6 +37,20 @@ class AccessRulesTest {
     }
 
     @Test
+    void theAuditLogIsReadByEitherApproverAndNeverByAMaskedSession() {
+        AccessRules.Rule audit = rule(AccessRules.ADMIN_AUDIT_READ);
+        assertTrue(audit.allows(session("ROLE_security_admin")));
+        assertTrue(audit.allows(session("ROLE_privacy_officer")));
+        assertFalse(audit.allows(session("ROLE_viewer")));
+        assertFalse(audit.allows(session("ROLE_replay_viewer")));
+        assertFalse(audit.allows(session("ROLE_privacy_officer", "ROLE_replay_viewer")));
+        assertFalse(audit.allows(session("ROLE_privacy_officer", Roles.PASSWORD_CHANGE_PENDING)));
+        assertEquals(org.springframework.http.HttpMethod.GET, audit.method(), "reads only");
+        assertEquals("/api/v1/admin/audit", audit.pattern(), "the audit page only, not the rest of Administration");
+        assertTrue(AccessRules.RULES.indexOf(audit) < AccessRules.RULES.indexOf(rule(AccessRules.ADMIN_ACCESS)));
+    }
+
+    @Test
     void aPendingPasswordChangeReachesOnlyTheSessionsOwnRoutes() {
         Authentication pending = session("ROLE_viewer", Roles.PASSWORD_CHANGE_PENDING);
         for (AccessRules.Rule r : AccessRules.RULES) {
@@ -51,11 +65,11 @@ class AccessRulesTest {
     void theDescriptionIsTheRulesEvaluatedPerRole() {
         var described = AccessRules.describe();
         assertEquals(Roles.ORDERED, List.copyOf(described.keySet()));
-        assertEquals(List.of(AccessRules.SESSION_OWN, AccessRules.ADMIN_ACCESS, AccessRules.SCREENS_READ,
-            AccessRules.POLICY_APPROVE, AccessRules.CAPTURE_READ, AccessRules.CHANGE_ALL),
+        assertEquals(List.of(AccessRules.SESSION_OWN, AccessRules.ADMIN_AUDIT_READ, AccessRules.ADMIN_ACCESS,
+            AccessRules.SCREENS_READ, AccessRules.POLICY_APPROVE, AccessRules.CAPTURE_READ, AccessRules.CHANGE_ALL),
             described.get(Roles.SECURITY_ADMIN));
-        assertEquals(List.of(AccessRules.SESSION_OWN, AccessRules.SCREENS_READ, AccessRules.POLICY_APPROVE,
-            AccessRules.CAPTURE_READ), described.get(Roles.PRIVACY_OFFICER));
+        assertEquals(List.of(AccessRules.SESSION_OWN, AccessRules.ADMIN_AUDIT_READ, AccessRules.SCREENS_READ,
+            AccessRules.POLICY_APPROVE, AccessRules.CAPTURE_READ), described.get(Roles.PRIVACY_OFFICER));
         assertEquals(List.of(AccessRules.SESSION_OWN, AccessRules.SCREENS_READ), described.get(Roles.VIEWER));
         assertThrows(UnsupportedOperationException.class, () -> described.get(Roles.VIEWER).add("x"));
     }

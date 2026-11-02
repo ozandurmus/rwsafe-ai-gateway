@@ -478,7 +478,12 @@ class AccessAdministrationIntegrationTest {
         }
         assertEquals(List.of(AccessRules.SESSION_OWN, AccessRules.SCREENS_READ), enforced.get(Roles.REPLAY_VIEWER));
         assertEquals(AccessRules.RULES.size(), view.get("rules").size());
-        assertEquals("/api/v1/admin/**", view.get("rules").get(1).get("pattern").asText());
+        assertEquals("/api/v1/admin/**",
+            view.get("rules").get(AccessRules.RULES.indexOf(AccessRules.RULES.stream()
+                .filter(r -> r.id().equals(AccessRules.ADMIN_ACCESS)).findFirst().orElseThrow()))
+                .get("pattern").asText());
+        // Q-47 decision 1.3: the audit-log read is decided before the rest of Administration.
+        assertEquals("/api/v1/admin/audit", view.get("rules").get(1).get("pattern").asText());
     }
 
     @Test

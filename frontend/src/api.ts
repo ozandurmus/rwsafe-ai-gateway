@@ -169,6 +169,124 @@ export interface SessionView {
   current: boolean;
 }
 
+// Administration -> Records and Platform (PO decision Q-47 decisions 1.3, 1.4). Read only. The audit log is a security
+// administrator's or a privacy officer's; the other four are a security administrator's.
+
+/** One ledger row as the SIEM export shows it: pseudonyms, vocabulary and the reason; never a body. */
+export interface AuditEntry {
+  id: number;
+  occurredAt: string;
+  /** A `USR-` pseudonym or a `system:` actor. */
+  actor: string;
+  action: string;
+  table: string;
+  operation: string;
+  rowKey: string | null;
+  reason: string | null;
+}
+
+export interface AuditLog {
+  entries: AuditEntry[];
+  nextCursor: string | null;
+  /** The action ids the ledger holds (the action filter's choices); empty on a cursor page. */
+  actions: string[];
+  from: string;
+  to: string;
+  limit: number;
+}
+
+export interface AuditFilter {
+  from?: string;
+  to?: string;
+  action?: string;
+  actor?: string;
+  limit?: number;
+  cursor?: string | null;
+}
+
+export interface JobRun {
+  startedAt: string;
+  endedAt: string;
+  ok: boolean;
+  failure: string | null;
+  counts: Record<string, number>;
+}
+
+export type JobKind = 'FIXED_DELAY' | 'CRON' | 'CONTINUOUS';
+
+export interface JobItem {
+  id: string;
+  kind: JobKind;
+  initialDelaySeconds: number | null;
+  delaySeconds: number | null;
+  cron: string | null;
+  zone: string | null;
+  /** OK, FAILED, RUNNING, NOT_RUN_YET; a continuous job: UP, DEGRADED, DOWN, OFF. */
+  state: string;
+  lastStartedAt: string | null;
+  lastEndedAt: string | null;
+  failure: string | null;
+  counts: Record<string, number>;
+  nextRunAt: string | null;
+  runs: number;
+  failures: number;
+  recent: JobRun[];
+}
+
+export interface JobsView {
+  /** When this server instance started: the log covers the time since. */
+  since: string;
+  checkedAt: string;
+  jobs: JobItem[];
+}
+
+export interface SystemView {
+  version: string;
+  commit: string | null;
+  buildTime: string | null;
+  javaVersion: string;
+  schemaVersion: string | null;
+  startedAt: string;
+  uptimeSeconds: number;
+  switches: {
+    singleApproval: boolean;
+    breakGlassSignIn: boolean;
+    /** From the stored directory settings: a saved version exists, it is on, the password key is usable. */
+    directoryConfigured: boolean;
+    directoryEnabled: boolean;
+    directoryKeyPresent: boolean;
+    /** ACTIVE, DISABLED, NOT_CONFIGURED, UNAVAILABLE (or UNKNOWN). */
+    directoryStatus: string;
+    captureMode: string;
+    siemExport: boolean;
+  };
+}
+
+export interface LogsView {
+  since: string;
+  windowHours: number;
+  checkedAt: string;
+  capturing: boolean;
+  counts: { level: string; logger: string; own: boolean; count: number }[];
+  recent: {
+    at: string;
+    level: string;
+    logger: string;
+    own: boolean;
+    exceptionClass: string | null;
+    /** A fixed message template of the product's own code, or null when it is not shown. */
+    template: string | null;
+  }[];
+}
+
+export interface NotificationsView {
+  siemEnabled: boolean;
+  /** UP, DEGRADED, DOWN or OFF. */
+  siemState: string;
+  siemDestinations: { kind: string; format: string | null; configured: boolean }[];
+  emailAvailable: boolean;
+}
+
 /** The server's password rule, checked here first so the form can say so before sending. */
 export const MIN_PASSWORD_LENGTH = 14;
 
@@ -528,6 +646,22 @@ export const api = {
   adminSessions: () => request<{ sessions: SessionView[] }>('GET', '/api/v1/admin/sessions'),
   endSession: (handle: string, reason: string) =>
     request<void>('POST', `/api/v1/admin/sessions/${encodeURIComponent(handle)}/end`, { reason }),
+  adminAudit: (f: AuditFilter) =>
+    request<AuditLog>(
+      'GET',
+      `/api/v1/admin/audit${query({
+        from: f.from,
+        to: f.to,
+        action: f.action,
+        actor: f.actor,
+        limit: f.limit,
+        cursor: f.cursor,
+      })}`,
+    ),
+  adminJobs: () => request<JobsView>('GET', '/api/v1/admin/jobs'),
+  adminSystem: () => request<SystemView>('GET', '/api/v1/admin/system'),
+  adminLogs: () => request<LogsView>('GET', '/api/v1/admin/logs'),
+  adminNotifications: () => request<NotificationsView>('GET', '/api/v1/admin/notifications'),
   adminDirectory: () => request<DirectoryView>('GET', '/api/v1/admin/directory'),
   saveDirectoryConnection: (expectedVersion: number, connection: DirectoryConnection, reason: string) =>
     request<DirectoryView>('POST', '/api/v1/admin/directory/connection', { ...connection, expectedVersion, reason }),

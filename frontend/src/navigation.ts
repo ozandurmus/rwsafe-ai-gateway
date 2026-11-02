@@ -24,6 +24,16 @@ export function isAdministrator(me: Me): boolean {
   return !me.masked && me.roles.includes('security_admin');
 }
 
+/** The audit log is also a privacy officer's, never a masked session's (the server's `admin.audit.read` rule). */
+export function canReadAuditLog(me: Me): boolean {
+  return !me.masked && (me.roles.includes('security_admin') || me.roles.includes('privacy_officer'));
+}
+
+/** Administration opens for a session that may use at least one of its screens. */
+export function canOpenAdministration(me: Me): boolean {
+  return isAdministrator(me) || canReadAuditLog(me);
+}
+
 export const RAIL: NavSection[] = [
   { heading: null, items: [{ path: '/', label: 'nav.overview', icon: 'overview' }] },
   { heading: 'rail.see', items: [{ path: '/traffic', label: 'nav.traffic', icon: 'traffic' }] },
@@ -39,7 +49,7 @@ export const RAIL: NavSection[] = [
     heading: 'rail.operate',
     items: [
       { path: '/health', label: 'nav.health', icon: 'health' },
-      { path: '/admin', label: 'nav.administration', icon: 'admin', visible: isAdministrator },
+      { path: '/admin', label: 'nav.administration', icon: 'admin', visible: canOpenAdministration },
     ],
   },
 ];

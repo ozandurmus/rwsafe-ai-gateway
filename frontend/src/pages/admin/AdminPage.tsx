@@ -3,7 +3,7 @@ import { Link as RouterLink, Navigate, Route, Routes, useLocation } from 'react-
 import { ADMIN_MENU } from '../../adminMenu';
 import { useAuth } from '../../auth';
 import { useI18n } from '../../i18n';
-import { isAdministrator, visibleSections } from '../../navigation';
+import { canOpenAdministration, visibleSections } from '../../navigation';
 
 /**
  * Administration (PO decision Q-47, decision 3): the page title and its one-line description at the top, then a grouped
@@ -13,7 +13,7 @@ export function AdminPage() {
   const { t } = useI18n();
   const { me } = useAuth();
   const location = useLocation();
-  if (!me || !isAdministrator(me)) {
+  if (!me || !canOpenAdministration(me)) {
     return <Alert severity="info">{t('admin.forbidden')}</Alert>;
   }
   const sections = visibleSections(ADMIN_MENU, me);

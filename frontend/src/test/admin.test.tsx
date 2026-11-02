@@ -62,12 +62,14 @@ describe('layout', () => {
     expect(selectedPath(paths, '/adminx')).toBeNull();
   });
 
-  it('shows Administration to a security administrator only, never to a masked session', () => {
+  it('shows Administration to a security administrator and a privacy officer, never to a masked session', () => {
     const admins = (me: typeof admin) => visibleSections(RAIL, me).flatMap((s) => s.items.map((i) => i.path));
     expect(admins(admin)).toContain('/admin');
     expect(admins(viewer)).not.toContain('/admin');
-    expect(admins({ ...admin, roles: ['privacy_officer'] })).not.toContain('/admin');
+    // Q-47 decision 1.3: the privacy officer reads the audit log, and only that.
+    expect(admins({ ...admin, roles: ['privacy_officer'] })).toContain('/admin');
     expect(admins({ ...masked, roles: ['replay_viewer', 'security_admin'] })).not.toContain('/admin');
+    expect(admins({ ...masked, roles: ['replay_viewer', 'privacy_officer'] })).not.toContain('/admin');
   });
 
   it('renders the rail with section headings, the selected screen and a collapse button', async () => {
@@ -95,7 +97,9 @@ describe('layout', () => {
   it('refuses Administration to a masked session without asking the server', async () => {
     const server = fakeServer({ 'GET /api/v1/auth/me': () => ({ status: 200, body: masked }) });
     renderApp('/admin/users');
-    expect(await screen.findByText('Yönetim bölümünü yalnızca güvenlik yöneticisi açabilir.')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Yönetim bölümünü yalnızca güvenlik yöneticisi veya gizlilik sorumlusu açabilir.'),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Yönetim' })).toBeNull();
     expect(server.calls.some((c) => c.url.pathname.startsWith('/api/v1/admin'))).toBe(false);
   });
