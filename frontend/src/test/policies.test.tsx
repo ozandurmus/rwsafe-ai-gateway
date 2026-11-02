@@ -319,6 +319,99 @@ describe('policies screen', () => {
   });
 });
 
+describe('pilot single approval (PO decision Q-47)', () => {
+  function singleRegistry(): Registry {
+    const r = registry();
+    r.singleApproval = true;
+    r.rules[1]!.versions[0]!.approvals = [];
+    return r;
+  }
+
+  it('tells the security administrator that one approval activates and asks for the reason', async () => {
+    const server = fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-admin', ['security_admin']) }),
+      'GET /api/v1/policy/rules': () => ({ status: 200, body: singleRegistry() }),
+      'POST /api/v1/policy/rules/class.TCKN/versions/3/approvals': () => ({
+        status: 200,
+        body: version('class.TCKN', 3, {
+          action: 'BLOCK',
+          source: 'registry',
+          singleApproval: { activatedBy: 'USR-00000000a1', reason: 'Synthetic pilot change' },
+        }),
+      }),
+    });
+    renderApp('/policies');
+    await userEvent.click(within(await screen.findByRole('table', { name: 'Politika kuralları' })).getByText('TCKN'));
+    expect(await screen.findByText(/Pilot ayarı: tek bir güvenlik yöneticisinin onayı/)).toBeInTheDocument();
+    expect(screen.queryByText(/iki farklı kişinin onayıyla etkinleşir/)).not.toBeInTheDocument();
+    const activate = screen.getByRole('button', { name: 'Onayla ve etkinleştir' });
+    expect(activate).toBeDisabled();
+    await userEvent.type(screen.getByRole('textbox', { name: 'Gerekçe' }), '  Synthetic pilot change ');
+    expect(activate).toBeEnabled();
+    await userEvent.click(activate);
+    await waitFor(() => expect(server.calls.some((c) => c.method === 'POST')).toBe(true));
+    const post = server.calls.find((c) => c.method === 'POST')!;
+    expect(JSON.parse(String(post.init.body))).toEqual({ role: 'security_admin', reason: 'Synthetic pilot change' });
+  });
+
+  it('asks no reason for the second of two approvals while the switch is on', async () => {
+    const server = fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-admin', ['security_admin']) }),
+      'GET /api/v1/policy/rules': () => {
+        const r = singleRegistry();
+        r.rules[1]!.versions[0]!.approvals = [
+          { role: 'privacy_officer', approver: 'USR-00000000b2', approvedAt: '2026-10-30T10:00:00Z' },
+        ];
+        return { status: 200, body: r };
+      },
+      'POST /api/v1/policy/rules/class.TCKN/versions/3/approvals': () => ({
+        status: 200,
+        body: version('class.TCKN', 3, { action: 'BLOCK', source: 'registry' }),
+      }),
+    });
+    renderApp('/policies');
+    await userEvent.click(within(await screen.findByRole('table', { name: 'Politika kuralları' })).getByText('TCKN'));
+    expect(await screen.findByText(/Pilot ayarı: tek bir güvenlik yöneticisinin onayı/)).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Gerekçe' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Onayla ve etkinleştir' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Güvenlik yöneticisi olarak onayla' }));
+    await waitFor(() => expect(server.calls.some((c) => c.method === 'POST')).toBe(true));
+    const post = server.calls.find((c) => c.method === 'POST')!;
+    expect(JSON.parse(String(post.init.body))).toEqual({ role: 'security_admin' });
+  });
+
+  it('shows a version activated with one approval and keeps the privacy officer step without a reason', async () => {
+    fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-officer', ['privacy_officer']) }),
+      'GET /api/v1/policy/rules': () => {
+        const r = singleRegistry();
+        r.rules[1]!.versions[1]!.singleApproval = { activatedBy: 'USR-00000000a1', reason: 'Synthetic pilot change' };
+        return { status: 200, body: r };
+      },
+    });
+    renderApp('/policies');
+    await userEvent.click(within(await screen.findByRole('table', { name: 'Politika kuralları' })).getByText('TCKN'));
+    expect(
+      await screen.findByText(/Tek onayla etkinleştirildi \(pilot ayarı\), onaylayan USR-00000000a1\. Gerekçe: Synthetic pilot change/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Pilot ayarı: tek bir güvenlik yöneticisinin onayı/)).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Gerekçe' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Veri koruma sorumlusu olarak onayla' })).toBeEnabled();
+  });
+
+  it('shows no single-approval notice while the switch is off', async () => {
+    fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-admin', ['security_admin']) }),
+      'GET /api/v1/policy/rules': () => ({ status: 200, body: { ...registry(), singleApproval: false } }),
+    });
+    renderApp('/policies');
+    await userEvent.click(within(await screen.findByRole('table', { name: 'Politika kuralları' })).getByText('TCKN'));
+    expect(await screen.findByText(/iki farklı kişinin onayıyla etkinleşir/)).toBeInTheDocument();
+    expect(screen.queryByText(/Pilot ayarı/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Onayla ve etkinleştir' })).not.toBeInTheDocument();
+  });
+});
+
 describe('group name folding', () => {
   it('folds the Turkish and Latin i forms, case, NFC and spaces like the server', () => {
     const expected = 'grp-istanbul-iki';

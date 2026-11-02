@@ -13,7 +13,8 @@ import java.util.List;
  * committed fixture) or {@code registry}; {@code scopeKind} {@code ANY} (everyone) or {@code GROUPS} with 1 to 32
  * directory group names in {@code scopeGroups} (runtime data typed by the operator: never logged, never a metrics label).
  * A V3 withdrawal request (history only since V9) names the version it withdrew in {@code withdrawsVersion}, with its
- * reason; it is never compiled.
+ * reason; it is never compiled. A version activated under the pilot single-approval switch (PO decision Q-47, V10)
+ * carries {@code singleApproval}: the one {@code security_admin}'s pseudonym and the reason; null for every other version.
  * Fields that do not belong to the kind are null.
  */
 public record PolicyRuleVersion(String ruleId, int version, String kind, String dataClass, String action,
@@ -23,7 +24,22 @@ public record PolicyRuleVersion(String ruleId, int version, String kind, String 
                                 Instant createdAt, Instant activatedAt, Instant supersededAt,
                                 List<PolicyApproval> approvals, String scopeKind, List<String> scopeGroups,
                                 Retirement retirement, Integer withdrawsVersion, String withdrawalReason,
-                                Instant withdrawnAt, String withdrawnBy) {
+                                Instant withdrawnAt, String withdrawnBy, SingleApproval singleApproval) {
+
+    /** A version not activated under the single-approval switch (the V9 shape). */
+    public PolicyRuleVersion(String ruleId, int version, String kind, String dataClass, String action,
+                             String platformId, List<String> hostSuffixes, List<String> apiHosts,
+                             List<String> loginHosts, Boolean enforceFailClosed, String mode, String rolloutStage,
+                             String status, String source, String authorFingerprint, String reasonCode,
+                             Instant createdAt, Instant activatedAt, Instant supersededAt,
+                             List<PolicyApproval> approvals, String scopeKind, List<String> scopeGroups,
+                             Retirement retirement, Integer withdrawsVersion, String withdrawalReason,
+                             Instant withdrawnAt, String withdrawnBy) {
+        this(ruleId, version, kind, dataClass, action, platformId, hostSuffixes, apiHosts, loginHosts, enforceFailClosed,
+            mode, rolloutStage, status, source, authorFingerprint, reasonCode, createdAt, activatedAt, supersededAt,
+            approvals, scopeKind, scopeGroups, retirement, withdrawsVersion, withdrawalReason, withdrawnAt, withdrawnBy,
+            null);
+    }
 
     /** A version that is not a withdrawal request and was not withdrawn. */
     public PolicyRuleVersion(String ruleId, int version, String kind, String dataClass, String action,
@@ -89,6 +105,14 @@ public record PolicyRuleVersion(String ruleId, int version, String kind, String 
      * administrator gave.
      */
     public record Retirement(Instant retiredAt, String retiredBy, String reason) {
+    }
+
+    /**
+     * How a version was activated under the pilot single-approval switch (PO decision Q-47): by which
+     * {@code security_admin}'s pseudonym, with which reason. The reason is the administrator's free text, checked for
+     * identifiers before it is stored; the masked role never reads it.
+     */
+    public record SingleApproval(String activatedBy, String reason) {
     }
 
     /** The content of a new version; the store assigns the version number, the status and the times. */

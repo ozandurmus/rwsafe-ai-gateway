@@ -119,7 +119,7 @@ class PilotTarget(unittest.TestCase):
             self.assertEqual(rc, 0, err)
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                rc = mc.main(["--rendered", str(target), "--release", "--product", "acme"])
+                rc = mc.main(["--rendered", str(target), "--release", "--product", "acme", "--pilot"])
             self.assertEqual(rc, 0, out.getvalue())
 
 

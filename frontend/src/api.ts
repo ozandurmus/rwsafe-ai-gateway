@@ -120,6 +120,11 @@ export interface RuleVersion {
     withdrawnBy: string | null;
   } | null;
   approvals: { role: ApproverRole; approver: string; approvedAt: string }[];
+  /**
+   * PO decision Q-47 (pilot only): on a version one security administrator activated alone, that administrator's
+   * pseudonym and the reason given (withheld for a masked session). Null or absent for every other version.
+   */
+  singleApproval?: { activatedBy: string; reason: string } | null;
   inSnapshot: boolean;
 }
 
@@ -148,6 +153,8 @@ export interface Registry {
   stages: RolloutStage[];
   scopeKinds: ScopeKind[];
   maxScopeGroups: number;
+  /** PO decision Q-47: true while the pilot switch lets one security administrator's approval, with a reason, activate. */
+  singleApproval?: boolean;
 }
 
 export interface DraftRequest {
@@ -375,11 +382,12 @@ export const api = {
   policyRules: () => request<Registry>('GET', '/api/v1/policy/rules'),
   draftVersion: (ruleId: string, body: DraftRequest) =>
     request<RuleVersion>('POST', `/api/v1/policy/rules/${encodeURIComponent(ruleId)}/versions`, body),
-  approve: (ruleId: string, version: number, role: ApproverRole) =>
+  /** `reason` only for a security administrator while the pilot single-approval switch is on (Q-47): it activates alone. */
+  approve: (ruleId: string, version: number, role: ApproverRole, reason?: string) =>
     request<RuleVersion>(
       'POST',
       `/api/v1/policy/rules/${encodeURIComponent(ruleId)}/versions/${version}/approvals`,
-      { role },
+      reason === undefined ? { role } : { role, reason },
     ),
   /** PO decision Q-41: one security administrator withdraws a group-scoped version at once; returns that version. */
   withdrawScope: (ruleId: string, version: number, reason: string) =>

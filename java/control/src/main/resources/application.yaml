@@ -85,6 +85,9 @@ rwsafe:
     signing-key-id: ${RWSAFE_SNAPSHOT_KEY_ID:}
     snapshot-refresh: ${RWSAFE_SNAPSHOT_REFRESH:PT6H}
     simulation-window: P7D
+    # PO decision Q-47: the pilot-only switch under which one security_admin activates a version alone, with a reason.
+    # Off by default and in every overlay but the pilot's (tools/deploy/manifest_check.py refuses it elsewhere).
+    single-approval: ${RWSAFE_POLICY_SINGLE_APPROVAL:false}
   privacy:
     hmac-key-file: ${RWSAFE_PRIVACY_HMAC_KEY_FILE:/run/secrets/rwsafe-privacy-hmac-key/key}
     estate-dictionary-file: ${RWSAFE_ESTATE_DICTIONARY_FILE:/etc/rwsafe/estate-dictionary.txt}

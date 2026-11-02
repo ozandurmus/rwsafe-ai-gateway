@@ -83,13 +83,13 @@ public final class SnapshotCompiler implements PolicySnapshotStore.Compiler {
         List<Map<String, Object>> scopedRules = scopedRules(scoped);
         List<PolicyRuleVersion> compiled = new ArrayList<>(baseline);
         compiled.addAll(scoped);
-        // PR 16 review D-01: every compiled version is the fixture's seed or carries its two approvals, whatever the
-        // database says about its status.
+        // PR 16 review D-01: every compiled version is the fixture's seed or carries its two approvals (or, Q-47, its
+        // recorded single-approval activation), whatever the database says about its status.
         for (PolicyRuleVersion v : compiled) {
             if (!approved(v)) {
                 throw new RegistryRefusal(HttpStatus.SERVICE_UNAVAILABLE, "SNAPSHOT_APPROVAL_MISSING",
-                    "An active rule version has neither the seed's provenance nor two approvals; no snapshot is "
-                        + "compiled.");
+                    "An active rule version has neither the seed's provenance nor two approvals nor a recorded "
+                        + "single-approval activation; no snapshot is compiled.");
             }
         }
         String defect = PlatformRow.defect(rows);
@@ -196,12 +196,25 @@ public final class SnapshotCompiler implements PolicySnapshotStore.Compiler {
     }
 
     /**
-     * A seed version is version 1 by the seed actor with no approval; any other version holds exactly two approvals,
-     * one per approver role, by two different people (AGENTS.md section 6).
+     * A seed version is version 1 by the seed actor with no approval; a version activated under the pilot
+     * single-approval switch (PO decision Q-47) holds exactly one approval, the {@code security_admin} approval of the
+     * administrator its stored single-approval record names, with a reason; any other version holds exactly two
+     * approvals, one per approver role, by two different people (AGENTS.md section 6). A version with one approval and
+     * no stored single-approval record (which the V10 guard never lets activate) is never compiled.
      */
     static boolean approved(PolicyRuleVersion v) {
         if ("seed".equals(v.source())) {
             return v.version() == 1 && RegistrySeed.SEED_ACTOR.equals(v.authorFingerprint()) && v.approvals().isEmpty();
+        }
+        PolicyRuleVersion.SingleApproval single = v.singleApproval();
+        if (single != null) {
+            if (v.approvals().size() != 1 || single.activatedBy() == null || single.reason() == null
+                || single.reason().isBlank()) {
+                return false;
+            }
+            PolicyRuleVersion.PolicyApproval only = v.approvals().get(0);
+            return "registry".equals(v.source()) && "security_admin".equals(only.role())
+                && single.activatedBy().equals(only.approverFingerprint());
         }
         Set<String> roles = new HashSet<>();
         Set<String> people = new HashSet<>();
