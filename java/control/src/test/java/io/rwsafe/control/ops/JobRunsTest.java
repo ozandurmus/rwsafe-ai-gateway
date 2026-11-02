@@ -95,6 +95,23 @@ class JobRunsTest {
         assertFalse(log.toString().contains(Synthetic.tckn(7)));
     }
 
+    /** PR 51 review D-03: an Error ends the run as a failure under its class, is rethrown, and leaves no "running". */
+    @Test
+    void anErrorIsRecordedRethrownAndTheJobIsNoLongerRunning() {
+        JobRuns runs = new JobRuns(new Moving());
+        org.junit.jupiter.api.Assertions.assertThrows(AssertionError.class, () -> runs.run("synthetic.job", () -> {
+            throw new AssertionError("synthetic " + Synthetic.tckn(9));
+        }));
+        JobRuns.Log log = runs.log("synthetic.job");
+        assertNull(log.runningSince(), "not left running");
+        assertEquals(1, log.total());
+        assertEquals(1, log.failed());
+        assertEquals("AssertionError", log.last().failure());
+        assertFalse(log.toString().contains(Synthetic.tckn(9)));
+        runs.run("synthetic.job", () -> JobResult.ok(Map.of()));
+        assertTrue(runs.log("synthetic.job").last().ok(), "the next run is recorded as usual");
+    }
+
     @Test
     void onlyCountsUnderFixedKeysSurvive() {
         JobRuns runs = new JobRuns(new Moving());

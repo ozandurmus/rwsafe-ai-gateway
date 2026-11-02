@@ -68,8 +68,9 @@ public class JobRuns {
     }
 
     /**
-     * Runs {@code body} as one run of {@code job} and records it. An exception is recorded as a failure under its class
-     * name and is not rethrown (the scheduler would log its message); the log line names the job and the class only.
+     * Runs {@code body} as one run of {@code job} and records it, whatever ends it. An exception is recorded as a failure
+     * under its class name and is not rethrown (the scheduler would log its message); an {@link Error} is recorded the
+     * same way and rethrown. The log line names the job and the class only.
      */
     public void run(String job, Supplier<JobResult> body) {
         Instant started = clock.instant();
@@ -77,7 +78,7 @@ public class JobRuns {
         synchronized (track) {
             track.runningSince = started;
         }
-        JobResult result;
+        JobResult result = null;
         try {
             result = body.get();
             if (result == null) {
@@ -86,8 +87,15 @@ public class JobRuns {
         } catch (RuntimeException e) {
             LOG.warn("scheduled job {} failed: {}", job, e.getClass().getSimpleName());
             result = JobResult.failed(e);
+        } catch (Error e) {
+            // PR 51 review D-03: recorded under its class (in the finally) and rethrown; an Error is not swallowed.
+            LOG.warn("scheduled job {} failed: {}", job, e.getClass().getSimpleName());
+            result = JobResult.failed(e);
+            throw e;
+        } finally {
+            // Whatever ended the run, it is recorded and the job no longer shows as running.
+            record(track, started, clock.instant(), result != null ? result : JobResult.failed("FAILED", Map.of()));
         }
-        record(track, started, clock.instant(), result);
     }
 
     private static void record(Track track, Instant started, Instant ended, JobResult result) {

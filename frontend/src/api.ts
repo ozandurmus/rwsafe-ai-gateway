@@ -105,7 +105,7 @@ export interface AuditEntry {
 export interface AuditLog {
   entries: AuditEntry[];
   nextCursor: string | null;
-  /** The action ids the ledger holds (the action filter's choices). */
+  /** The action ids the ledger holds (the action filter's choices); empty on a cursor page. */
   actions: string[];
   from: string;
   to: string;

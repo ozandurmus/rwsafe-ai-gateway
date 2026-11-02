@@ -8,6 +8,7 @@ import io.rwsafe.control.api.ApiExceptionHandler.BadRequest;
 import io.rwsafe.control.ops.JobCatalog;
 import io.rwsafe.control.ops.JobRuns;
 import io.rwsafe.control.privacy.Masking;
+import io.rwsafe.control.privacy.MaskingUnavailableException;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
 import io.rwsafe.control.siem.SiemExportService;
@@ -36,8 +37,8 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>The audit log shows each ledger row exactly as the SIEM export does ({@link SiemRecords#ledgerEntry}): the actor
  * stays the pseudonym the ledger stores (a pseudonym is a keyed one-way digest; no rule maps it back to a name), an
  * account key becomes its pseudonym, and a reason that is not a vocabulary token passes the free-text masker. Without
- * the privacy key, the estate dictionary or the name dictionary the page is refused with 503 (AGENTS.md 4.10): what may
- * be shown could not be decided.
+ * the privacy key, the estate dictionary or the name dictionary the page is refused with 503 before any row is read
+ * (AGENTS.md 4.10, PR 51 review D-01): what may be shown could not be decided.
  */
 @RestController
 @RequestMapping("/api/v1/admin")
@@ -53,6 +54,7 @@ public class RecordsAdminController {
     private final Masking masking;
     private final JobRuns runs;
     private final SiemExportService siem;
+    private final AuditActionCache actionIds;
     private final Clock clock;
 
     public RecordsAdminController(Database database, PrivacyKeys keys, Pseudonymiser pseudonymiser, Masking masking,
@@ -64,6 +66,7 @@ public class RecordsAdminController {
         this.runs = runs;
         this.siem = siem;
         this.clock = Clock.systemUTC();
+        this.actionIds = new AuditActionCache(() -> database.auditLedger().actionIds(), clock);
     }
 
     @GetMapping("/audit")
@@ -73,6 +76,11 @@ public class RecordsAdminController {
                               @RequestParam(name = "actor", required = false) String actor,
                               @RequestParam(name = "limit", defaultValue = "50") int limit,
                               @RequestParam(name = "cursor", required = false) String cursor) {
+        // Fail closed first (AGENTS.md 4.10, PR 51 review D-01): without the privacy key, the estate dictionary or the
+        // name dictionary what may be shown cannot be decided, so the request is refused before any row is read.
+        if (!keys.keyAvailable() || !keys.maskingAvailable() || !masking.available()) {
+            throw new MaskingUnavailableException("audit log");
+        }
         Instant end = to == null ? clock.instant() : to;
         Instant start = from == null ? end.minus(DEFAULT_WINDOW) : from;
         if (!start.isBefore(end)) {
@@ -95,15 +103,23 @@ public class RecordsAdminController {
         }
         Long before = null;
         if (cursor != null) {
-            if (cursor.isEmpty() || cursor.length() > 19 || !cursor.chars().allMatch(c -> c >= '0' && c <= '9')) {
+            // PR 51 review D-02: digits only, within a long, and a ledger id (the identity starts at 1).
+            try {
+                before = cursor.isEmpty() || cursor.length() > 19
+                    || !cursor.chars().allMatch(c -> c >= '0' && c <= '9') ? null : Long.parseLong(cursor);
+            } catch (NumberFormatException overflow) {
+                before = null;
+            }
+            if (before == null || before <= 0) {
                 throw new BadRequest("INVALID_CURSOR", "The page cursor is not one this server issued.");
             }
-            before = Long.parseLong(cursor);
         }
         LedgerPage page = database.auditLedger().page(new LedgerFilter(start, end, action, actor, limit, before));
         List<AuditEntryView> entries = page.rows().stream()
             .map(r -> AuditEntryView.of(r, records.ledgerEntry(r))).toList();
-        List<String> actions = database.auditLedger().actionIds().stream().filter(records::exportableAction).toList();
+        // The filter's choices only on a first page, from a short cache (PR 51 review D-04, AuditActionCache).
+        List<String> actions = before != null ? List.of()
+            : actionIds.actions().stream().filter(records::exportableAction).toList();
         return new AuditLogView(entries, page.nextBefore() == null ? null : Long.toString(page.nextBefore()), actions,
             start, end, limit);
     }

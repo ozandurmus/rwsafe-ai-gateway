@@ -108,4 +108,22 @@ abstract class FailClosedProbe {
         assertTrue(reads >= 9 && writes >= 3, "the inventory held " + reads + " reads and " + writes + " writes");
         assertTrue(wrong.isEmpty(), "masked requests not refused fail-closed: " + wrong);
     }
+
+    /**
+     * PR 51 review D-01: the audit log decides what may be shown with the key and the dictionaries, so without them it is
+     * refused 503 to its operators too, up front: before the filters are checked and before any row is read.
+     */
+    @Test
+    void theAuditLogIsRefusedToItsOperatorsWithoutTheKeyOrTheDictionary() throws Exception {
+        MockMvc mvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
+        for (String role : List.of(Roles.SECURITY_ADMIN, Roles.PRIVACY_OFFICER)) {
+            for (String path : List.of("/api/v1/admin/audit", "/api/v1/admin/audit?cursor=abc&actor=synthetic-name",
+                "/api/v1/admin/audit?action=local_user.create&limit=5")) {
+                MvcResult r = mvc.perform(get(path).with(user("synthetic-operator-probe").roles(role))).andReturn();
+                assertEquals(503, r.getResponse().getStatus(), role + " " + path);
+                assertEquals("MASKING_UNAVAILABLE", JSON.readTree(r.getResponse().getContentAsString()).path("reason")
+                    .asText(), role + " " + path);
+            }
+        }
+    }
 }

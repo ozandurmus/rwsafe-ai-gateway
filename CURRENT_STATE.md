@@ -698,7 +698,7 @@ PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.m
   from `3532f13`); V10 and V11 dry-run in BEGIN/ROLLBACK on the live database first, then applied by Flyway at start;
   through Traefik: UI 200, health 200, `/api/v1/admin/roles` 401 without a session; the single-approval warning logged.
 
-## Done (Records and Platform screens, branch `worktree-agent-ae12f584c1b6d497b`, not yet a pull request)
+## Done (Records and Platform screens, branch `feature/admin-records-platform`, pull request 51)
 
 PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.md`), decisions 1.3 and 1.4. No
 migration. Administration gains two menu groups in `frontend/src/adminMenu.tsx`: RECORDS (Audit log, Job log) and
@@ -730,9 +730,18 @@ PLATFORM (Notifications, System logs, System). TR/EN catalogues extended.
   receivers by kind (syslog with its format, HEC) and set-up yes/no, never an address; e-mail: "not available yet".
 - Masked role: every new route is refused 403 by the chain (leak probe and both fail-closed probes walk them); the leak
   probe also scans the administrator's records and platform screens for seeded values (none).
+- Second review: Argon (`docs/reviews/PR51_2026_11_02_ARGON_ADMIN_RECORDS_PLATFORM.md`), MERGE WITH CORRECTIONS, no
+  P0; D-01..D-04 fixed with tests: the audit log is refused 503 up front, before any filter check or row read, when the
+  privacy key, the estate dictionary or the name dictionary is unavailable (both fail-closed probes ask it as a
+  `security_admin` and a `privacy_officer`); a cursor above the long range or not a ledger id is `INVALID_CURSOR`; a
+  job run ended by an `Error` is recorded under its class, rethrown, and the job no longer shows as running; the
+  action-filter choices come with a first page only, from a 60-second per-instance cache (`AuditActionCache`: there is
+  no index on `occurred_at`, so a time-scoped distinct query would still read the whole table; the cache bounds the
+  scan to one a minute without a migration).
 - Open: wire `RWSAFE_BUILD_COMMIT` and `RWSAFE_BUILD_TIME` into the control image (deploy change, own review); job runs
-  and log counts are per instance (one replica in the pilot); the audit action filter list reads distinct action ids
-  over the whole ledger (fine at pilot size).
+  and log counts are per instance (one replica in the pilot). Once pull request 50 (directory settings stored in the
+  database) is merged, the System screen's "directory configured" reads the stored settings instead of the deploy's
+  `RWSAFE_LDAP_*` values.
 
 ## Not done
 

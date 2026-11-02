@@ -43,7 +43,8 @@ public final class RecordsViews {
 
     /**
      * One page, newest first; {@code nextCursor} continues it (null: no older entry matches). {@code actions} are the
-     * action ids the ledger holds (the action filter's choices); {@code from} and {@code to} the window applied.
+     * action ids the ledger holds (the action filter's choices; on a first page only, empty on a cursor page);
+     * {@code from} and {@code to} the window applied.
      */
     public record AuditLogView(List<AuditEntryView> entries, String nextCursor, List<String> actions, Instant from,
                                Instant to, int limit) implements MaskedView {

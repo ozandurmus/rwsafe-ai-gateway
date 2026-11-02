@@ -141,6 +141,9 @@ class RecordsAndPlatformIntegrationTest {
         String cursor = first.get("nextCursor").asText();
         JsonNode second = admin.get("/api/v1/admin/audit?limit=1&cursor=" + cursor).body();
         assertTrue(second.get("entries").get(0).get("id").asLong() < first.get("entries").get(0).get("id").asLong());
+        // PR 51 review D-04: the action choices come with a first page only.
+        assertTrue(first.get("actions").size() > 0);
+        assertEquals(0, second.get("actions").size(), "no action query on a cursor page");
 
         // The actor filter takes a pseudonym; every entry is that actor's.
         JsonNode mine = admin.get("/api/v1/admin/audit?actor=" + enc(actor)).body();
@@ -164,6 +167,9 @@ class RecordsAndPlatformIntegrationTest {
             "/api/v1/admin/audit?action=" + enc("not an action"), "INVALID_ACTION_FILTER",
             "/api/v1/admin/audit?actor=" + ADMIN, "INVALID_ACTOR_FILTER",
             "/api/v1/admin/audit?cursor=abc", "INVALID_CURSOR",
+            // PR 51 review D-02: above Long.MAX_VALUE, and not a ledger id.
+            "/api/v1/admin/audit?cursor=9999999999999999999", "INVALID_CURSOR",
+            "/api/v1/admin/audit?cursor=0", "INVALID_CURSOR",
             "/api/v1/admin/audit?limit=0", "INVALID_LIMIT",
             "/api/v1/admin/audit?limit=201", "INVALID_LIMIT",
             "/api/v1/admin/audit?from=2026-11-02T10:00:00Z&to=2026-11-02T09:00:00Z", "INVALID_WINDOW",
