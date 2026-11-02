@@ -2,6 +2,7 @@ package io.rwsafe.control.policy;
 
 import io.rwsafe.control.config.ControlProperties;
 import io.rwsafe.control.identity.Roles;
+import io.rwsafe.control.ops.JobResult;
 import io.rwsafe.control.privacy.Masking;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.IdentifierCheck;
@@ -32,7 +33,6 @@ import org.jooq.exception.DataAccessException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 /**
@@ -44,7 +44,7 @@ import org.springframework.stereotype.Service;
 public class PolicyRegistryService {
 
     public static final String ISSUER = "system:snapshot-issuer";
-    static final Duration SCHEDULE_INTERVAL = Duration.ofMinutes(5);
+    static final Duration SCHEDULE_INTERVAL = Duration.parse(io.rwsafe.control.ops.JobCatalog.SNAPSHOT_RESIGN_DELAY);
     private static final Logger LOG = LoggerFactory.getLogger(PolicyRegistryService.class);
     /** The platform the data plane names when no platform row matches (the flow classifier's fallback). */
     public static final String UNKNOWN_PLATFORM = "unknown";
@@ -154,17 +154,25 @@ public class PolicyRegistryService {
      * The scheduled re-sign (POLICY_SNAPSHOT_CONTRACT): the active policy is re-issued under the next version with a
      * fresh {@code issuedAt} at least every refresh interval (at most 6 hours), even when no data plane polls and no rule
      * changed, so a data plane never runs into the 24-hour staleness limit. The check runs every 5 minutes and re-issues
-     * one interval early, so no snapshot outlives the refresh interval between two checks.
+     * one interval early, so no snapshot outlives the refresh interval between two checks. Scheduled by
+     * {@code io.rwsafe.control.ops.ScheduledJobs}; returns what the run did (counts, or the failure's fixed code).
      */
-    @Scheduled(initialDelayString = "PT1M", fixedDelayString = "PT5M")
-    public void reissueWhenDue() {
+    public JobResult reissueWhenDue() {
         Duration early = config.snapshotRefresh().minus(SCHEDULE_INTERVAL);
         try {
-            currentSnapshot(clock.instant(), early.compareTo(Duration.ofMinutes(1)) < 0 ? Duration.ofMinutes(1) : early);
+            long before = database.policySnapshots().latest().map(IssuedSnapshot::version).orElse(0L);
+            IssuedSnapshot served = currentSnapshot(clock.instant(),
+                early.compareTo(Duration.ofMinutes(1)) < 0 ? Duration.ofMinutes(1) : early);
+            Map<String, Long> counts = new LinkedHashMap<>();
+            counts.put("reissued", served.version() != before ? 1L : 0L);
+            counts.put("snapshotVersion", served.version());
+            return JobResult.ok(counts);
         } catch (RegistryRefusal e) {
             LOG.warn("policy snapshot not issued: {}", e.reason());
+            return JobResult.failed(e.reason(), Map.of());
         } catch (DataAccessException e) {
             LOG.warn("policy snapshot not issued: {}", e.getClass().getSimpleName());
+            return JobResult.failed(e);
         }
     }
 

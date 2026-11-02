@@ -60,6 +60,7 @@ public final class AccessRules {
     }
 
     public static final String SESSION_OWN = "session.own";
+    public static final String ADMIN_AUDIT_READ = "admin.audit.read";
     public static final String ADMIN_ACCESS = "admin.access";
     public static final String SCREENS_READ = "screens.read";
     public static final String POLICY_APPROVE = "policy.approve";
@@ -74,6 +75,9 @@ public final class AccessRules {
     public static final List<Rule> RULES = List.of(
         // The session's own routes: who am I, sign out, the CSRF token and the own password change.
         new Rule(SESSION_OWN, null, "/api/v1/auth/**", Set.of(), false, true),
+        // Administration -> Records -> Audit log (PO decision Q-47 decision 1.3): read by either approver role, never
+        // by a masked session; decided before the rest of Administration.
+        new Rule(ADMIN_AUDIT_READ, HttpMethod.GET, "/api/v1/admin/audit", APPROVERS, true, false),
         // Administration (PO decision Q-47): security_admin only, never a masked session, reads included.
         new Rule(ADMIN_ACCESS, null, "/api/v1/admin/**", Set.of(Roles.SECURITY_ADMIN), true, false),
         // Every screen's reads; the masked role through the masking funnel.

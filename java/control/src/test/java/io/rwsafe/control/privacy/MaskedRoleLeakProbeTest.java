@@ -185,6 +185,19 @@ class MaskedRoleLeakProbeTest {
         assertTrue(acknowledged > 0, "the masked walk read no acknowledgement records");
         assertTrue(hits.isEmpty(), "the masked role saw seeded tokens (location class <- canary class): " + hits);
         assertTrue(masked.size() >= 40, "the walk made " + masked.size() + " requests");
+        // PO decision Q-47 decisions 1.3, 1.4: the audit log shows the ledger as the SIEM export does, and the system
+        // log holds classes and counts; neither shows a seeded value even to the security administrator.
+        ApiClient operator = signedIn(canaries.admin);
+        List<Probed> records = List.of(
+            new Probed("GET /api/v1/admin/audit", operator.get("/api/v1/admin/audit?limit=200")),
+            new Probed("GET /api/v1/admin/logs", operator.get("/api/v1/admin/logs")),
+            new Probed("GET /api/v1/admin/jobs", operator.get("/api/v1/admin/jobs")),
+            new Probed("GET /api/v1/admin/system", operator.get("/api/v1/admin/system")),
+            new Probed("GET /api/v1/admin/notifications", operator.get("/api/v1/admin/notifications")));
+        records.forEach(p -> assertEquals(200, p.response().status(), p.endpoint()));
+        assertTrue(records.get(0).response().body().get("entries").size() > 10, "the seeding wrote ledger rows");
+        Set<String> recordHits = hits(probe, records);
+        assertTrue(recordHits.isEmpty(), "the administrator's records screens showed seeded tokens: " + recordHits);
 
         // Captured content (PR 25): refused to the masked role on the read route, and nowhere else on its walk; the
         // positive control is a security_admin read with a reason, which shows the stored text: the seeded person as
@@ -664,6 +677,17 @@ class MaskedRoleLeakProbeTest {
         out.add(get(c, "GET /api/v1/admin/users", "/api/v1/admin/users"));
         out.add(get(c, "GET /api/v1/admin/roles", "/api/v1/admin/roles"));
         out.add(get(c, "GET /api/v1/admin/sessions", "/api/v1/admin/sessions"));
+        // Administration -> Records and Platform (PO decision Q-47 decisions 1.3, 1.4): refused to the masked role and
+        // the viewer by the security chain, the audit log with every filter it takes.
+        out.add(get(c, "GET /api/v1/admin/audit", "/api/v1/admin/audit"));
+        out.add(get(c, "GET /api/v1/admin/audit", "/api/v1/admin/audit?action=local_user.create&limit=5"));
+        for (String user : users) {
+            out.add(get(c, "GET /api/v1/admin/audit", "/api/v1/admin/audit?actor=" + enc(user)));
+        }
+        out.add(get(c, "GET /api/v1/admin/jobs", "/api/v1/admin/jobs"));
+        out.add(get(c, "GET /api/v1/admin/system", "/api/v1/admin/system"));
+        out.add(get(c, "GET /api/v1/admin/logs", "/api/v1/admin/logs"));
+        out.add(get(c, "GET /api/v1/admin/notifications", "/api/v1/admin/notifications"));
         ObjectNode newUser = JSON.createObjectNode().put("loginName", "synthetic.probe").put("displayName", "Probe")
             .put("reason", "synthetic probe");
         newUser.putArray("roles").add("security_admin");

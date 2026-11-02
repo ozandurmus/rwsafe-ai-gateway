@@ -151,7 +151,7 @@ public class SiemExportService implements SmartLifecycle {
     }
 
     /** The build's version, cleaned for a CEF/LEEF header; {@code dev} outside a packaged build. */
-    static String productVersion() {
+    public static String productVersion() {
         String v = SiemExportService.class.getPackage().getImplementationVersion();
         String cleaned = SiemText.clean(v == null ? "dev" : v, 32);
         boolean plain = !cleaned.isEmpty()
@@ -255,6 +255,12 @@ public class SiemExportService implements SmartLifecycle {
             details.add(d.toString());
         }
         return new Health(down ? "DOWN" : degraded ? "DEGRADED" : "UP", String.join("; ", details), counts);
+    }
+
+    /** The latest batch any destination acknowledged since this instance started; empty when none (Job log). */
+    public synchronized java.util.Optional<java.time.Instant> lastDelivery() {
+        return exporters.stream().map(e -> e.metrics().lastDelivery()).filter(java.util.Objects::nonNull)
+            .max(java.util.Comparator.naturalOrder());
     }
 
     /** The exporters' metrics in Prometheus text (fixed labels). */

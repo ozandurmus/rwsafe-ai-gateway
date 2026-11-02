@@ -1,5 +1,6 @@
 package io.rwsafe.control.capture;
 
+import io.rwsafe.control.ops.JobResult;
 import io.rwsafe.persistence.CaptureStore;
 import io.rwsafe.persistence.CaptureStore.CaptureRecord;
 import io.rwsafe.persistence.CaptureStore.Rewrap;
@@ -8,14 +9,15 @@ import io.rwsafe.persistence.Database;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
@@ -66,14 +68,23 @@ public class CaptureRetentionJob {
     public record Run(int expired, int shredded, int rewrapped, int stranded, boolean capMet, int sweptFiles) {
     }
 
-    @Scheduled(cron = "0 20 0,6,12,18 * * *", zone = "Europe/Istanbul")
-    public void scheduled() {
+    /** One scheduled run ({@code io.rwsafe.control.ops.ScheduledJobs}, the protected windows): counts only. */
+    public JobResult scheduled() {
         try {
             Run r = runOnce();
             LOG.info("capture maintenance: {} expired, {} shredded, {} re-wrapped, {} stranded, cap met {}, {} files "
                 + "swept", r.expired(), r.shredded(), r.rewrapped(), r.stranded(), r.capMet(), r.sweptFiles());
+            Map<String, Long> counts = new LinkedHashMap<>();
+            counts.put("expired", (long) r.expired());
+            counts.put("shredded", (long) r.shredded());
+            counts.put("rewrapped", (long) r.rewrapped());
+            counts.put("stranded", (long) r.stranded());
+            counts.put("capMet", r.capMet() ? 1L : 0L);
+            counts.put("sweptFiles", (long) r.sweptFiles());
+            return JobResult.ok(counts);
         } catch (RuntimeException e) {
             LOG.warn("capture maintenance failed: {}", e.getClass().getSimpleName());
+            return JobResult.failed(e);
         }
     }
 

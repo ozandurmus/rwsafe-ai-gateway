@@ -698,6 +698,42 @@ PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.m
   from `3532f13`); V10 and V11 dry-run in BEGIN/ROLLBACK on the live database first, then applied by Flyway at start;
   through Traefik: UI 200, health 200, `/api/v1/admin/roles` 401 without a session; the single-approval warning logged.
 
+## Done (Records and Platform screens, branch `worktree-agent-ae12f584c1b6d497b`, not yet a pull request)
+
+PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.md`), decisions 1.3 and 1.4. No
+migration. Administration gains two menu groups in `frontend/src/adminMenu.tsx`: RECORDS (Audit log, Job log) and
+PLATFORM (Notifications, System logs, System). TR/EN catalogues extended.
+- Audit log: `GET /api/v1/admin/audit` (`security_admin` and `privacy_officer`; new `AccessRules` rule
+  `admin.audit.read`, decided before `admin.access`) pages `audit_event` newest first (keyset cursor, page 1 to 200,
+  default window 30 days, at most 366), filtered by action id and by actor (`USR-` pseudonym or `system:` actor only).
+  Each row is shown exactly as the SIEM export maps it (`SiemRecords.ledgerEntry`, shared with the export): the actor
+  stays the stored pseudonym (no rule maps it back to a name), an account key becomes its pseudonym, a free-text reason
+  passes the free-text masker; without the key or dictionaries the page is 503. The ledger has no body column (a
+  persistence test pins its columns). A privacy officer's Administration shows the Audit log only.
+- Job log: `GET /api/v1/admin/jobs` (`security_admin`). Every `@Scheduled` method now lives on `ops.ScheduledJobs` with
+  its schedule from `ops.JobCatalog` (a test proves no other scheduled method exists and the annotations match the
+  catalog): policy snapshot re-sign (5 min check, 6 h re-issue), capture retention (00/06/12/18:20 Istanbul), capture
+  key re-read (5 min), disk watermark (30 s); the SIEM export is listed as continuous with its health state. Runs are
+  recorded in memory per instance (`ops.JobRuns`: last 20 runs per job, totals since start, fixed failure code, counts
+  under fixed keys), no table; the screen says "since the server last started".
+- System: `GET /api/v1/admin/system` (`security_admin`): version, commit and build time (from `RWSAFE_BUILD_COMMIT` /
+  `RWSAFE_BUILD_TIME`; the image does not set them yet, so "not recorded"), Java version, the Flyway version applied at
+  this start, start time and uptime, and the switches (single approval, break-glass sign-in, directory configured,
+  capture mode, SIEM export).
+- System logs: `GET /api/v1/admin/logs` (`security_admin`): `ops.LogRing`, a bounded logback appender on the root
+  logger, keeps counts per level and logger short name in hourly buckets over 24 hours (at most 256 pairs) and the last
+  50 WARN/ERROR events as time, level, logger, exception class name and, for this product's own loggers only, the
+  unformatted template when it has the shape of fixed text (no `@`, `/`, `=`, inner dot or long digit run); the reader
+  applies the identifier and estate checks again. Never an argument, formatted message, exception message or stack. A
+  source scan test proves every own log call's template is a literal.
+- Notifications: `GET /api/v1/admin/notifications` (`security_admin`): SIEM export on or off, its state, and its
+  receivers by kind (syslog with its format, HEC) and set-up yes/no, never an address; e-mail: "not available yet".
+- Masked role: every new route is refused 403 by the chain (leak probe and both fail-closed probes walk them); the leak
+  probe also scans the administrator's records and platform screens for seeded values (none).
+- Open: wire `RWSAFE_BUILD_COMMIT` and `RWSAFE_BUILD_TIME` into the control image (deploy change, own review); job runs
+  and log counts are per instance (one replica in the pilot); the audit action filter list reads distinct action ids
+  over the whole ledger (fine at pilot size).
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
