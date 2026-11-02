@@ -698,6 +698,61 @@ PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.m
   from `3532f13`); V10 and V11 dry-run in BEGIN/ROLLBACK on the live database first, then applied by Flyway at start;
   through Traefik: UI 200, health 200, `/api/v1/admin/roles` 401 without a session; the single-approval warning logged.
 
+## Done (Access part 2: directory settings and group roles, branch `feature/admin-access-2`, pull request 50)
+
+PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.md`), decision 1.2.
+- Stored settings (V12 `directory_settings`): URLs (1 to 8, tried in order), TLS mode (LDAPS, StartTLS; plain LDAP only
+  to a loopback host), an optional CA bundle (PEM, re-encoded, a private key refused), bind DN, the sealed bind
+  password, user search base and filter, group attribute and optional group search, timeouts, enabled, and the group ->
+  role bindings. Append-only: every save is the next version (the highest is active), refused on a stale version, with
+  the administrator's pseudonym and reason (the local-user reason rule, plus no bound directory group name); the
+  ledger row is keyed by the version number (SIEM row key: a number). The deploy's `RWSAFE_LDAP_*` values seed an empty
+  table once at start (actor `system:deploy-seed`, action `directory_settings.seed`) and are never read again, so they
+  never override a saved setting.
+- Bind password: AES-256-GCM under the product's own Secret `rwsafe-directory-key` (key `key`, 32 random bytes;
+  contract entry added, mounted optional at `RWSAFE_DIRECTORY_KEY_FILE` in base, k3s and pilot; created by
+  `tools/pilot/bootstrap_secrets.sh`). Without the key the control plane starts, the seed is skipped and directory
+  sign-in is unavailable with `DIRECTORY_KEY_MISSING`; no plaintext fallback. The API answers only `passwordSet`; a save
+  without a new password keeps the sealed value.
+- Sign-in: `DirectorySettingsService` is the directory front (after break-glass and local users; a local user still
+  owns its login name). A save rebuilds the front at once (next sign-in reconnects, no restart); a sign-in that failed on
+  the replaced settings is retried once on the new ones. Roles come only from the stored bindings, matched by the
+  group's name (first RDN of a `memberOf` value or a group-search DN) in the `GroupNames` form (Turkish İ/I/ı fold); the
+  masked role stays exclusive. Host names are checked against the certificate's subject alternative names by the
+  product's own verifier (UnboundID's accepted a loopback address the certificate did not name).
+- Connection test: admin-only, saved or entered settings (the stored password goes only to the saved URLs and bind
+  DN), hard time limit, one at a time, six a minute per administrator; answers OK, UNREACHABLE, TLS_FAILED (with
+  CERTIFICATE_UNTRUSTED, CERTIFICATE_EXPIRED, HOSTNAME_MISMATCH, HANDSHAKE_FAILED, STARTTLS_REFUSED, PLAIN_LDAP_REFUSED),
+  BIND_REFUSED, SEARCH_FAILED, USER_NOT_FOUND, with groups found, groups bound and the resulting roles; logs the class
+  only.
+- Endpoints (all `security_admin`, never masked; `Cache-Control: no-store`): `GET /api/v1/admin/directory`,
+  `POST /api/v1/admin/directory/connection`, `POST /api/v1/admin/directory/group-roles`,
+  `POST /api/v1/admin/directory/test`. UI: Administration -> ACCESS -> LDAP settings (status in plain words, the
+  connection form with a write-only password and a CA paste or file, the test, the group -> role table, the history).
+- Second review (Argon, `docs/reviews/PR50_2026_11_02_ARGON_ADMIN_ACCESS_PART2_DIRECTORY.md`, DO NOT MERGE) and its
+  corrections, each with tests: D-01 the bind password is sealed with associated data over the version, TLS mode,
+  bind DN, URLs and the CA bundle's digest, re-sealed on every save that keeps it, and kept (save or test) only when the
+  URLs, bind DN, TLS mode and CA are unchanged, else `PASSWORD_REQUIRED`; at most 1024 bytes; credential bytes wiped.
+  D-02 the `RWSAFE_LDAP_*` estate keys and the `rwsafe-ldap-bind` Secret are optional (the pilot needs only what
+  `bootstrap_secrets.sh` creates). D-03 directory targets: ports 389, 636, 3268, 3269 only; loopback, link-local,
+  unspecified and multicast refused (checked on save and, resolved once and pinned, at connect); the test is validated
+  before it spends a rate token, 6 a minute per administrator and 20 in all, one in flight until its own task ends.
+  D-04 one name form on both sides (no `=`, a single-valued first RDN), `memberOf` groups outside a set group search
+  base ignored (Q-3), the masked role alone in the front itself; V12 refuses `=`. D-05 a login name with surrounding
+  white space is refused (the form trims), and a local user owns every Turkish-folded spelling of its name; the user
+  search asks for two entries at most (ambiguous: refused). D-06 reasons refuse group names and DN words by token.
+  D-07 V12: only the system seeds and only seeds, no group bindings as the first version, each role once; a seed the
+  database refuses is skipped. D-08 switching the directory off or changing bindings ends the open directory sessions
+  but the administrator's own (Q-2); the screen keeps the other section's unsaved edits and refuses `=`. Q-1: plain LDAP
+  and loopback targets only under the test-only property `rwsafe.identity.directory-loopback-for-tests` (no
+  environment variable mapped; `tools/deploy/manifest_check.py` refuses any key or value of any render, the pilot's
+  included, and any contract name or key whose letters contain LOOPBACKFORTESTS; the control plane logs an ERROR line
+  at start when it is on outside the test or dev profile); the screen offers no plain LDAP otherwise.
+- Open: the pilot overlay still removes the directory NetworkPolicy (`rwsafe-control-to-directory`) and its CIDR, so a
+  pilot test against the real directory answers UNREACHABLE until that egress is restored with the directory's address
+  range; group names are matched by name only (two groups with the same name in different branches are one). Security-
+  sensitive: needs the second independent review before merge.
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
@@ -709,7 +764,7 @@ neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeSc
 later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules, a server-side user
 settings store for the UI language, the
 ratified decision record that mirrors the seed fixture, the C4 raw capture and its grants, the Incidents screen,
-Administration Access part 2 (directory settings), Records and Platform (Q-47 decisions 1.2 to 1.4) and the pilot
+Administration Records and Platform (Q-47 decisions 1.3 and 1.4) and the pilot
 single-approval switch (Q-47 decision 2), a browser-level (Playwright) masked-role leak probe on top of the API-level one,
 the cluster PostgreSQL Job); the Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with
 them); Trivy image scanning and SBOM (with the first image, ship pipeline). SIEM export, later: a

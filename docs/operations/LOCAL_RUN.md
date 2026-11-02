@@ -218,6 +218,11 @@ from a config tree (`RWSAFE_SECRETS_DIR`, default `/run/secrets/rwsafe/`, file `
 `RWSAFE_PRIVACY_HMAC_KEY_FILE`, `RWSAFE_ESTATE_DICTIONARY_FILE`, and for the directory `RWSAFE_LDAP_URL`,
 `RWSAFE_LDAP_BIND_DN`, `RWSAFE_LDAP_BIND_PASSWORD_FILE`, `RWSAFE_LDAP_USER_SEARCH_BASE` and
 `RWSAFE_LDAP_USER_SEARCH_FILTER` (group-to-role bindings as `rwsafe.identity.ldap.group-roles[<group DN>]=<role>`).
+Since PO decision Q-47 (decision 1.2) these directory values only seed the stored directory settings once, at a start that
+finds the `directory_settings` table empty; afterwards Administration -> LDAP settings is the one place the directory
+and its group-to-role bindings change, and a changed `RWSAFE_LDAP_*` value is ignored. The stored bind password is
+sealed under `RWSAFE_DIRECTORY_KEY_FILE` (32 random bytes, the Secret `rwsafe-directory-key`); without that file the
+seed is skipped and directory sign-in is unavailable with the reason `DIRECTORY_KEY_MISSING`.
 `RWSAFE_BREAK_GLASS_ENABLED=true` with `RWSAFE_BREAK_GLASS_PASSWORD_FILE` creates the break-glass account at first start.
 Behind an ingress, `RWSAFE_FORWARD_HEADERS=native` with `RWSAFE_TRUSTED_PROXIES` (a regular expression naming the ingress
 addresses only) gives the login throttle the real client address; both are off by default.

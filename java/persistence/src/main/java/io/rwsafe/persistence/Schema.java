@@ -74,6 +74,33 @@ final class Schema {
     static final Field<String> SE_ENDED_BY = DSL.field(DSL.name("session_end", "ended_by"), SQLDataType.CLOB);
     static final Field<String> SE_SOURCE = DSL.field(DSL.name("session_end", "source"), SQLDataType.CLOB);
 
+    // V12: directory settings versions (Administration -> Access part 2).
+    static final Table<Record> DIRECTORY_SETTINGS = DSL.table(DSL.name("directory_settings"));
+    static final Field<Integer> DS_VERSION = ds("version", SQLDataType.INTEGER);
+    static final Field<Instant> DS_CREATED_AT = ds("created_at", SQLDataType.INSTANT);
+    static final Field<String> DS_CREATED_BY = ds("created_by", SQLDataType.CLOB);
+    static final Field<String> DS_CHANGE_KIND = ds("change_kind", SQLDataType.CLOB);
+    static final Field<String> DS_REASON = ds("reason", SQLDataType.CLOB);
+    static final Field<Boolean> DS_ENABLED = ds("enabled", SQLDataType.BOOLEAN);
+    static final Field<String[]> DS_URLS = ds("urls", SQLDataType.CLOB.array());
+    static final Field<String> DS_TLS_MODE = ds("tls_mode", SQLDataType.CLOB);
+    static final Field<String> DS_CA_PEM = ds("ca_certificate_pem", SQLDataType.CLOB);
+    static final Field<String> DS_BIND_DN = ds("bind_dn", SQLDataType.CLOB);
+    static final Field<byte[]> DS_BIND_PASSWORD_SEALED = ds("bind_password_sealed", SQLDataType.BLOB);
+    static final Field<String> DS_USER_SEARCH_BASE = ds("user_search_base", SQLDataType.CLOB);
+    static final Field<String> DS_USER_SEARCH_FILTER = ds("user_search_filter", SQLDataType.CLOB);
+    static final Field<String> DS_GROUP_ATTRIBUTE = ds("group_attribute", SQLDataType.CLOB);
+    static final Field<String> DS_GROUP_SEARCH_BASE = ds("group_search_base", SQLDataType.CLOB);
+    static final Field<String> DS_GROUP_SEARCH_FILTER = ds("group_search_filter", SQLDataType.CLOB);
+    static final Field<Integer> DS_CONNECT_TIMEOUT = ds("connect_timeout_ms", SQLDataType.INTEGER);
+    static final Field<Integer> DS_RESPONSE_TIMEOUT = ds("response_timeout_ms", SQLDataType.INTEGER);
+    static final Field<String[]> DS_GROUP_NAMES = ds("group_names", SQLDataType.CLOB.array());
+    static final Field<String[]> DS_GROUP_ROLE_SETS = ds("group_role_sets", SQLDataType.CLOB.array());
+
+    private static <T> Field<T> ds(String column, org.jooq.DataType<T> type) {
+        return DSL.field(DSL.name("directory_settings", column), type);
+    }
+
     static final Table<Record> LOGIN_RECORD = DSL.table(DSL.name("login_record"));
     static final Field<String> LOGIN_ACTOR = DSL.field(DSL.name("login_record", "actor_fingerprint"), SQLDataType.CLOB);
     static final Field<String> LOGIN_SOURCE = DSL.field(DSL.name("login_record", "source"), SQLDataType.CLOB);

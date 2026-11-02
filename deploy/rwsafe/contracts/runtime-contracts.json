@@ -30,7 +30,11 @@
     },
     "rwsafe-ldap-bind": {
       "keys": ["password"],
-      "purpose": "the directory bind account's password"
+      "purpose": "the directory bind account's password, read only to seed the stored directory settings once into an empty table (PO decision Q-47, decision 1.2); optional (PR 50 review D-02): afterwards the password is set on the LDAP settings screen"
+    },
+    "rwsafe-directory-key": {
+      "keys": ["key"],
+      "purpose": "32 random bytes; the AES-256-GCM key of the directory bind password stored by the LDAP settings screen (PO decision Q-47, decision 1.2), never the privacy or the capture key; mounted optional at RWSAFE_DIRECTORY_KEY_FILE: without it the control plane starts and directory sign-in is unavailable with the reason DIRECTORY_KEY_MISSING (tools/pilot/bootstrap_secrets.sh creates it; replacing it makes the stored password unreadable until it is entered again)"
     },
     "rwsafe-siem-credentials": {
       "keys": ["hec-token"],
@@ -45,7 +49,7 @@
   "configMaps": {
     "rwsafe-estate": {
       "keys": ["ldap-url", "ldap-bind-dn", "ldap-user-search-base", "trusted-proxies", "estate-dictionary.txt", "directory-cidr"],
-      "purpose": "real names: directory URL and base DNs, the ingress addresses as a regular expression, the estate dictionary, and the directory's CIDR that the deploy's in-memory patch puts into NetworkPolicy rwsafe-control-to-directory (DEPLOY_AND_SHARED_HOST_RUNBOOK section 7.4)"
+      "purpose": "real names: directory URL and base DNs (optional seed values since PO decision Q-47, decision 1.2), the ingress addresses as a regular expression, the estate dictionary, and the directory's CIDR that the deploy's in-memory patch puts into NetworkPolicy rwsafe-control-to-directory (DEPLOY_AND_SHARED_HOST_RUNBOOK section 7.4)"
     },
     "rwsafe-snapshot-public-keys": {
       "keys": ["rwsafe-snapshot-1.pem"],

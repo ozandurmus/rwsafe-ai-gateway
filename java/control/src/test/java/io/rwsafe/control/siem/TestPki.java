@@ -31,13 +31,13 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
  * A synthetic CA and server certificates generated at runtime for the local TLS syslog receiver and HEC stub (AGENTS.md
  * 4.5: no key or certificate is committed). Loopback names only.
  */
-final class TestPki {
+public final class TestPki {
 
     private static final AtomicLong SERIAL = new AtomicLong(100);
     private final KeyPair caKeys;
     private final X509Certificate ca;
 
-    TestPki(String caName) throws Exception {
+    public TestPki(String caName) throws Exception {
         caKeys = ec();
         X500Name name = new X500Name("CN=" + caName);
         X509v3CertificateBuilder b = new JcaX509v3CertificateBuilder(name, BigInteger.ONE, notBefore(), notAfter(), name,
@@ -47,8 +47,13 @@ final class TestPki {
             b.build(new JcaContentSignerBuilder("SHA256withECDSA").build(caKeys.getPrivate())));
     }
 
+    /** The CA certificate itself. */
+    public X509Certificate ca() {
+        return ca;
+    }
+
     /** The CA certificate as a PEM bundle file (what the exporter's CA setting points at). */
-    Path writeCaBundle(Path dir) throws Exception {
+    public Path writeCaBundle(Path dir) throws Exception {
         Path f = Files.createTempFile(dir, "siem-ca", ".crt");
         try (Writer w = Files.newBufferedWriter(f); JcaPEMWriter pem = new JcaPEMWriter(w)) {
             pem.writeObject(ca);
@@ -57,13 +62,13 @@ final class TestPki {
     }
 
     /** A server context whose certificate names 127.0.0.1 and localhost. */
-    SSLContext loopbackServer() throws Exception {
+    public SSLContext loopbackServer() throws Exception {
         return server(new GeneralNames(new GeneralName[] {new GeneralName(GeneralName.iPAddress, "127.0.0.1"),
             new GeneralName(GeneralName.dNSName, "localhost")}));
     }
 
     /** A server context whose certificate names only another host (host-name verification must refuse it). */
-    SSLContext otherNameServer() throws Exception {
+    public SSLContext otherNameServer() throws Exception {
         return server(new GeneralNames(new GeneralName(GeneralName.dNSName, "other.example.test")));
     }
 

@@ -18,7 +18,8 @@ export function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      await login(loginName, password);
+      // The server refuses a name with surrounding spaces (PR 50 review D-05); the form sends it trimmed.
+      await login(loginName.trim(), password);
     } catch (err) {
       setError(err);
       setPassword('');

@@ -61,6 +61,89 @@ export interface CreateUserRequest {
   reason: string;
 }
 
+// Administration -> Access part 2 (PO decision Q-47, decision 1.2): the directory (LDAP) settings and group -> role
+// bindings. The bind password is write-only: the server answers only whether one is set.
+export type DirectoryTlsMode = 'ldaps' | 'starttls' | 'none';
+
+export interface DirectoryGroupRoles {
+  group: string;
+  roles: RoleId[];
+}
+
+export interface DirectorySettingsView {
+  enabled: boolean;
+  urls: string[];
+  tlsMode: DirectoryTlsMode;
+  caCertificateCount: number;
+  caCertificateNotAfter: string | null;
+  bindDn: string;
+  passwordSet: boolean;
+  userSearchBase: string;
+  userSearchFilter: string;
+  groupAttribute: string | null;
+  groupSearchBase: string | null;
+  groupSearchFilter: string | null;
+  connectTimeoutMs: number;
+  responseTimeoutMs: number;
+  groupRoles: DirectoryGroupRoles[];
+}
+
+export interface DirectoryHistoryEntry {
+  version: number;
+  createdAt: string;
+  /** The administrator's USR- pseudonym, or `system:deploy-seed` for the one-time copy of the deploy values. */
+  actor: string;
+  changeKind: 'seed' | 'connection' | 'group_roles';
+  reason: string;
+}
+
+export interface DirectoryView {
+  /** `ACTIVE`, `DISABLED`, `NOT_CONFIGURED` or `UNAVAILABLE`. */
+  status: string;
+  statusReason: string | null;
+  /** The directory key Secret: `AVAILABLE`, `MISSING` or `INVALID`. */
+  keyState: string;
+  deployValuesPresent: boolean;
+  /** 0 while nothing is saved. */
+  version: number;
+  settings: DirectorySettingsView | null;
+  roles: RoleId[];
+  history: DirectoryHistoryEntry[];
+  maxUrls: number;
+  maxGroups: number;
+  testsPerMinute: number;
+  /** Only under the server's test-only switch: the screen offers plain LDAP otherwise never (PR 50 review Q-1). */
+  plainLdapAllowed: boolean;
+}
+
+/** The connection fields of a save or a test; an empty `newPassword` keeps the stored password. */
+export interface DirectoryConnection {
+  enabled: boolean;
+  urls: string[];
+  tlsMode: DirectoryTlsMode;
+  caCertificatePem?: string;
+  clearCaCertificate?: boolean;
+  bindDn: string;
+  newPassword?: string;
+  userSearchBase: string;
+  userSearchFilter: string;
+  groupAttribute: string | null;
+  groupSearchBase: string | null;
+  groupSearchFilter: string | null;
+  connectTimeoutMs: number;
+  responseTimeoutMs: number;
+}
+
+/** A connection test's classified answer: never a name, a DN or a group of the directory. */
+export interface DirectoryTestResult {
+  result: 'OK' | 'UNREACHABLE' | 'TLS_FAILED' | 'BIND_REFUSED' | 'SEARCH_FAILED' | 'USER_NOT_FOUND';
+  detail: string | null;
+  server: number;
+  groupsFound: number | null;
+  groupsBound: number | null;
+  roles: RoleId[];
+}
+
 /** The server's enforced authorisation rules (`AccessRules`), described per role. */
 export interface RolesView {
   roles: { role: RoleId; masked: boolean; permissions: string[] }[];
@@ -445,6 +528,14 @@ export const api = {
   adminSessions: () => request<{ sessions: SessionView[] }>('GET', '/api/v1/admin/sessions'),
   endSession: (handle: string, reason: string) =>
     request<void>('POST', `/api/v1/admin/sessions/${encodeURIComponent(handle)}/end`, { reason }),
+  adminDirectory: () => request<DirectoryView>('GET', '/api/v1/admin/directory'),
+  saveDirectoryConnection: (expectedVersion: number, connection: DirectoryConnection, reason: string) =>
+    request<DirectoryView>('POST', '/api/v1/admin/directory/connection', { ...connection, expectedVersion, reason }),
+  saveDirectoryGroupRoles: (expectedVersion: number, bindings: DirectoryGroupRoles[], reason: string) =>
+    request<DirectoryView>('POST', '/api/v1/admin/directory/group-roles', { expectedVersion, bindings, reason }),
+  /** `settings` null tests the saved settings; `loginName` optionally finds one user and counts its groups. */
+  testDirectory: (settings: DirectoryConnection | null, loginName: string | null) =>
+    request<DirectoryTestResult>('POST', '/api/v1/admin/directory/test', { settings, loginName }),
   overview: (from: string, to: string) => request<Overview>('GET', `/api/v1/overview${query({ from, to })}`),
   traffic: (f: TrafficFilter) =>
     request<TrafficPage>(

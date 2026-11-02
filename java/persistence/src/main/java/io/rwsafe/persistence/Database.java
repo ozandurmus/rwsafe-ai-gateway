@@ -68,6 +68,11 @@ public final class Database {
         return new LocalUserStore(dsl);
     }
 
+    /** Directory settings versions and their group -> role bindings (V12). */
+    public DirectorySettingsStore directorySettings() {
+        return new DirectorySettingsStore(dsl);
+    }
+
     public LoginRecordStore loginRecords() {
         return new LoginRecordStore(dsl);
     }
