@@ -87,30 +87,44 @@ public class ActiveSessions implements HttpSessionListener {
         return live;
     }
 
+    /** A live session by its handle; an expired one is dropped and not found. */
     public Optional<Entry> find(String handle) {
-        return Optional.ofNullable(handle == null ? null : entries.get(handle));
+        Entry e = handle == null ? null : entries.get(handle);
+        if (e != null && e.lastActivity().isEmpty()) {
+            entries.remove(handle, e);
+            return Optional.empty();
+        }
+        return Optional.ofNullable(e);
     }
 
-    /** Ends one session; true when it was live. */
-    public boolean end(String handle) {
+    /**
+     * Ends one session: removes it from the registry (atomically, so two callers cannot both end it) and invalidates
+     * it; the entry is returned only when a live session was actually ended (PR 48 review D-06).
+     */
+    public Optional<Entry> end(String handle) {
         Entry e = handle == null ? null : entries.remove(handle);
         if (e == null) {
-            return false;
+            return Optional.empty();
         }
         try {
             e.session().invalidate();
-            return true;
+            return Optional.of(e);
         } catch (IllegalStateException alreadyEnded) {
-            return false;
+            return Optional.empty();
         }
     }
 
     /** Ends every session of one local user (after it is disabled, its password reset or its roles changed). */
     public int endAll(String loginName, String source) {
+        return endAllExcept(loginName, source, null);
+    }
+
+    /** Ends every session of one user but {@code keep} (its other sessions after an own password change, D-02). */
+    public int endAllExcept(String loginName, String source, String keep) {
         int ended = 0;
         for (Entry e : List.copyOf(entries.values())) {
-            if (e.source().equals(source) && e.loginName().toLowerCase(Locale.ROOT).equals(
-                loginName.toLowerCase(Locale.ROOT)) && end(e.handle())) {
+            if (e.source().equals(source) && !e.handle().equals(keep) && e.loginName().toLowerCase(Locale.ROOT)
+                .equals(loginName.toLowerCase(Locale.ROOT)) && end(e.handle()).isPresent()) {
                 ended++;
             }
         }

@@ -85,6 +85,40 @@ class LocalUserStoreTest {
             .set(Schema.LU_ENABLED, false).execute(), "an update without an audit context");
     }
 
+    /** PR 48 review D-07: a whole cost-12 hash, a generated password first, the change mark cleared only by a change. */
+    @Test
+    void thePasswordStateFollowsTheRules() {
+        for (String weak : List.of("$2", "$2a$04$" + "y".repeat(53), "$2a$12$" + "y".repeat(52), "$1$" + "y".repeat(57))) {
+            assertThrows(DataAccessException.class, () -> db.localUsers().create(new LocalUser("synthetic.weak", OTHER,
+                "Synthetic Person", weak, List.of("viewer"), true, true, null, null, null), audit("local_user.create",
+                "r")), weak.substring(0, 2));
+        }
+        DataAccessException set = assertThrows(DataAccessException.class, () -> db.localUsers().create(
+            new LocalUser("synthetic.preset", OTHER, "Synthetic Person", HASH, List.of("viewer"), true, false, null,
+                null, null), audit("local_user.create", "r")));
+        assertTrue(set.getMessage().contains("LOCAL_USER_PASSWORD_STATE"));
+
+        db.localUsers().create(user("synthetic.person", OTHER, List.of("viewer")), audit("local_user.create", "r"));
+        DataAccessException noChange = assertThrows(DataAccessException.class, () -> db.localUsers().update(
+            "synthetic.person", u -> new LocalUser(u.loginName(), u.subjectFingerprint(), u.displayName(),
+                u.passwordHash(), u.roles(), true, false, null, null, java.time.Instant.now()), true,
+            audit("local_user.password_change", "r")));
+        assertTrue(noChange.getMessage().contains("LOCAL_USER_PASSWORD_STATE"));
+        String other = "$2b$12$" + "z".repeat(53);
+        DataAccessException noTime = assertThrows(DataAccessException.class, () -> db.localUsers().update(
+            "synthetic.person", u -> new LocalUser(u.loginName(), u.subjectFingerprint(), u.displayName(), other,
+                u.roles(), true, false, null, null, null), true, audit("local_user.password_change", "r")));
+        assertTrue(noTime.getMessage().contains("LOCAL_USER_PASSWORD_STATE"), "a cleared mark needs the change time");
+        LocalUser changed = db.localUsers().update("synthetic.person", u -> new LocalUser(u.loginName(),
+            u.subjectFingerprint(), u.displayName(), other, u.roles(), true, false, null, null,
+            java.time.Instant.now()), true, audit("local_user.password_change", "r"));
+        assertFalse(changed.mustChangePassword());
+        DataAccessException cleared = assertThrows(DataAccessException.class, () -> db.localUsers().update(
+            "synthetic.person", u -> new LocalUser(u.loginName(), u.subjectFingerprint(), u.displayName(), HASH,
+                u.roles(), true, true, null, null, null), true, audit("local_user.password_reset", "r")));
+        assertTrue(cleared.getMessage().contains("LOCAL_USER_PASSWORD_STATE"));
+    }
+
     @Test
     void theLastEnabledSecurityAdministratorStays() {
         db.localUsers().create(user("synthetic.admin", ADMIN, List.of("security_admin")), audit("local_user.create", "r"));

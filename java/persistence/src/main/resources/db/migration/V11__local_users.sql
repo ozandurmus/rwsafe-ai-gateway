@@ -16,7 +16,8 @@ CREATE TABLE local_user (
     subject_fingerprint   text        NOT NULL UNIQUE CHECK (subject_fingerprint ~ '^USR-[0-9a-f]{10}$'),
     display_name          text        NOT NULL CHECK (length(btrim(display_name)) BETWEEN 1 AND 128
                                                       AND display_name !~ '[[:cntrl:]]'),
-    password_hash         text        NOT NULL CHECK (password_hash LIKE '$2%'),
+    -- A whole BCrypt hash of cost 12 or more (PR 48 review D-07), never a shorter or weaker string.
+    password_hash         text        NOT NULL CHECK (password_hash ~ '^\$2[aby]\$(1[2-9]|[23][0-9])\$[./A-Za-z0-9]{53}$'),
     -- The masked role is an exclusive session mode (MASKING_AND_PRIVACY B1): never combined with another role.
     roles                 text[]      NOT NULL CHECK (cardinality(roles) BETWEEN 1 AND 4
                                           AND roles <@ ARRAY['security_admin', 'privacy_officer', 'viewer',
@@ -26,15 +27,36 @@ CREATE TABLE local_user (
     must_change_password  boolean     NOT NULL DEFAULT true,
     created_at            timestamptz NOT NULL DEFAULT now(),
     updated_at            timestamptz NOT NULL DEFAULT now(),
-    password_changed_at   timestamptz
+    password_changed_at   timestamptz,
+    -- A password the user has not set themself is a generated one, which must be changed.
+    CHECK (must_change_password OR password_changed_at IS NOT NULL)
 );
 
--- The login name and its pseudonym never change; a row is never deleted (the ledger keeps naming it).
+-- The login name and its pseudonym never change; a row is never deleted (the ledger keeps naming it). A new user starts
+-- with a generated password that must be changed; the change mark is cleared only together with a new hash and its
+-- time, and the time of the last own change is never cleared (PR 48 review D-07).
 CREATE FUNCTION rwsafe_local_user_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION 'LOCAL_USER_KEPT: a local user is disabled, never deleted'
             USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+        IF NOT NEW.must_change_password OR NEW.password_changed_at IS NOT NULL THEN
+            RAISE EXCEPTION 'LOCAL_USER_PASSWORD_STATE: a new user starts with a generated password to change'
+                USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.must_change_password AND NOT NEW.must_change_password
+            AND (NEW.password_hash IS NOT DISTINCT FROM OLD.password_hash OR NEW.password_changed_at IS NULL
+                 OR NEW.password_changed_at IS NOT DISTINCT FROM OLD.password_changed_at) THEN
+        RAISE EXCEPTION 'LOCAL_USER_PASSWORD_STATE: the change mark is cleared only by a new password and its time'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF OLD.password_changed_at IS NOT NULL AND NEW.password_changed_at IS NULL THEN
+        RAISE EXCEPTION 'LOCAL_USER_PASSWORD_STATE: the time of the last own password change is never cleared'
+            USING ERRCODE = 'check_violation';
     END IF;
     IF NEW.login_name IS DISTINCT FROM OLD.login_name
             OR NEW.subject_fingerprint IS DISTINCT FROM OLD.subject_fingerprint
@@ -47,7 +69,7 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER local_user_guard BEFORE UPDATE OR DELETE ON local_user
+CREATE TRIGGER local_user_guard BEFORE INSERT OR UPDATE OR DELETE ON local_user
     FOR EACH ROW EXECUTE FUNCTION rwsafe_local_user_guard();
 CREATE TRIGGER local_user_audit AFTER INSERT OR UPDATE ON local_user
     FOR EACH ROW EXECUTE FUNCTION rwsafe_audit_row('subject_fingerprint');

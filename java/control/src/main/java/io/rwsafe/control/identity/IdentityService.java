@@ -64,6 +64,11 @@ public class IdentityService implements ApplicationRunner {
                 throttle.success(loginName, source);
                 return new Result(Outcome.AUTHENTICATED, exclusive(user.get()));
             }
+            // A front that owns the name ends the search: a disabled local user, or one whose password did not match,
+            // never signs in through the directory under the same name (PR 48 review D-04).
+            if (front.authoritative(loginName)) {
+                break;
+            }
         }
         throttle.failure(loginName, source);
         return new Result(Outcome.INVALID, null);

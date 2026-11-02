@@ -176,6 +176,7 @@ export function LocalUsersPage() {
     reload();
   }
 
+  // PR 48 review D-01: "self" is this local user's own row; the server refuses every change on it but enabling.
   const self = (u: LocalUserView) => !!me && me.source === 'local_user' && me.displayName === u.loginName;
   const dialog = pending && dialogText(pending);
 
@@ -270,11 +271,16 @@ export function LocalUsersPage() {
                   <TableCell>{fmt.time(u.createdAt, false)}</TableCell>
                   <TableCell>
                     <Stack direction="row" gap={0.5} flexWrap="wrap">
-                      <Button size="small" onClick={() => open({ kind: 'roles', user: u })}>
+                      <Button size="small" onClick={() => open({ kind: 'roles', user: u })} disabled={self(u)}>
                         {t('users.changeRoles')}
                       </Button>
                       {u.enabled ? (
-                        <Button size="small" color="error" onClick={() => open({ kind: 'disable', user: u })}>
+                        <Button
+                          size="small"
+                          color="error"
+                          onClick={() => open({ kind: 'disable', user: u })}
+                          disabled={self(u)}
+                        >
                           {t('users.disable')}
                         </Button>
                       ) : (
@@ -282,10 +288,19 @@ export function LocalUsersPage() {
                           {t('users.enable')}
                         </Button>
                       )}
-                      <Button size="small" onClick={() => open({ kind: 'reset', user: u })} disabled={!u.enabled}>
+                      <Button
+                        size="small"
+                        onClick={() => open({ kind: 'reset', user: u })}
+                        disabled={!u.enabled || self(u)}
+                      >
                         {t('users.reset')}
                       </Button>
                     </Stack>
+                    {self(u) && (
+                      <Typography variant="caption" color="text.secondary">
+                        {t('users.selfHint')}
+                      </Typography>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}

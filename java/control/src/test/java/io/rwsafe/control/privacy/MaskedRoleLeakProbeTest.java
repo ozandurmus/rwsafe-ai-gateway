@@ -402,7 +402,7 @@ class MaskedRoleLeakProbeTest {
         // A local user (PO decision Q-47) whose display name is a canary person: only the administrator's screens hold
         // it, and the walk proves the masked role and the viewer reach none of them.
         ObjectNode local = JSON.createObjectNode().put("loginName", "synthetic.localprobe")
-            .put("displayName", canaries.claimants.get(0).displayName()).put("reason", "synthetic probe onboarding");
+            .put("displayName", canaries.claimants.get(0).displayName()).put("reason", "probe onboarding");
         local.putArray("roles").add("viewer");
         ApiClient.Response createdLocal = admin.post("/api/v1/admin/users", local.toString(), true);
         assertEquals(201, createdLocal.status(), String.valueOf(createdLocal.body()));
