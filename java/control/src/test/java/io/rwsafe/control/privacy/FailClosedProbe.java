@@ -87,6 +87,15 @@ abstract class FailClosedProbe {
                     || !"true".equals(r.getResponse().getHeader(MaskingFunnel.MASKED_HEADER))) {
                     wrong.add(endpoint + " answered " + r.getResponse().getStatus());
                 }
+            } else if (path.equals("/api/v1/auth/password")) {
+                // PR 48 review D-02: a masked session's own password change is refused before anything changes.
+                writes++;
+                MvcResult r = mvc.perform(post(path).contentType("application/json").content("{}").with(csrf())
+                    .with(user("synthetic-masked-probe").roles(Roles.REPLAY_VIEWER))).andReturn();
+                String body = r.getResponse().getContentAsString();
+                if (r.getResponse().getStatus() != 503 || !body.contains("MASKING_UNAVAILABLE")) {
+                    wrong.add(endpoint + " answered " + r.getResponse().getStatus());
+                }
             } else if (!path.startsWith("/api/v1/auth/")) {
                 writes++;
                 MvcResult r = mvc.perform(post(path).contentType("application/json").content("{}").with(csrf())

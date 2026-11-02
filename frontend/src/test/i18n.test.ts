@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { CATALOGUES, DEFAULT_LANG, LANGUAGES, catalogueLabel, formatters, interpolate } from '../i18n';
+import {
+  CATALOGUES,
+  DEFAULT_LANG,
+  LANGUAGES,
+  catalogueLabel,
+  formatters,
+  interpolate,
+  storedLanguage,
+  userStorageKey,
+} from '../i18n';
 
 // PO decision Q-38: one catalogue per language, keys in English; a key missing in either catalogue fails here (and in
 // `tsc`, which types the Turkish catalogue against the English key set).
@@ -89,5 +98,21 @@ describe('formatting', () => {
   it('interpolates named placeholders and leaves unknown ones visible', () => {
     expect(interpolate('{a} of {b}', { a: 1, b: 'x' })).toBe('1 of x');
     expect(interpolate('{a} {missing}', { a: 1 })).toBe('1 {missing}');
+  });
+});
+
+describe('language preference store', () => {
+  it('keys a user by a digest and moves a key an earlier version wrote with the name (PR 48 review D-08)', () => {
+    window.localStorage.clear();
+    const key = userStorageKey('synthetic.person');
+    expect(key).toMatch(/^rwsafe\.ui\.lang:u-[0-9a-f]{16}$/);
+    expect(key).not.toContain('synthetic');
+    expect(userStorageKey('synthetic.person')).toBe(key);
+    expect(userStorageKey('synthetic.other')).not.toBe(key);
+    window.localStorage.setItem('rwsafe.ui.lang:synthetic.person', 'en');
+    expect(storedLanguage('synthetic.person')).toBe('en');
+    expect(window.localStorage.getItem('rwsafe.ui.lang:synthetic.person')).toBeNull();
+    expect(window.localStorage.getItem(key)).toBe('en');
+    window.localStorage.clear();
   });
 });

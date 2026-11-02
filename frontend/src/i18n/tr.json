@@ -587,7 +587,6 @@
   "reason.code_LOCAL_USER_EXISTS": "Bu kullanıcı adı kullanılıyor",
   "reason.code_LOCAL_USER_NOT_FOUND": "Kullanıcı bulunamadı",
   "reason.code_LAST_SECURITY_ADMIN": "Son güvenlik yöneticisi kalmalı",
-  "reason.code_SELF_DEMOTION_REFUSED": "Kendi yönetici rolünüzü kaldıramazsınız",
   "reason.code_SELF_DISABLE_REFUSED": "Kendinizi devre dışı bırakamazsınız",
   "reason.code_SELF_RESET_REFUSED": "Kendi parolanızı kullanıcı menüsünden değiştirin",
   "reason.code_SELF_SESSION_REFUSED": "Bu sizin oturumunuz",
@@ -599,5 +598,9 @@
   "reason.code_PASSWORD_CONTAINS_LOGIN": "Parola kullanıcı adını içeriyor",
   "reason.code_PASSWORD_UNCHANGED": "Mevcut parolayla aynı",
   "reason.code_CURRENT_PASSWORD_WRONG": "Mevcut parola yanlış",
-  "reason.code_INVALID_PASSWORD_REQUEST": "Parolalar eksik"
+  "reason.code_INVALID_PASSWORD_REQUEST": "Parolalar eksik",
+  "reason.code_SELF_ROLES_CHANGE_REFUSED": "Kendi rollerinizi değiştiremezsiniz",
+  "reason.code_NAME_HOLDS_IDENTIFIER": "Ad bir tanımlayıcı içeriyor",
+  "reason.code_ACCOUNT_CHANGED": "Hesap bu arada değiştirildi",
+  "users.selfHint": "Kendi satırınız: başka bir güvenlik yöneticisi değiştirir."
 }

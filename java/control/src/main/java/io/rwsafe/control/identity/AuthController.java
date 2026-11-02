@@ -6,11 +6,13 @@ import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
 import io.rwsafe.control.privacy.TextMasker;
 import io.rwsafe.persistence.Database;
+import io.rwsafe.persistence.LocalUser;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import org.slf4j.Logger;
@@ -172,6 +174,15 @@ public class AuthController {
         SecurityContextHolder.setContext(context);
         contexts.saveContext(context, request, response);
         sessions.register(session, user, user.roles());
+        // PR 48 review D-03: a disable, reset or role change that landed while this sign-in ran has already ended the
+        // user's registered sessions; this one is checked against the stored row once it is registered.
+        if (LocalUserAuthenticator.SOURCE.equals(user.source()) && !localUsers.stillMatches(user)) {
+            sessions.handle(session).ifPresent(sessions::end);
+            SecurityContextHolder.clearContext();
+            csrfTokens.saveToken(null, request, response);
+            LOG.info("login refused: the local user changed during the sign-in");
+            return error(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "The login name or password is wrong.");
+        }
         LOG.info("login accepted: source={} roles={} masked={} passwordChangeRequired={}", user.source(),
             new TreeSet<>(user.roles()), masked, user.passwordChangeRequired());
         return ResponseEntity.ok(me(auth));
@@ -194,6 +205,11 @@ public class AuthController {
     @PostMapping("/password")
     public ResponseEntity<MaskedView> changePassword(@RequestBody PasswordChangeRequest body, Authentication auth,
                                                      HttpServletRequest request, HttpServletResponse response) {
+        // A masked session changes nothing it could not be served afterwards (PR 48 review D-02, AGENTS.md 4.10).
+        if (roles(auth).contains(Roles.REPLAY_VIEWER) && !keys.maskingAvailable()) {
+            return error(HttpStatus.SERVICE_UNAVAILABLE, "MASKING_UNAVAILABLE",
+                "The masking key or dictionary is missing; nothing changed.");
+        }
         if (!(auth.getDetails() instanceof SessionDetails details)
             || !LocalUserAuthenticator.SOURCE.equals(details.source())) {
             return error(HttpStatus.CONFLICT, "NOT_A_LOCAL_USER",
@@ -210,12 +226,15 @@ public class AuthController {
             return error(HttpStatus.TOO_MANY_REQUESTS, "LOGIN_THROTTLED",
                 "Too many failed logins for this name; try again in 15 minutes.");
         }
-        if (!localUsers.changeOwnPassword(name, current.toCharArray(), next.toCharArray())) {
+        Optional<LocalUser> stored = localUsers.changeOwnPassword(name, current.toCharArray(), next.toCharArray());
+        if (stored.isEmpty()) {
             identity.failed(name, request.getRemoteAddr());
             LOG.info("password change refused: the current password is wrong");
             return error(HttpStatus.FORBIDDEN, "CURRENT_PASSWORD_WRONG", "The current password is wrong.");
         }
-        Authentication changed = authentication(name, roles(auth), details.source(), false);
+        // The session goes on with the stored roles, and every other session of the user ends (D-02).
+        Authentication changed = authentication(name, Set.copyOf(stored.get().roles()), details.source(), false);
+        sessions.endAllExcept(name, details.source(), sessions.handle(request.getSession(false)).orElse(null));
         request.changeSessionId();
         csrfTokens.saveToken(csrfTokens.generateToken(request), request, response);
         SecurityContext context = SecurityContextHolder.createEmptyContext();

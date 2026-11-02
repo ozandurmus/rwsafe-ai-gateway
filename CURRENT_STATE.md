@@ -660,7 +660,7 @@ PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.m
   to 128 characters within 72 bytes, six different characters, not the login name, not the old one; the current
   password is checked under the login throttle). Local users sign in through the `Authenticator` seam between
   break-glass and the directory (source `local_user`), under the same throttle; a disabled user is refused like a wrong
-  password. No self-disable, self-demotion or self-reset; the last enabled `security_admin` (local users plus the
+  password. No self-disable, self role change or self-reset; the last enabled `security_admin` (local users plus the
   break-glass account while its sign-in is on) cannot be disabled or demoted (advisory lock in the same transaction).
   Disable, reset and role change end the user's open sessions. Break-glass is listed read-only. Users are named by
   their `USR-` pseudonym in every route, so no login name reaches a URL or an access log.
@@ -680,9 +680,20 @@ PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.m
   `GET /api/v1/admin/sessions`, `POST /api/v1/admin/sessions/{handle}/end`; any signed-in local user:
   `POST /api/v1/auth/password`. `GET /api/v1/auth/me` now also returns the session's source and
   `passwordChangeRequired`.
+- Second review: Argon (`docs/reviews/PR48_2026_11_02_ARGON_ADMIN_ACCESS_PART1.md`), MERGE WITH CORRECTIONS, no P0;
+  D-01..D-08 fixed with tests: no role change on oneself at all (`SELF_ROLES_CHANGE_REFUSED`), "self" being the same
+  login name signed in as a local user; the own password change re-checks the enabled flag and the unchanged hash
+  inside the update, keeps the stored roles, ends the user's other sessions and refuses a masked session without
+  masking (503); a sign-in whose local user changed meanwhile is ended (401); a local user row, enabled or not, owns its
+  login name and the directory is never asked for it (Argon's Q-1 adopted); a reason naming the actor, the target or any
+  stored local user (tokens of 3 or more letters, Turkish suffixes included) is refused; ending a session invalidates
+  it first, 404 when none is live, then ledgers; V11 accepts only a whole cost-12 BCrypt hash and guards the change
+  mark and its time; login and display names carry no identifier or estate term (503 without masking); the UI keys the
+  language choice by a digest of the name, never the name, and moves an old clear key.
 - Open: sessions are per control-plane instance (one replica in the pilot); whether local users stay after go-live is
-  the record's open item; a local user and a directory user with the same login name share one pseudonym (the local
-  account is tried first). Security-sensitive: needs the second independent review before merge.
+  the record's open item; go-live item (Argon's Q-2, behaviour unchanged): while break-glass sign-in is on it counts as
+  the last `security_admin`, so the last local administrator can be disabled; before break-glass is turned off at
+  go-live, at least one enabled local (or directory) `security_admin` must exist, or the product is left without one.
 
 ## Not done
 

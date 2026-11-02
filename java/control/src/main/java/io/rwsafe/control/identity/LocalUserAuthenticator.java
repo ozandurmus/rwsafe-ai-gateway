@@ -39,4 +39,11 @@ public final class LocalUserAuthenticator implements Authenticator {
         LocalUser u = user.get();
         return Optional.of(new AuthenticatedUser(u.loginName(), Set.copyOf(u.roles()), SOURCE, u.mustChangePassword()));
     }
+
+    /** A local user row, enabled or not, owns its login name: the directory is never asked for it (D-04). */
+    @Override
+    public boolean authoritative(String loginName) {
+        String name = loginName.toLowerCase(Locale.ROOT);
+        return LocalUsers.LOGIN_NAME.matcher(name).matches() && database.localUsers().find(name).isPresent();
+    }
 }

@@ -587,7 +587,6 @@
   "reason.code_LOCAL_USER_EXISTS": "This login name is taken",
   "reason.code_LOCAL_USER_NOT_FOUND": "User not found",
   "reason.code_LAST_SECURITY_ADMIN": "The last security administrator stays",
-  "reason.code_SELF_DEMOTION_REFUSED": "You cannot remove your own administrator role",
   "reason.code_SELF_DISABLE_REFUSED": "You cannot disable yourself",
   "reason.code_SELF_RESET_REFUSED": "Change your own password from the user menu",
   "reason.code_SELF_SESSION_REFUSED": "This is your own session",
@@ -599,5 +598,9 @@
   "reason.code_PASSWORD_CONTAINS_LOGIN": "Password contains the login name",
   "reason.code_PASSWORD_UNCHANGED": "Same as the current password",
   "reason.code_CURRENT_PASSWORD_WRONG": "Current password is wrong",
-  "reason.code_INVALID_PASSWORD_REQUEST": "Passwords missing"
+  "reason.code_INVALID_PASSWORD_REQUEST": "Passwords missing",
+  "reason.code_SELF_ROLES_CHANGE_REFUSED": "You cannot change your own roles",
+  "reason.code_NAME_HOLDS_IDENTIFIER": "The name holds an identifier",
+  "reason.code_ACCOUNT_CHANGED": "The account was changed meanwhile",
+  "users.selfHint": "Your own row: another security administrator changes it."
 }

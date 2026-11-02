@@ -189,6 +189,20 @@ describe('administration', () => {
     expect(alert).toHaveTextContent('LAST_SECURITY_ADMIN');
   });
 
+  it('offers no change on the signed-in local administrator own row (PR 48 review D-01)', async () => {
+    const localAdmin = { displayName: USER.loginName, roles: ['security_admin'], masked: false, source: 'local_user' };
+    fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: localAdmin }),
+      'GET /api/v1/admin/users': () => ({ status: 200, body: users([{ ...USER, roles: ['security_admin'] }]) }),
+    });
+    renderApp('/admin/users', 'en');
+    const table = await screen.findByRole('table', { name: 'Local users' });
+    for (const name of ['Roles', 'Disable', 'Reset password']) {
+      expect(within(table).getByRole('button', { name })).toBeDisabled();
+    }
+    expect(within(table).getByText(/another security administrator changes it/)).toBeInTheDocument();
+  });
+
   it('keeps the masked viewer role alone', () => {
     expect(toggleRole(['viewer', 'security_admin'], 'replay_viewer')).toEqual(['replay_viewer']);
     expect(toggleRole(['replay_viewer'], 'viewer')).toEqual(['viewer']);

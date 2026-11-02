@@ -11,6 +11,7 @@ import io.rwsafe.control.admin.AccessViews.UserView;
 import io.rwsafe.control.admin.AccessViews.UsersView;
 import io.rwsafe.control.identity.ActiveSessions;
 import io.rwsafe.control.identity.LocalUsers;
+import io.rwsafe.control.identity.LocalUsers.Actor;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
@@ -50,7 +51,7 @@ public class AccessAdminController {
 
     @PostMapping("/users")
     public ResponseEntity<IssuedView> create(@RequestBody CreateUserRequest body, Authentication auth) {
-        LocalUsers.Issued issued = users.create(auth.getName(), body == null ? null : body.loginName(),
+        LocalUsers.Issued issued = users.create(Actor.of(auth), body == null ? null : body.loginName(),
             body == null ? null : body.displayName(), body == null ? null : body.roles(),
             body == null ? null : body.reason());
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore())
@@ -60,26 +61,26 @@ public class AccessAdminController {
     @PostMapping("/users/{subject}/roles")
     public UserView roles(@PathVariable("subject") String subject, @RequestBody RolesRequest body,
                           Authentication auth) {
-        return UserView.of(users.changeRoles(auth.getName(), subject, body == null ? null : body.roles(),
-            body == null ? null : body.reason()));
+        return UserView.of(users.changeRoles(Actor.of(auth), subject, body == null ? null : body.roles(),
+            reason(body)));
     }
 
     @PostMapping("/users/{subject}/disable")
     public UserView disable(@PathVariable("subject") String subject, @RequestBody ReasonRequest body,
                             Authentication auth) {
-        return UserView.of(users.setEnabled(auth.getName(), subject, false, body == null ? null : body.reason()));
+        return UserView.of(users.setEnabled(Actor.of(auth), subject, false, reason(body)));
     }
 
     @PostMapping("/users/{subject}/enable")
     public UserView enable(@PathVariable("subject") String subject, @RequestBody ReasonRequest body,
                            Authentication auth) {
-        return UserView.of(users.setEnabled(auth.getName(), subject, true, body == null ? null : body.reason()));
+        return UserView.of(users.setEnabled(Actor.of(auth), subject, true, reason(body)));
     }
 
     @PostMapping("/users/{subject}/password-reset")
     public ResponseEntity<IssuedView> reset(@PathVariable("subject") String subject, @RequestBody ReasonRequest body,
                                             Authentication auth) {
-        LocalUsers.Issued issued = users.resetPassword(auth.getName(), subject, body == null ? null : body.reason());
+        LocalUsers.Issued issued = users.resetPassword(Actor.of(auth), subject, reason(body));
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .body(new IssuedView(UserView.of(issued.user()), new String(issued.oneTimePassword())));
     }
@@ -98,8 +99,16 @@ public class AccessAdminController {
     @PostMapping("/sessions/{handle}/end")
     public ResponseEntity<Void> end(@PathVariable("handle") String handle, @RequestBody ReasonRequest body,
                                     Authentication auth, HttpServletRequest request) {
-        users.endSession(auth.getName(), handle, sessions.handle(request.getSession(false)).orElse(""),
+        users.endSession(Actor.of(auth), handle, sessions.handle(request.getSession(false)).orElse(""),
             body == null ? null : body.reason());
         return ResponseEntity.noContent().build();
+    }
+
+    private static String reason(ReasonRequest body) {
+        return body == null ? null : body.reason();
+    }
+
+    private static String reason(RolesRequest body) {
+        return body == null ? null : body.reason();
     }
 }
