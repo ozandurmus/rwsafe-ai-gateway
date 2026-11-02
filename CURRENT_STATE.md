@@ -797,6 +797,11 @@ PLATFORM (Notifications, System logs, System). TR/EN catalogues extended.
 - Open: wire `RWSAFE_BUILD_COMMIT` and `RWSAFE_BUILD_TIME` into the control image (deploy change, own review); job runs
   and log counts are per instance (one replica in the pilot).
 
+- Applied on HOST-A 2026-11-02 together with PR 50: control image built from main `db9ce86` (data plane image unchanged);
+  Secret `rwsafe-directory-key` created by `bootstrap_secrets.sh` (no value printed); V12 dry-run in BEGIN/ROLLBACK, then
+  applied by Flyway; through Traefik: UI 200, health 200, `/api/v1/admin/directory` and `/api/v1/admin/audit` 401 without a
+  session; no ERROR line and no `DIRECTORY_KEY_MISSING` after start. The pilot overlay still has no route to the directory,
+  so a connection test answers UNREACHABLE until the PO supplies the directory's address range on the host.
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
