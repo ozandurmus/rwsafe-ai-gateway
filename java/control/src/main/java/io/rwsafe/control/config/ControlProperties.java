@@ -20,7 +20,7 @@ public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFe
         captureSink = captureSink == null ? new CaptureSink(8092, "127.0.0.1") : captureSink;
         snapshotFeed = snapshotFeed == null ? new SnapshotFeed(8091, "127.0.0.1") : snapshotFeed;
         privacy = privacy == null ? new Privacy(null, null) : privacy;
-        identity = identity == null ? new Identity(null, null, false) : identity;
+        identity = identity == null ? new Identity(null, null, false, null) : identity;
         policy = policy == null ? new Policy(null, null, null, null, null) : policy;
         sample = sample == null ? new Sample(0, 1) : sample;
         siem = siem == null ? new Siem(false, null, null, 0, 0, 0, null, null, null, null) : siem;
@@ -211,7 +211,12 @@ public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFe
     public record Privacy(Path hmacKeyFile, Path estateDictionaryFile) {
     }
 
-    public record Identity(Ldap ldap, BreakGlass breakGlass, boolean cookieSecure) {
+    /**
+     * @param directoryKeyFile the directory key (PO decision Q-47, decision 1.2): 32 random bytes from the product's own
+     *                         Secret {@code rwsafe-directory-key}, the AES-256-GCM key of the stored bind password. Without
+     *                         it the control plane starts and the directory is unavailable with that reason
+     */
+    public record Identity(Ldap ldap, BreakGlass breakGlass, boolean cookieSecure, Path directoryKeyFile) {
 
         public Identity {
             ldap = ldap == null ? new Ldap(null, null, null, null, null, null, null) : ldap;
@@ -220,11 +225,14 @@ public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFe
     }
 
     /**
-     * LDAP/AD bind (Q-9): search the user with the service account, then bind as the user; groups map to roles.
+     * The deploy's directory values ({@code RWSAFE_LDAP_*}). Since PO decision Q-47 (decision 1.2) the directory is set on
+     * the Administration screen and stored in the database; these values only <em>seed</em> the stored settings once, at
+     * a start that finds the settings table empty (ledgered as the system actor {@code system:deploy-seed}). Once the
+     * table holds a version, nothing here is read again: a changed deploy value never overrides a saved screen setting.
      *
-     * @param url              {@code ldaps://host:636} (or {@code ldap://} for a local test directory only)
+     * @param url              {@code ldaps://host:636}, or {@code ldap://} (seeded as StartTLS; plain only to loopback)
      * @param userSearchFilter with {@code {0}} for the escaped login name, for example {@code (sAMAccountName={0})}
-     * @param groupRoles       group distinguished name (lower case) to role
+     * @param groupRoles       group (its distinguished name or its name) to role; seeded as bindings by the group's name
      */
     public record Ldap(String url, String bindDn, Path bindPasswordFile, String userSearchBase, String userSearchFilter,
                        String groupAttribute, Map<String, String> groupRoles) {

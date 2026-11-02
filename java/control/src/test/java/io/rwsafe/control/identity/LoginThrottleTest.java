@@ -94,9 +94,15 @@ class LoginThrottleTest {
         assertFalse(LdapAuthenticator.loopback("synthetic.example.test"));
         assertFalse(LdapAuthenticator.loopback("127.synthetic.example.test"));
         assertFalse(LdapAuthenticator.loopback(null));
-        LdapAuthenticator remote = new LdapAuthenticator(new io.rwsafe.control.config.ControlProperties.Ldap(
-            "ldap://synthetic.example.test:389", "cn=synthetic-service,dc=example,dc=test", null,
-            "dc=example,dc=test", "(uid={0})", null, null));
+        LdapAuthenticator remote;
+        try {
+            remote = new LdapAuthenticator(new DirectoryConfig(java.util.List.of(new com.unboundid.ldap.sdk.LDAPURL(
+                "ldap://synthetic.example.test:389")), DirectoryConfig.TlsMode.NONE, java.util.List.of(),
+                "cn=synthetic-service,dc=example,dc=test", "synthetic".toCharArray(), "dc=example,dc=test",
+                "(uid={0})", "memberOf", null, null, 500, 500, java.util.Map.of()));
+        } catch (com.unboundid.ldap.sdk.LDAPException e) {
+            throw new IllegalStateException(e);
+        }
         assertTrue(remote.authenticate("synthetic-admin", "synthetic-password".toCharArray()).isEmpty());
         remote.close();
     }

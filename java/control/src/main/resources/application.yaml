@@ -102,6 +102,9 @@ rwsafe:
     break-glass:
       enabled: ${RWSAFE_BREAK_GLASS_ENABLED:false}
       initial-password-file: ${RWSAFE_BREAK_GLASS_PASSWORD_FILE:/var/lib/rwsafe/break-glass-initial-password}
+    # The stored bind password's AES-256-GCM key (PO decision Q-47): the product's own Secret rwsafe-directory-key.
+    directory-key-file: ${RWSAFE_DIRECTORY_KEY_FILE:/run/secrets/rwsafe-directory-key/key}
+    # Seed values only: copied once into the stored directory settings when that table is empty, never read after.
     ldap:
       url: ${RWSAFE_LDAP_URL:}
       bind-dn: ${RWSAFE_LDAP_BIND_DN:}

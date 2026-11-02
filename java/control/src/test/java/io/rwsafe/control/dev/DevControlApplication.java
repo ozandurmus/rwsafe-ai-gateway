@@ -86,10 +86,20 @@ public final class DevControlApplication {
 
         StringBuilder credentials = new StringBuilder("# rwsafe development credentials, generated at start (synthetic "
             + "accounts only; never commit, never share).\n");
-        String bindPassword = password();
+        // The directory settings are stored in the database after the first start (PO decision Q-47), so the development
+        // directory keeps its port and its service password across starts, and the directory key is made once.
         Path bindPasswordFile = dir.resolve("ldap-bind-password");
+        String bindPassword = Files.exists(bindPasswordFile) ? Files.readString(bindPasswordFile).strip() : password();
         ownerOnly(bindPasswordFile, bindPassword.getBytes(StandardCharsets.UTF_8));
-        InMemoryDirectoryServer ldap = directory(bindPassword, credentials);
+        Path directoryKey = dir.resolve("directory.key");
+        if (!Files.exists(directoryKey)) {
+            byte[] bytes = new byte[32];
+            new SecureRandom().nextBytes(bytes);
+            ownerOnly(directoryKey, bytes);
+        }
+        set("rwsafe.identity.directory-key-file", directoryKey.toString());
+        InMemoryDirectoryServer ldap = directory(bindPassword, credentials,
+            Integer.parseInt(env("RWSAFE_DEV_LDAP_PORT", "33389")));
         Path breakGlassFile = dir.resolve("break-glass-initial-password");
         credentials.append("breakglass  <see ").append(breakGlassFile.getFileName())
             .append(", written at first start>  security_admin (local)\n");
@@ -130,10 +140,11 @@ public final class DevControlApplication {
         app.run(args);
     }
 
-    private static InMemoryDirectoryServer directory(String bindPassword, StringBuilder credentials) throws Exception {
+    private static InMemoryDirectoryServer directory(String bindPassword, StringBuilder credentials, int port)
+        throws Exception {
         InMemoryDirectoryServerConfig config = new InMemoryDirectoryServerConfig(BASE);
         config.setListenerConfigs(InMemoryListenerConfig.createLDAPConfig("loopback",
-            InetAddress.getLoopbackAddress(), 0, null));
+            InetAddress.getLoopbackAddress(), port, null));
         config.setSchema(null);
         InMemoryDirectoryServer server = new InMemoryDirectoryServer(config);
         server.add(new Entry(BASE, new Attribute("objectClass", "top", "domain"), new Attribute("dc", "example")));

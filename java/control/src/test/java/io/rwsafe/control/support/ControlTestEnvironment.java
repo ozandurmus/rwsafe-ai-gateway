@@ -55,6 +55,12 @@ public final class ControlTestEnvironment {
      */
     public static synchronized void register(DynamicPropertyRegistry r, boolean withKey, Path dictionary,
                                              String signingKeyId) throws Exception {
+        register(r, withKey, dictionary, signingKeyId, true);
+    }
+
+    /** As above; {@code withDirectoryKey=false} leaves the directory key Secret unmounted (PO decision Q-47). */
+    public static synchronized void register(DynamicPropertyRegistry r, boolean withKey, Path dictionary,
+                                             String signingKeyId, boolean withDirectoryKey) throws Exception {
         start();
         String db = "rwsafe_control_" + DATABASES.incrementAndGet();
         try (Connection c = postgres.getPostgresDatabase().getConnection(); Statement s = c.createStatement()) {
@@ -75,6 +81,8 @@ public final class ControlTestEnvironment {
         r.add("server.servlet.session.cookie.name", () -> "rwsafe-session");
         r.add("rwsafe.identity.break-glass.enabled", () -> "true");
         r.add("rwsafe.identity.break-glass.initial-password-file", () -> dir.resolve(db + "-break-glass").toString());
+        r.add("rwsafe.identity.directory-key-file", () -> dir.resolve(withDirectoryKey ? "directory-key" : "absent")
+            .toString());
         r.add("rwsafe.identity.ldap.url", () -> "ldap://127.0.0.1:" + ldap.getListenPort());
         r.add("rwsafe.identity.ldap.bind-dn", () -> "cn=synthetic-service," + BASE);
         r.add("rwsafe.identity.ldap.bind-password-file", () -> dir.resolve("bind-password").toString());
@@ -134,6 +142,9 @@ public final class ControlTestEnvironment {
         byte[] key = new byte[32];
         new SecureRandom().nextBytes(key);
         Files.write(dir.resolve("key"), key);
+        byte[] directoryKey = new byte[32];
+        new SecureRandom().nextBytes(directoryKey);
+        Files.write(dir.resolve("directory-key"), directoryKey);
         Files.writeString(dir.resolve("dictionary.txt"), "# synthetic\nsynthetic-estate\n");
         String bind = secret();
         Files.writeString(dir.resolve("bind-password"), bind + "\n");
@@ -160,6 +171,18 @@ public final class ControlTestEnvironment {
         ldap.modify("uid=synthetic-dual," + PEOPLE, new com.unboundid.ldap.sdk.Modification(
             com.unboundid.ldap.sdk.ModificationType.ADD, "memberOf", "cn=rwsafe-security_admin," + GROUPS));
         ldap.startListening();
+    }
+
+    /** The in-memory directory's plain (loopback) port. */
+    public static synchronized int ldapPort() throws Exception {
+        start();
+        return ldap.getListenPort();
+    }
+
+    /** The service account's generated password (what the deploy's bind password file holds). */
+    public static synchronized String bindPassword() throws Exception {
+        start();
+        return Files.readString(dir.resolve("bind-password")).strip();
     }
 
     /** Adds a directory user with one role (or none) once per JVM; its generated password lands in {@link #PASSWORDS}. */
