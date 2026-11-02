@@ -745,7 +745,9 @@ PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.m
   database refuses is skipped. D-08 switching the directory off or changing bindings ends the open directory sessions
   but the administrator's own (Q-2); the screen keeps the other section's unsaved edits and refuses `=`. Q-1: plain LDAP
   and loopback targets only under the test-only property `rwsafe.identity.directory-loopback-for-tests` (no
-  environment variable, off in every overlay); the screen offers no plain LDAP otherwise.
+  environment variable mapped; `tools/deploy/manifest_check.py` refuses any key or value of any render, the pilot's
+  included, and any contract name or key whose letters contain LOOPBACKFORTESTS; the control plane logs an ERROR line
+  at start when it is on outside the test or dev profile); the screen offers no plain LDAP otherwise.
 - Open: the pilot overlay still removes the directory NetworkPolicy (`rwsafe-control-to-directory`) and its CIDR, so a
   pilot test against the real directory answers UNREACHABLE until that egress is restored with the directory's address
   range; group names are matched by name only (two groups with the same name in different branches are one). Security-

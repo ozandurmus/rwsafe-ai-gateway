@@ -83,6 +83,7 @@ public final class ControlTestEnvironment {
         r.add("rwsafe.identity.break-glass.initial-password-file", () -> dir.resolve(db + "-break-glass").toString());
         // The in-memory directory is plain LDAP on a loopback port: the test-only switch (PR 50 review Q-1).
         r.add("rwsafe.identity.directory-loopback-for-tests", () -> "true");
+        r.add("spring.profiles.active", () -> "test");
         r.add("rwsafe.identity.directory-key-file", () -> dir.resolve(withDirectoryKey ? "directory-key" : "absent")
             .toString());
         r.add("rwsafe.identity.ldap.url", () -> "ldap://127.0.0.1:" + ldap.getListenPort());

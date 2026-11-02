@@ -49,6 +49,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.core.env.Environment;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -78,6 +79,8 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
     private static final Logger LOG = LoggerFactory.getLogger(DirectorySettingsService.class);
 
     public static final String SEED_ACTOR = "system:deploy-seed";
+    /** The profiles the test-only switch belongs to: the test suite's and the local development application's. */
+    static final String TEST_PROFILES = "test | dev";
     static final String SEED_REASON = "Seeded once from the deploy configuration (RWSAFE_LDAP_*) into an empty table";
     public static final int MAX_URLS = 8;
     public static final int MAX_GROUPS = 500;
@@ -136,6 +139,7 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
     private final Clock clock;
     private final ActiveSessions sessions;
     private final boolean localTargets;
+    private final boolean testProfile;
     private final Semaphore oneTest = new Semaphore(1);
     private final Map<String, Deque<Instant>> testsByActor = new HashMap<>();
     private final Deque<Instant> testsAll = new ArrayDeque<>();
@@ -149,7 +153,8 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
     private volatile Active active = new Active(0, null, new Status("NOT_CONFIGURED", null, 0));
 
     public DirectorySettingsService(Database database, ControlProperties properties, LocalUsers users,
-                                    Pseudonymiser pseudonymiser, PrivacyKeys keys, ActiveSessions sessions) {
+                                    Pseudonymiser pseudonymiser, PrivacyKeys keys, ActiveSessions sessions,
+                                    Environment environment) {
         this.database = database;
         this.deploy = properties.identity().ldap();
         this.key = new DirectoryKey(properties.identity().directoryKeyFile());
@@ -159,6 +164,7 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
         this.clock = Clock.systemUTC();
         this.sessions = sessions;
         this.localTargets = properties.identity().directoryLoopbackForTests();
+        this.testProfile = testProfile(environment);
     }
 
     /** True under the test-only switch: plain LDAP and loopback targets for a test directory (PR 50 review Q-1). */
@@ -168,8 +174,39 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
 
     @Override
     public void afterPropertiesSet() {
+        testSwitchAlarm(localTargets, testProfile);
         seedFromDeploy();
         reload();
+    }
+
+    /**
+     * Logs an ERROR line when the test-only switch is on outside the test (or local development) profile and says
+     * whether it did. tools/deploy/manifest_check.py refuses every render that names the switch; this is the runtime's
+     * own alarm should it be set some other way (PR 50 review Q-1).
+     */
+    /**
+     * True under the test or local development profile: active, or declared in {@code spring.profiles.active} (a test
+     * context declares it through its dynamic properties, which arrive after Boot has activated the profiles).
+     */
+    static boolean testProfile(Environment environment) {
+        if (environment.matchesProfiles(TEST_PROFILES)) {
+            return true;
+        }
+        for (String p : environment.getProperty("spring.profiles.active", "").split(",")) {
+            if (p.strip().equals("test") || p.strip().equals("dev")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean testSwitchAlarm(boolean on, boolean testProfile) {
+        if (on && !testProfile) {
+            LOG.error("rwsafe.identity.directory-loopback-for-tests is on outside the test profile: plain LDAP and "
+                + "loopback directory targets are allowed; no deploy may set it");
+            return true;
+        }
+        return false;
     }
 
     // ---- sign-in -------------------------------------------------------------------------------------------------

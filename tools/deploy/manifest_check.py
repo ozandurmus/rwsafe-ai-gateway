@@ -47,6 +47,11 @@ cluster), and asserts the shared-host rules on every object:
     deploy/rwsafe/overlays/pilot, or a --rendered file declared with --pilot), else "false"; any other key or value of
     any rendered object (ConfigMap data and decoded binaryData, env, command, args, SPRING_APPLICATION_JSON, JVM option
     variables) and any runtime-contract name or key whose letters and digits contain SINGLEAPPROVAL is refused
+  - the directory test-only switch (PR 50 review Q-1, rwsafe.identity.directory-loopback-for-tests: plain LDAP and
+    loopback directory targets for the in-memory test directory) is never named by a deploy: any key or string value of
+    any rendered object (ConfigMap data and decoded binaryData, env names and values, SPRING_APPLICATION_JSON, JVM option
+    variables, command, args, annotations) and any runtime-contract name or key whose letters and digits, upper-cased,
+    contain LOOPBACKFORTESTS is refused in every render, the pilot's included
 
 Standard library only; needs kubectl (and optionally kustomize) on PATH.
 
@@ -533,6 +538,47 @@ def check_single_approval(objects: list[dict], contracts: dict, fail, fail_text,
                           f"it is set only as {SINGLE_APPROVAL_ENV} in ConfigMap {control}")
 
 
+DIRECTORY_TEST_SWITCH = "LOOPBACKFORTESTS"
+
+
+def _mentions_directory_test_switch(text) -> bool:
+    """True when `text`, reduced to its letters and digits and upper-cased, contains LOOPBACKFORTESTS (which every
+    spelling of DIRECTORYLOOPBACKFORTESTS contains): RWSAFE_IDENTITY_DIRECTORYLOOPBACKFORTESTS,
+    rwsafe.identity.directory-loopback-for-tests, SPRING_APPLICATION_JSON keys, a -D JVM option."""
+    return isinstance(text, str) and DIRECTORY_TEST_SWITCH in re.sub(r"[^A-Za-z0-9]", "", text).upper()
+
+
+def check_directory_test_switch(objects: list[dict], contracts: dict, fail, fail_text) -> None:
+    """PR 50 review Q-1 and its confirmation: the directory's test-only switch exists for the in-memory test directory
+    and is set by no deploy. Any mention in any rendered object (keys and string values, ConfigMap binaryData decoded)
+    and any runtime-contract name or key that mentions it is refused, in every render."""
+    for obj in objects:
+        mentions = [path for path, text in _strings(obj) if _mentions_directory_test_switch(text)]
+        if obj.get("kind") == "ConfigMap":
+            for key, value in (obj.get("binaryData") or {}).items():
+                try:
+                    decoded = base64.b64decode(value or "").decode("latin-1")
+                except (ValueError, TypeError):
+                    decoded = ""
+                if _mentions_directory_test_switch(decoded):
+                    mentions.append(f"binaryData.{key} (decoded)")
+        if mentions:
+            fail(obj, f"mentions the directory test-only switch (PR 50 review Q-1) at "
+                      f"{', '.join(sorted(set(mentions))[:5])}; plain LDAP and loopback directory targets are for "
+                      f"tests only and no deploy sets them")
+    sections = [("secrets", contracts.get("secrets") or {}), ("configMaps", contracts.get("configMaps") or {})]
+    build = contracts.get("build")
+    if isinstance(build, dict):
+        sections.append(("build.configMaps", build.get("configMaps") or {}))
+    for section, entries in sections:
+        for name, entry in entries.items():
+            entry = entry if isinstance(entry, dict) else {}
+            texts = [name] + list(entry.get("keys") or []) + list(entry.get("keyPatterns") or [])
+            if any(_mentions_directory_test_switch(t) for t in texts):
+                fail_text(f"runtime contract {section}/{name}: names the directory test-only switch (PR 50 review "
+                          f"Q-1); no deploy sets it")
+
+
 def check(objects: list[dict], contracts: dict, release: bool = False,
           product: str = SOURCE_PRODUCT, pilot: bool = False) -> tuple[list[str], list[str]]:
     """Returns (failures, notes). `objects` and `contracts` are already under the product name (rename_objects,
@@ -541,6 +587,7 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
     notes: list[str] = []
     fail = lambda obj, msg: failures.append(f"{ident(obj)}: {msg}")  # noqa: E731
     check_single_approval(objects, contracts, fail, failures.append, product, pilot)
+    check_directory_test_switch(objects, contracts, fail, failures.append)
     build_namespaces = {f"{product}-build"}
 
     secret_contract = {n: set(v["keys"]) for n, v in contracts.get("secrets", {}).items()}

@@ -1082,5 +1082,107 @@ class SingleApprovalSwitch(unittest.TestCase):
         self.assert_mention_refused(build_configmap, "runtime contract build.configMaps/rwsafe-single-approval")
 
 
+class DirectoryTestSwitch(unittest.TestCase):
+    """PR 50 review Q-1 (confirmation): the directory's test-only switch (plain LDAP and loopback targets) is named by
+    no render and no contract, the pilot's included; every shape a deploy could set it in is refused."""
+
+    def switch_failures(self, failures: list[str]) -> list[str]:
+        return [f for f in failures if "directory test-only switch" in f]
+
+    def control_config(self, objects: list[dict]) -> dict:
+        return next(o for o in objects if mc.ident(o) == "ConfigMap/rwsafe/rwsafe-control-config")
+
+    def control_pod(self, objects: list[dict]) -> dict:
+        return mc.containers(mc.pod_template(next(
+            o for o in objects if mc.ident(o) == "Deployment/rwsafe/rwsafe-control"))[1])[0]
+
+    def assert_refused(self, mutate, where: str):
+        for pilot in (False, True):
+            with self.subTest(where=where, pilot=pilot):
+                objects, contracts = copy.deepcopy(_PILOT_RENDER["rwsafe"])
+                mutate(objects, contracts)
+                failures = self.switch_failures(mc.check(objects, contracts, pilot=pilot)[0])
+                self.assertTrue(any(where in f for f in failures), failures)
+
+    def test_no_committed_render_or_contract_names_it(self):
+        for overlay in ("k3s", "pilot"):
+            for product in ("rwsafe", "acme"):
+                with self.subTest(overlay=overlay, product=product):
+                    text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays" / overlay)
+                    objects = mc.rename_objects(mc.to_objects(text), product)
+                    contracts = mc.rename_contracts(CONTRACTS_FILE_JSON, product)
+                    failures, _ = mc.check(objects, contracts, product=product, pilot=overlay == "pilot")
+                    self.assertEqual(self.switch_failures(failures), [])
+
+    def test_every_spelling_matches(self):
+        for text in ("RWSAFE_IDENTITY_DIRECTORYLOOPBACKFORTESTS", "rwsafe.identity.directory-loopback-for-tests",
+                     "rwsafe_identity_directory_loopback_for_tests", "directoryLoopbackForTests",
+                     '{"rwsafe":{"identity":{"directory-loopback-for-tests":true}}}', "loopback-for-tests"):
+            self.assertTrue(mc._mentions_directory_test_switch(text), text)
+        for text in ("RWSAFE_LDAP_URL", "loopback", "for-tests", None, 1):
+            self.assertFalse(mc._mentions_directory_test_switch(text), text)
+
+    def test_configmap_keys_values_and_binary_data_are_refused(self):
+        for name in ("RWSAFE_IDENTITY_DIRECTORYLOOPBACKFORTESTS", "rwsafe.identity.directory-loopback-for-tests"):
+            def key(objects, _, name=name):
+                self.control_config(objects)["data"][name] = "true"
+            self.assert_refused(key, f"data.{name}")
+
+        def spring_json(objects, _):
+            self.control_config(objects)["data"]["SPRING_APPLICATION_JSON"] = json.dumps(
+                {"rwsafe": {"identity": {"directory-loopback-for-tests": True}}})
+        self.assert_refused(spring_json, "data.SPRING_APPLICATION_JSON")
+
+        def tool_options(objects, _):
+            self.control_config(objects)["data"]["JAVA_TOOL_OPTIONS"] = (
+                "-Drwsafe.identity.directory-loopback-for-tests=true")
+        self.assert_refused(tool_options, "data.JAVA_TOOL_OPTIONS")
+
+        def binary(objects, _):
+            self.control_config(objects)["binaryData"] = {"application.properties": base64.b64encode(
+                b"rwsafe.identity.directory-loopback-for-tests=true").decode()}
+        self.assert_refused(binary, "binaryData.application.properties (decoded)")
+
+    def test_env_command_args_and_annotations_are_refused(self):
+        def env(entry):
+            def mutate(objects, _):
+                self.control_pod(objects).setdefault("env", []).append(entry)
+            return mutate
+        self.assert_refused(env({"name": "RWSAFE_IDENTITY_DIRECTORYLOOPBACKFORTESTS", "value": "true"}), "env")
+        self.assert_refused(env({"name": "JDK_JAVA_OPTIONS",
+                                 "value": "-Drwsafe.identity.directory-loopback-for-tests=true"}), "env")
+        self.assert_refused(env({"name": "JAVA_TOOL_OPTIONS",
+                                 "value": "-Drwsafe.identity.directoryLoopbackForTests=true"}), "env")
+        self.assert_refused(env({"name": "SPRING_APPLICATION_JSON",
+                                 "value": '{"rwsafe":{"identity":{"directoryLoopbackForTests":true}}}'}), "env")
+
+        def args(objects, _):
+            self.control_pod(objects)["args"] = ["--rwsafe.identity.directory-loopback-for-tests=true"]
+        self.assert_refused(args, "args[0]")
+
+        def command(objects, _):
+            self.control_pod(objects)["command"] = ["java", "-Drwsafe.identity.directory-loopback-for-tests=true",
+                                                    "-jar", "app.jar"]
+        self.assert_refused(command, "command[1]")
+
+        def annotation(objects, _):
+            control = next(o for o in objects if mc.ident(o) == "Deployment/rwsafe/rwsafe-control")
+            control["metadata"].setdefault("annotations", {})["note"] = "directory-loopback-for-tests"
+        self.assert_refused(annotation, "metadata.annotations.note")
+
+    def test_contract_names_and_keys_are_refused(self):
+        def secret_key(_, contracts):
+            contracts["secrets"]["rwsafe-db-credentials"]["keys"].append("rwsafe.identity.directory-loopback-for-tests")
+        self.assert_refused(secret_key, "runtime contract secrets/rwsafe-db-credentials")
+
+        def configmap_name(_, contracts):
+            contracts["configMaps"]["rwsafe-loopback-for-tests"] = {"keys": ["value"]}
+        self.assert_refused(configmap_name, "runtime contract configMaps/rwsafe-loopback-for-tests")
+
+        def build_key(_, contracts):
+            contracts["build"]["configMaps"]["rwsafe-build-config"]["keys"].append("DIRECTORY_LOOPBACK_FOR_TESTS")
+        self.assert_refused(build_key, "runtime contract build.configMaps/rwsafe-build-config")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

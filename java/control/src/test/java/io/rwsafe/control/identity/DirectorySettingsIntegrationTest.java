@@ -132,6 +132,18 @@ class DirectorySettingsIntegrationTest {
             + "FROM audit_event WHERE table_name = 'directory_settings' AND action_id = ? ORDER BY audit_id", action);
     }
 
+    @Autowired
+    org.springframework.core.env.Environment environment;
+
+    /** PR 50 review Q-1: the suite runs the test-only switch under the test profile, so no start-up alarm fires. */
+    @Test
+    void theTestSwitchRunsUnderTheTestProfile() {
+        assertTrue(directory.localTargets());
+        assertTrue(DirectorySettingsService.testProfile(environment));
+        assertFalse(DirectorySettingsService.testSwitchAlarm(directory.localTargets(),
+            DirectorySettingsService.testProfile(environment)));
+    }
+
     @Test
     void theDeployValuesSeedOnceAndNeverOverrideASavedSetting() throws Exception {
         ApiClient admin = signedIn(SEED_ADMIN);
