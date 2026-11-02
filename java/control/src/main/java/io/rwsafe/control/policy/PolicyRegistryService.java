@@ -8,6 +8,7 @@ import io.rwsafe.control.privacy.IdentifierCheck;
 import io.rwsafe.control.privacy.Pseudonymiser;
 import io.rwsafe.persistence.AuditContext;
 import io.rwsafe.persistence.Database;
+import io.rwsafe.persistence.PolicyRegistryStore;
 import io.rwsafe.persistence.PolicyRuleVersion;
 import io.rwsafe.persistence.PolicyRuleVersion.Draft;
 import io.rwsafe.persistence.PolicySnapshotStore.IssuedSnapshot;
@@ -69,6 +70,10 @@ public class PolicyRegistryService {
         this.masking = new Masking(keys, pseudonymiser);
         this.identifiers = new IdentifierCheck(keys);
         this.clock = Clock.systemUTC();
+        if (config.singleApproval()) {
+            LOG.warn("policy single-approval activation is on: one security administrator activates a version alone "
+                + "(pilot only, PO decision Q-47)");
+        }
     }
 
     /**
@@ -324,6 +329,25 @@ public class PolicyRegistryService {
      * the version becomes active.
      */
     public PolicyRuleVersion approve(String ruleId, int version, String role, String loginName, Set<String> sessionRoles) {
+        return approve(ruleId, version, role, null, loginName, sessionRoles);
+    }
+
+    /** True while the pilot single-approval switch is on (PO decision Q-47); the Policies screen reads it. */
+    public boolean singleApproval() {
+        return config.singleApproval();
+    }
+
+    /**
+     * As {@link #approve(String, int, String, String, Set)}. While the pilot single-approval switch is on (PO decision
+     * Q-47, decision 2), a {@code security_admin} approval carries a {@code reason} (1 to 500 characters, no identifier,
+     * no estate term, as a withdrawal's) and activates the version at once, ledgered as
+     * {@code policy.activate_single_approval} under the administrator's pseudonym with that reason; a version the other
+     * role already approved (another person) is activated by the two approvals as before. A privacy officer's approval
+     * never activates alone. While the switch is off, nothing changes, and a reason is refused (the client would
+     * believe it activates alone).
+     */
+    public PolicyRuleVersion approve(String ruleId, int version, String role, String reason, String loginName,
+                                     Set<String> sessionRoles) {
         if (!APPROVER_ROLES.contains(role)) {
             throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "INVALID_APPROVAL",
                 "The approval role is security_admin or privacy_officer.");
@@ -332,12 +356,22 @@ public class PolicyRegistryService {
             throw new RegistryRefusal(HttpStatus.FORBIDDEN, "APPROVER_ROLE_MISSING",
                 "Your session does not hold the role this approval is given in.");
         }
+        boolean alone = config.singleApproval() && Roles.SECURITY_ADMIN.equals(role);
+        if (reason != null && !alone) {
+            throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "SINGLE_APPROVAL_NOT_AVAILABLE",
+                "Only a security administrator's approval, while the pilot single-approval setting is on, takes a "
+                    + "reason and activates alone.");
+        }
+        String checked = alone ? reasonText(reason, "INVALID_SINGLE_APPROVAL", "single-approval activation") : null;
         String approver = pseudonym(loginName);
         String correlation = UUID.randomUUID().toString();
+        PolicyRegistryStore.SingleApproval single = alone ? new PolicyRegistryStore.SingleApproval(checked,
+            new AuditContext(approver, PolicyRegistryStore.ACTION_SINGLE_APPROVAL, checked, correlation)) : null;
         try {
             return database.policyRegistry().approve(ruleId, version, role, approver,
                 new AuditContext(approver, "policy.approve", "APPROVAL_" + role.toUpperCase(Locale.ROOT), correlation),
-                new AuditContext(approver, "policy.activate", "TWO_APPROVALS", correlation), this::checkActivation);
+                new AuditContext(approver, "policy.activate", "TWO_APPROVALS", correlation), single,
+                this::checkActivation);
         } catch (RegistryConflict e) {
             throw conflict(e);
         }

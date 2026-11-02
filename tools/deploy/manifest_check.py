@@ -41,11 +41,16 @@ cluster), and asserts the shared-host rules on every object:
     namespace, with exactly one rule whose host is `ui.<product>.local`, never a host-less (catch-all) rule or a
     defaultBackend, every backend `<product>-control:8080` (a rendered Service port), one TLS entry for that host from
     the Secret `<product>-admin-tls` of the runtime contract, and no Traefik annotation; no Traefik CRD is rendered
+  - the pilot single-approval switch (PO decision Q-47, RWSAFE_POLICY_SINGLE_APPROVAL: one security administrator
+    activates a policy version alone) is on only in the pilot's render: the committed pilot overlay
+    (deploy/rwsafe/overlays/pilot), or a --rendered file declared with --pilot. In every other render each ConfigMap key
+    and container env entry that names it (any spelling Spring binds) is exactly "false"; everywhere it is "true" or
+    "false" literally, never from valueFrom and never in a container's command or args
 
 Standard library only; needs kubectl (and optionally kustomize) on PATH.
 
 Usage: python3 -B tools/deploy/manifest_check.py [--overlay DIR] [--contracts FILE] [--release] [--rendered FILE]
-                                                 [--product NAME]
+                                                 [--pilot] [--product NAME]
 """
 from __future__ import annotations
 
@@ -63,6 +68,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OVERLAY = REPO_ROOT / "deploy/rwsafe/overlays/k3s"
 DEFAULT_CONTRACTS = REPO_ROOT / "deploy/rwsafe/contracts/runtime-contracts.json"
+# PO decision Q-47 (docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.md, decision 2): the one overlay whose
+# render may turn on the single-approval switch. The name is compared with every non-alphanumeric character removed and
+# upper-cased, so each spelling Spring's relaxed binding maps to rwsafe.policy.single-approval is caught.
+PILOT_OVERLAY = REPO_ROOT / "deploy/rwsafe/overlays/pilot"
+SINGLE_APPROVAL_ENV = "RWSAFE_POLICY_SINGLE_APPROVAL"
 PRODUCT_FILE = REPO_ROOT / "deploy/rwsafe/product.env"
 # The name the committed manifests and the runtime contract are written with; a render under another product name renames
 # every cluster-visible occurrence (rename_objects). Application-internal identifiers keep it (environment variable names,
@@ -455,13 +465,55 @@ def source_name_references(node, path: str = "", parent: str = "") -> list[str]:
 
 # ---- the check ---------------------------------------------------------------------------------------------------------
 
+def _names_single_approval(name) -> bool:
+    return isinstance(name, str) and re.sub(r"[^A-Za-z0-9]", "", name).upper() == "RWSAFEPOLICYSINGLEAPPROVAL"
+
+
+def check_single_approval(objects: list[dict], fail, pilot: bool) -> None:
+    """PO decision Q-47: the single-approval switch is "true" only in the pilot's render. Every ConfigMap key and every
+    container env entry that names it carries "true" (pilot only) or "false" literally; a valueFrom (its value is not
+    in the render) and a command or args mention are refused everywhere."""
+    allowed = {"true", "false"} if pilot else {"false"}
+    where = "the pilot's render" if pilot else "a render other than the pilot's"
+
+    def value_ok(value) -> bool:
+        return isinstance(value, str) and value in allowed
+
+    for obj in objects:
+        if obj.get("kind") == "ConfigMap":
+            for key, value in (obj.get("data") or {}).items():
+                if _names_single_approval(key) and not value_ok(value):
+                    fail(obj, f"{key} is {json.dumps(value)} in {where}; the single-approval switch (PO decision "
+                              f"Q-47) may be \"true\" in the pilot overlay only, else \"false\"")
+        tpl = pod_template(obj)
+        if tpl is None:
+            continue
+        spec = tpl[1]
+        for c in containers(spec):
+            for env in c.get("env") or []:
+                if not _names_single_approval(env.get("name")):
+                    continue
+                if "valueFrom" in env:
+                    fail(obj, f"container {c.get('name')} takes {env.get('name')} from valueFrom; the single-approval "
+                              f"switch (PO decision Q-47) is a literal value in the render")
+                elif not value_ok(env.get("value")):
+                    fail(obj, f"container {c.get('name')} sets {env.get('name')} to {json.dumps(env.get('value'))} in "
+                              f"{where}; the single-approval switch (PO decision Q-47) may be \"true\" in the pilot "
+                              f"overlay only, else \"false\"")
+            for arg in (c.get("command") or []) + (c.get("args") or []):
+                if isinstance(arg, str) and "POLICYSINGLEAPPROVAL" in re.sub(r"[^A-Za-z0-9]", "", arg).upper():
+                    fail(obj, f"container {c.get('name')} names the single-approval switch (PO decision Q-47) in its "
+                              f"command or args; it is set in the control ConfigMap only")
+
+
 def check(objects: list[dict], contracts: dict, release: bool = False,
-          product: str = SOURCE_PRODUCT) -> tuple[list[str], list[str]]:
+          product: str = SOURCE_PRODUCT, pilot: bool = False) -> tuple[list[str], list[str]]:
     """Returns (failures, notes). `objects` and `contracts` are already under the product name (rename_objects,
-    rename_contracts)."""
+    rename_contracts). `pilot` is true only for the committed pilot overlay's render (PO decision Q-47)."""
     failures: list[str] = []
     notes: list[str] = []
     fail = lambda obj, msg: failures.append(f"{ident(obj)}: {msg}")  # noqa: E731
+    check_single_approval(objects, fail, pilot)
     build_namespaces = {f"{product}-build"}
 
     secret_contract = {n: set(v["keys"]) for n, v in contracts.get("secrets", {}).items()}
@@ -934,12 +986,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--release", action="store_true", help="refuse placeholder image digests")
     ap.add_argument("--product", help="the deployed product name (default: deploy/rwsafe/product.env); an overlay "
                                       "render is renamed to it, a --rendered file must already carry it")
+    ap.add_argument("--pilot", action="store_true",
+                    help="with --rendered: the file is the pilot overlay's render (PO decision Q-47: only it may turn "
+                         "on the single-approval switch); an --overlay render is the pilot's only when it is "
+                         "deploy/rwsafe/overlays/pilot")
     args = ap.parse_args(argv)
     product = args.product or default_product()
     refused = validate_product(product)
     if refused:
         print(f"FAIL  product name {product!r} {refused}")
         return 2
+    if args.pilot and not args.rendered:
+        print("FAIL  --pilot declares a --rendered file; an overlay is the pilot's only when it is "
+              f"{PILOT_OVERLAY.relative_to(REPO_ROOT)}")
+        return 2
+    pilot = args.pilot if args.rendered else args.overlay.resolve() == PILOT_OVERLAY.resolve()
     if args.rendered:
         text, tool = args.rendered.read_text(), f"file {args.rendered.name}"
         objects = to_objects(text)
@@ -947,7 +1008,7 @@ def main(argv: list[str] | None = None) -> int:
         text, tool = render(args.overlay)
         objects = rename_objects(to_objects(text), product)
     contracts = rename_contracts(json.loads(args.contracts.read_text()), product)
-    failures, notes = check(objects, contracts, release=args.release, product=product)
+    failures, notes = check(objects, contracts, release=args.release, product=product, pilot=pilot)
     for n in notes:
         print(f"note  {n}")
     for f in failures:

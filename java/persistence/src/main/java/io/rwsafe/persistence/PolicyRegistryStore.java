@@ -20,8 +20,9 @@ import org.jooq.impl.DSL;
 
 /**
  * The policy registry's versioned rules (AGENTS.md section 6). A registry version enters {@code pending} and becomes
- * {@code active} with the second of two approvals, one per role and by two different people; the database triggers
- * refuse every other path (V2). Changes to one rule are serialised by a transaction-scoped advisory lock, and every
+ * {@code active} with the second of two approvals, one per role and by two different people, or, while the pilot
+ * single-approval switch is on (PO decision Q-47), with one {@code security_admin}'s approval and a reason; the database
+ * triggers refuse every other path (V2, V10). Changes to one rule are serialised by a transaction-scoped advisory lock, and every
  * mutation carries an {@link AuditContext} the ledger trigger records.
  */
 public final class PolicyRegistryStore {
@@ -172,6 +173,32 @@ public final class PolicyRegistryStore {
     public PolicyRuleVersion approve(String ruleId, int version, String role, String approverFingerprint,
                                      AuditContext audit, AuditContext activation,
                                      Consumer<List<PolicyRuleVersion>> activationCheck) {
+        return approve(ruleId, version, role, approverFingerprint, audit, activation, null, activationCheck);
+    }
+
+    /**
+     * The pilot single-approval activation (PO decision Q-47, V10): what the control plane passes only while its switch
+     * is on, for a {@code security_admin} approval. {@code activation} is the ledger context of the activation; its
+     * actor must be the approver, its action {@link #ACTION_SINGLE_APPROVAL} and its reason {@code reason} (the V10
+     * guard checks all three).
+     */
+    public record SingleApproval(String reason, AuditContext activation) {
+    }
+
+    /** The ledger action of a single-approval activation (V10 checks it). */
+    public static final String ACTION_SINGLE_APPROVAL = "policy.activate_single_approval";
+
+    /**
+     * As {@link #approve(String, int, String, String, AuditContext, AuditContext, Consumer)}; with {@code single}
+     * (non-null only while the pilot switch is on) a {@code security_admin} approval that does not complete the two
+     * approvals activates the version at once as a single-approval activation: the version records the administrator
+     * and the reason, the transaction declares the switch to the V10 guard, and the ledger records the activation under
+     * {@code single.activation()}. A version that another person already approved in the other role is activated by the
+     * two approvals as before.
+     */
+    public PolicyRuleVersion approve(String ruleId, int version, String role, String approverFingerprint,
+                                     AuditContext audit, AuditContext activation, SingleApproval single,
+                                     Consumer<List<PolicyRuleVersion>> activationCheck) {
         return refusalsAsConflicts(() -> dsl.transactionResult(cfg -> {
             DSLContext tx = DSL.using(cfg);
             lockRule(tx, ruleId);
@@ -205,13 +232,22 @@ public final class PolicyRegistryStore {
                 .values(ruleId, version, role, approverFingerprint).execute();
             int roles = tx.fetchCount(tx.selectDistinct(AP_ROLE).from(APPROVAL)
                 .where(AP_RULE_ID.eq(ruleId).and(AP_VERSION.eq(version))));
-            if (roles == 2) {
-                activation.apply(tx);
+            boolean alone = roles < 2 && single != null && ROLE_SECURITY_ADMIN.equals(role);
+            if (roles == 2 || alone) {
                 Instant now = Instant.now();
                 // The new version first, then what it replaces: the guard supersedes an active version only when a
                 // newer active one exists (the one-active constraints are checked at commit).
-                tx.update(RULE_VERSION).set(RV_STATUS, "active").set(RV_ACTIVATED_AT, now)
-                    .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).execute();
+                if (alone) {
+                    single.activation().apply(tx);
+                    tx.select(DSL.field("set_config('app.single_approval', 'on', true)", String.class)).fetch();
+                    tx.update(RULE_VERSION).set(RV_STATUS, "active").set(RV_ACTIVATED_AT, now)
+                        .set(RV_SINGLE_APPROVAL_BY, approverFingerprint).set(RV_SINGLE_APPROVAL_REASON, single.reason())
+                        .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).execute();
+                } else {
+                    activation.apply(tx);
+                    tx.update(RULE_VERSION).set(RV_STATUS, "active").set(RV_ACTIVATED_AT, now)
+                        .where(RV_RULE_ID.eq(ruleId).and(RV_VERSION.eq(version))).execute();
+                }
                 Condition replaced = RV_RULE_ID.eq(ruleId).and(RV_MODE.eq(mode)).and(RV_SCOPE_KEY.eq(scopeKey))
                     .and(RV_STATUS.eq("active")).and(RV_VERSION.lt(version));
                 if (!"all".equals(row.get(RV_STAGE))) {
@@ -300,7 +336,7 @@ public final class PolicyRegistryStore {
             RV_HOST_SUFFIXES, RV_API_HOSTS, RV_LOGIN_HOSTS, RV_ENFORCE_FAIL_CLOSED, RV_MODE, RV_STAGE, RV_STATUS,
             RV_SOURCE, RV_AUTHOR, RV_REASON, RV_CREATED_AT, RV_ACTIVATED_AT, RV_SUPERSEDED_AT, RV_SCOPE_KIND,
             RV_SCOPE_GROUPS, RV_RETIRED_AT, RV_RETIRED_BY, RV_RETIRED_REASON, RV_WITHDRAWS, RV_WITHDRAWAL_REASON,
-            RV_WITHDRAWN_AT, RV_WITHDRAWN_BY);
+            RV_WITHDRAWN_AT, RV_WITHDRAWN_BY, RV_SINGLE_APPROVAL_BY, RV_SINGLE_APPROVAL_REASON);
         List<Record> rows = ctx.select(fields).from(RULE_VERSION).where(where)
             .orderBy(RV_RULE_ID, RV_VERSION.desc()).fetch();
         Map<String, List<PolicyApproval>> approvals = new LinkedHashMap<>();
@@ -324,7 +360,9 @@ public final class PolicyRegistryStore {
                 list(r.get(RV_SCOPE_GROUPS)), r.get(RV_RETIRED_AT) == null ? null
                     : new PolicyRuleVersion.Retirement(r.get(RV_RETIRED_AT), r.get(RV_RETIRED_BY),
                         r.get(RV_RETIRED_REASON)),
-                r.get(RV_WITHDRAWS), r.get(RV_WITHDRAWAL_REASON), r.get(RV_WITHDRAWN_AT), r.get(RV_WITHDRAWN_BY)));
+                r.get(RV_WITHDRAWS), r.get(RV_WITHDRAWAL_REASON), r.get(RV_WITHDRAWN_AT), r.get(RV_WITHDRAWN_BY),
+                r.get(RV_SINGLE_APPROVAL_BY) == null ? null : new PolicyRuleVersion.SingleApproval(
+                    r.get(RV_SINGLE_APPROVAL_BY), r.get(RV_SINGLE_APPROVAL_REASON))));
         }
         return out;
     }

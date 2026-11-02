@@ -37,12 +37,17 @@ public class PolicyApiController {
         this.signer = signer;
     }
 
-    public record ApprovalRequest(String role) {
+    /**
+     * An approval in {@code role}. {@code reason} is given only by a security administrator while the pilot
+     * single-approval switch is on (PO decision Q-47): that approval then activates the version alone.
+     */
+    public record ApprovalRequest(String role, String reason) {
     }
 
     @GetMapping("/rules")
     public RegistryView rules() {
-        return RegistryView.of(registry.versions(), registry.latestSnapshot().orElse(null), signer.keyId());
+        return RegistryView.of(registry.versions(), registry.latestSnapshot().orElse(null), signer.keyId(),
+            registry.singleApproval());
     }
 
     @PostMapping("/rules/{ruleId}/versions")
@@ -66,8 +71,8 @@ public class PolicyApiController {
     @PostMapping("/rules/{ruleId}/versions/{version}/approvals")
     public VersionView approve(@PathVariable("ruleId") String ruleId, @PathVariable("version") int version,
                                @RequestBody ApprovalRequest body, Authentication auth) {
-        return VersionView.of(registry.approve(ruleId, version, body == null ? null : body.role(), auth.getName(),
-            roles(auth)), Set.of());
+        return VersionView.of(registry.approve(ruleId, version, body == null ? null : body.role(),
+            body == null ? null : body.reason(), auth.getName(), roles(auth)), Set.of());
     }
 
     /**

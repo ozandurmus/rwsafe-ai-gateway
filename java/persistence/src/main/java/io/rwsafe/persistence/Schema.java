@@ -101,6 +101,11 @@ final class Schema {
         SQLDataType.INSTANT);
     static final Field<String> RV_WITHDRAWN_BY = DSL.field(DSL.name("policy_rule_version", "withdrawn_by"),
         SQLDataType.CLOB);
+    // V10 (PO decision Q-47): the pilot single-approval activation.
+    static final Field<String> RV_SINGLE_APPROVAL_BY = DSL.field(DSL.name("policy_rule_version", "single_approval_by"),
+        SQLDataType.CLOB);
+    static final Field<String> RV_SINGLE_APPROVAL_REASON = DSL.field(
+        DSL.name("policy_rule_version", "single_approval_reason"), SQLDataType.CLOB);
 
     static final Table<Record> APPROVAL = DSL.table(DSL.name("policy_approval"));
     static final Field<String> AP_RULE_ID = DSL.field(DSL.name("policy_approval", "rule_id"), SQLDataType.CLOB);

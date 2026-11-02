@@ -316,6 +316,15 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
                     />
                   )}
                   {v.inSnapshot && <Chip size="small" sx={{ ml: 1 }} label={t('policies.inSnapshot')} />}
+                  {v.singleApproval && (
+                    <>
+                      <br />
+                      {t('policies.singleApprovalLine', {
+                        who: v.singleApproval.activatedBy,
+                        reason: v.singleApproval.reason,
+                      })}
+                    </>
+                  )}
                   {v.status === 'withdrawn' && v.withdrawal?.withdrawnBy && (
                     <>
                       <br />
@@ -361,9 +370,11 @@ function RuleDetail({ rule, registry, onChanged }: { rule: Rule; registry: Regis
         </CardContent>
       </Card>
       {pendings.length === 0 ? (
-        <ApprovalSteps version={undefined} onChanged={onChanged} />
+        <ApprovalSteps version={undefined} single={!!registry.singleApproval} onChanged={onChanged} />
       ) : (
-        pendings.map((p) => <ApprovalSteps key={p.version} version={p} onChanged={onChanged} />)
+        pendings.map((p) => (
+          <ApprovalSteps key={p.version} version={p} single={!!registry.singleApproval} onChanged={onChanged} />
+        ))
       )}
       {rule.kind === 'class_action' && <SimulationPanel rule={rule} proposed={newestPending?.action ?? null} />}
       {canDraft && <DraftForm rule={rule} registry={registry} onChanged={onChanged} />}
@@ -465,13 +476,30 @@ function WithdrawForm({
   );
 }
 
-/** Draft → security administrator → privacy officer → active, for the version awaiting approval. */
-function ApprovalSteps({ version, onChanged }: { version: RuleVersion | undefined; onChanged: () => void }) {
+/**
+ * Draft → security administrator → privacy officer → active, for the version awaiting approval. With `single` (the pilot
+ * switch of PO decision Q-47) one security administrator's approval, with a required reason, activates the version.
+ */
+function ApprovalSteps({
+  version,
+  single,
+  onChanged,
+}: {
+  version: RuleVersion | undefined;
+  single: boolean;
+  onChanged: () => void;
+}) {
   const i18n = useI18n();
   const { t, fmt } = i18n;
   const { me } = useAuth();
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+  const [reason, setReason] = useState('');
+  const singleNotice = single && (
+    <Alert severity="info" sx={{ mb: 1 }}>
+      {t('approval.singleOn')}
+    </Alert>
+  );
   if (!version) {
     return (
       <Card variant="outlined">
@@ -479,6 +507,7 @@ function ApprovalSteps({ version, onChanged }: { version: RuleVersion | undefine
           <Typography variant="h6" component="h2" gutterBottom>
             {t('approval.title')}
           </Typography>
+          {singleNotice}
           <Typography color="text.secondary">{t('approval.none')}</Typography>
         </CardContent>
       </Card>
@@ -486,6 +515,10 @@ function ApprovalSteps({ version, onChanged }: { version: RuleVersion | undefine
   }
   const given = (role: ApproverRole) => version.approvals.find((a) => a.role === role);
   const activeStep = 1 + version.approvals.length;
+  const trimmed = reason.trim();
+  const reasonValid = trimmed.length > 0 && trimmed.length <= 500;
+  // Q-47: while the switch is on, the server requires a reason with every security administrator approval.
+  const withReason = (role: ApproverRole) => single && role === 'security_admin';
 
   async function approve(role: ApproverRole) {
     if (!version) {
@@ -494,7 +527,7 @@ function ApprovalSteps({ version, onChanged }: { version: RuleVersion | undefine
     setBusy(true);
     setError(null);
     try {
-      await api.approve(version.ruleId, version.version, role);
+      await api.approve(version.ruleId, version.version, role, withReason(role) ? trimmed : undefined);
       onChanged();
     } catch (e) {
       setError(e);
@@ -517,6 +550,7 @@ function ApprovalSteps({ version, onChanged }: { version: RuleVersion | undefine
             scope: scopeText(i18n, version.scope),
           })}
         </Typography>
+        {singleNotice}
         {error !== null && <ErrorPanel error={error} />}
         <Stepper activeStep={activeStep} orientation="vertical" aria-label={t('approval.title')}>
           <Step completed>
@@ -535,7 +569,32 @@ function ApprovalSteps({ version, onChanged }: { version: RuleVersion | undefine
                   {t(`approval.role.${role}`)}
                 </StepLabel>
                 <StepContent>
-                  {mine ? (
+                  {mine && withReason(role) ? (
+                    <Box display="grid" gap={1}>
+                      <TextField
+                        size="small"
+                        required
+                        label={t('approval.singleReason')}
+                        value={reason}
+                        disabled={busy}
+                        inputProps={{ maxLength: 500 }}
+                        onChange={(e) => setReason(e.target.value)}
+                        helperText={t('approval.singleHelp')}
+                      />
+                      <Box>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          disabled={busy || !reasonValid}
+                          onClick={() => void approve(role)}
+                        >
+                          {given('privacy_officer')
+                            ? t('approval.approve', { role: roleLabel(i18n, role) })
+                            : t('approval.approveAlone')}
+                        </Button>
+                      </Box>
+                    </Box>
+                  ) : mine ? (
                     <Button size="small" variant="contained" disabled={busy} onClick={() => void approve(role)}>
                       {t('approval.approve', { role: roleLabel(i18n, role) })}
                     </Button>
@@ -552,9 +611,11 @@ function ApprovalSteps({ version, onChanged }: { version: RuleVersion | undefine
             <StepLabel>{t('approval.active')}</StepLabel>
           </Step>
         </Stepper>
-        <Typography variant="body2" color="text.secondary" mt={1}>
-          {t('approval.twoPeople')}
-        </Typography>
+        {!single && (
+          <Typography variant="body2" color="text.secondary" mt={1}>
+            {t('approval.twoPeople')}
+          </Typography>
+        )}
       </CardContent>
     </Card>
   );

@@ -29,6 +29,11 @@ data:
   # Off in the pilot (restating the committed defaults): no SIEM destination, no redacted capture.
   RWSAFE_SIEM_ENABLED: "false"
   RWSAFE_CAPTURE_MODE: "off"
+  # PO decision Q-47, decision 2 (docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.md): the pilot has one
+  # person, so one security administrator's approval with a reason activates a policy version alone, ledgered as a
+  # single-approval activation. Pilot only: tools/deploy/manifest_check.py refuses it on in every other render, and
+  # go-live turns it off (the two-person rule applies again).
+  RWSAFE_POLICY_SINGLE_APPROVAL: "true"
 ---
 apiVersion: v1
 kind: ConfigMap
