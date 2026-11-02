@@ -42,10 +42,11 @@ cluster), and asserts the shared-host rules on every object:
     defaultBackend, every backend `<product>-control:8080` (a rendered Service port), one TLS entry for that host from
     the Secret `<product>-admin-tls` of the runtime contract, and no Traefik annotation; no Traefik CRD is rendered
   - the pilot single-approval switch (PO decision Q-47, RWSAFE_POLICY_SINGLE_APPROVAL: one security administrator
-    activates a policy version alone) is on only in the pilot's render: the committed pilot overlay
-    (deploy/rwsafe/overlays/pilot), or a --rendered file declared with --pilot. In every other render each ConfigMap key
-    and container env entry that names it (any spelling Spring binds) is exactly "false"; everywhere it is "true" or
-    "false" literally, never from valueFrom and never in a container's command or args
+    activates a policy version alone) is named in one place only, the key RWSAFE_POLICY_SINGLE_APPROVAL of the ConfigMap
+    `<product>-control-config`, literally "true" only in the pilot's render (the committed pilot overlay
+    deploy/rwsafe/overlays/pilot, or a --rendered file declared with --pilot), else "false"; any other key or value of
+    any rendered object (ConfigMap data and decoded binaryData, env, command, args, SPRING_APPLICATION_JSON, JVM option
+    variables) and any runtime-contract name or key whose letters and digits contain SINGLEAPPROVAL is refused
 
 Standard library only; needs kubectl (and optionally kustomize) on PATH.
 
@@ -55,6 +56,7 @@ Usage: python3 -B tools/deploy/manifest_check.py [--overlay DIR] [--contracts FI
 from __future__ import annotations
 
 import argparse
+import base64
 import ipaddress
 import json
 import math
@@ -465,45 +467,70 @@ def source_name_references(node, path: str = "", parent: str = "") -> list[str]:
 
 # ---- the check ---------------------------------------------------------------------------------------------------------
 
-def _names_single_approval(name) -> bool:
-    return isinstance(name, str) and re.sub(r"[^A-Za-z0-9]", "", name).upper() == "RWSAFEPOLICYSINGLEAPPROVAL"
+def _mentions_single_approval(text) -> bool:
+    """True when `text`, reduced to its letters and digits and upper-cased, contains SINGLEAPPROVAL: every spelling
+    Spring binds (RWSAFE_POLICY_SINGLEAPPROVAL, rwsafe.policy.single-approval), SPRING_APPLICATION_JSON, a
+    JAVA_TOOL_OPTIONS or JDK_JAVA_OPTIONS system property, and JSON where another key separates policy from it."""
+    return isinstance(text, str) and "SINGLEAPPROVAL" in re.sub(r"[^A-Za-z0-9]", "", text).upper()
 
 
-def check_single_approval(objects: list[dict], fail, pilot: bool) -> None:
-    """PO decision Q-47: the single-approval switch is "true" only in the pilot's render. Every ConfigMap key and every
-    container env entry that names it carries "true" (pilot only) or "false" literally; a valueFrom (its value is not
-    in the render) and a command or args mention are refused everywhere."""
+def _strings(node, path: str = ""):
+    """Every dict key and every string value under `node`, with its path."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = f"{path}.{key}" if path else str(key)
+            yield here, key
+            yield from _strings(value, here)
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            yield from _strings(value, f"{path}[{i}]")
+    elif isinstance(node, str):
+        yield path, node
+
+
+def check_single_approval(objects: list[dict], contracts: dict, fail, fail_text, product: str, pilot: bool) -> None:
+    """PO decision Q-47 (PR 47 review D-01): the single-approval switch is named in exactly one place, the key
+    RWSAFE_POLICY_SINGLE_APPROVAL of the ConfigMap <product>-control-config, as the literal "true" in the pilot's render
+    only, else "false". Any other mention anywhere in any rendered object (keys and values of ConfigMap data and
+    binaryData, env names and values, command and args, annotations) and any runtime-contract name or key that mentions
+    it is refused: a mention elsewhere could turn it on outside the pilot, or beside the one place."""
     allowed = {"true", "false"} if pilot else {"false"}
-    where = "the pilot's render" if pilot else "a render other than the pilot's"
-
-    def value_ok(value) -> bool:
-        return isinstance(value, str) and value in allowed
-
+    control = f"{product}-control-config"
     for obj in objects:
+        meta = obj.get("metadata") or {}
+        walked = obj
+        if (obj.get("kind") == "ConfigMap" and meta.get("name") == control and meta.get("namespace") == product
+                and SINGLE_APPROVAL_ENV in (obj.get("data") or {})):
+            value = obj["data"][SINGLE_APPROVAL_ENV]
+            if not (isinstance(value, str) and value in allowed):
+                fail(obj, f"{SINGLE_APPROVAL_ENV} is {json.dumps(value)} in "
+                          f"{'the pilot' if pilot else 'a render other than the pilot'}'s render; the single-approval "
+                          f"switch (PO decision Q-47) is \"true\" in the pilot overlay only, else \"false\"")
+            walked = dict(obj, data={k: v for k, v in obj["data"].items() if k != SINGLE_APPROVAL_ENV})
+        mentions = [path for path, text in _strings(walked) if _mentions_single_approval(text)]
         if obj.get("kind") == "ConfigMap":
-            for key, value in (obj.get("data") or {}).items():
-                if _names_single_approval(key) and not value_ok(value):
-                    fail(obj, f"{key} is {json.dumps(value)} in {where}; the single-approval switch (PO decision "
-                              f"Q-47) may be \"true\" in the pilot overlay only, else \"false\"")
-        tpl = pod_template(obj)
-        if tpl is None:
-            continue
-        spec = tpl[1]
-        for c in containers(spec):
-            for env in c.get("env") or []:
-                if not _names_single_approval(env.get("name")):
-                    continue
-                if "valueFrom" in env:
-                    fail(obj, f"container {c.get('name')} takes {env.get('name')} from valueFrom; the single-approval "
-                              f"switch (PO decision Q-47) is a literal value in the render")
-                elif not value_ok(env.get("value")):
-                    fail(obj, f"container {c.get('name')} sets {env.get('name')} to {json.dumps(env.get('value'))} in "
-                              f"{where}; the single-approval switch (PO decision Q-47) may be \"true\" in the pilot "
-                              f"overlay only, else \"false\"")
-            for arg in (c.get("command") or []) + (c.get("args") or []):
-                if isinstance(arg, str) and "POLICYSINGLEAPPROVAL" in re.sub(r"[^A-Za-z0-9]", "", arg).upper():
-                    fail(obj, f"container {c.get('name')} names the single-approval switch (PO decision Q-47) in its "
-                              f"command or args; it is set in the control ConfigMap only")
+            for key, value in (obj.get("binaryData") or {}).items():
+                try:
+                    decoded = base64.b64decode(value or "").decode("latin-1")
+                except (ValueError, TypeError):
+                    decoded = ""
+                if _mentions_single_approval(decoded):
+                    mentions.append(f"binaryData.{key} (decoded)")
+        if mentions:
+            fail(obj, f"mentions the single-approval switch (PO decision Q-47) at "
+                      f"{', '.join(sorted(set(mentions))[:5])}; it is set only as {SINGLE_APPROVAL_ENV} in ConfigMap "
+                      f"{control}")
+    sections = [("secrets", contracts.get("secrets") or {}), ("configMaps", contracts.get("configMaps") or {})]
+    build = contracts.get("build")
+    if isinstance(build, dict):
+        sections.append(("build.configMaps", build.get("configMaps") or {}))
+    for section, entries in sections:
+        for name, entry in entries.items():
+            entry = entry if isinstance(entry, dict) else {}
+            texts = [name] + list(entry.get("keys") or []) + list(entry.get("keyPatterns") or [])
+            if any(_mentions_single_approval(t) for t in texts):
+                fail_text(f"runtime contract {section}/{name}: names the single-approval switch (PO decision Q-47); "
+                          f"it is set only as {SINGLE_APPROVAL_ENV} in ConfigMap {control}")
 
 
 def check(objects: list[dict], contracts: dict, release: bool = False,
@@ -513,7 +540,7 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
     failures: list[str] = []
     notes: list[str] = []
     fail = lambda obj, msg: failures.append(f"{ident(obj)}: {msg}")  # noqa: E731
-    check_single_approval(objects, fail, pilot)
+    check_single_approval(objects, contracts, fail, failures.append, product, pilot)
     build_namespaces = {f"{product}-build"}
 
     secret_contract = {n: set(v["keys"]) for n, v in contracts.get("secrets", {}).items()}

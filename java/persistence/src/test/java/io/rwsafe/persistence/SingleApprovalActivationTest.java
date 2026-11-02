@@ -83,15 +83,24 @@ class SingleApprovalActivationTest {
 
     @Test
     void aPrivacyOfficersApprovalNeverActivatesAlone() {
-        PolicyRuleVersion once = approve("privacy_officer", OFFICER, single(OFFICER, REASON));
+        assertEquals("SINGLE_APPROVAL_NOT_AVAILABLE", assertThrows(RegistryConflict.class,
+            () -> approve("privacy_officer", OFFICER, single(OFFICER, REASON))).reason());
+        PolicyRuleVersion still = registry.version("class.TCKN", 2).orElseThrow();
+        assertEquals("pending", still.status());
+        assertTrue(still.approvals().isEmpty(), "the refused approval was rolled back");
+        PolicyRuleVersion once = approve("privacy_officer", OFFICER, null);
         assertEquals("pending", once.status());
         assertNull(once.singleApproval());
     }
 
+    /** PR 47 review D-03: the second of two approvals never carries (and never silently drops) a reason. */
     @Test
     void aVersionTheOtherRoleApprovedIsActivatedByTheTwoApprovalsAsBefore() {
         approve("privacy_officer", OFFICER, null);
-        PolicyRuleVersion active = approve("security_admin", ADMIN, single(ADMIN, REASON));
+        assertEquals("SINGLE_APPROVAL_NOT_AVAILABLE", assertThrows(RegistryConflict.class,
+            () -> approve("security_admin", ADMIN, single(ADMIN, REASON))).reason());
+        assertEquals(1, registry.version("class.TCKN", 2).orElseThrow().approvals().size());
+        PolicyRuleVersion active = approve("security_admin", ADMIN, null);
         assertEquals("active", active.status());
         assertEquals(2, active.approvals().size());
         assertNull(active.singleApproval(), "two approvals: an ordinary activation");
@@ -135,6 +144,30 @@ class SingleApprovalActivationTest {
                 + "WHERE rule_id = 'class.TCKN' AND version = 2");
         }));
         assertTrue(unrecorded.getMessage().contains("POLICY_APPROVAL_REQUIRED"));
+        assertEquals("pending", registry.version("class.TCKN", 2).orElseThrow().status());
+    }
+
+    /** PR 47 review D-02: half a single-approval record is refused by the guard, with two approvals as with one. */
+    @Test
+    void halfARecordIsRefusedByTheGuardEvenWithTwoApprovals() {
+        approve("security_admin", ADMIN, null);
+        db.dsl().transaction(cfg -> {
+            var tx = DSL.using(cfg);
+            new AuditContext(OFFICER, "policy.approve", "APPROVAL_PRIVACY_OFFICER", null).apply(tx);
+            tx.execute("INSERT INTO policy_approval (rule_id, version, approver_role, approver_fingerprint) VALUES "
+                + "('class.TCKN', 2, 'privacy_officer', '" + OFFICER + "')");
+        });
+        for (String set : new String[] {"single_approval_reason = '" + REASON + "'",
+            "single_approval_by = '" + ADMIN + "'"}) {
+            DataAccessException half = assertThrows(DataAccessException.class, () -> db.dsl().transaction(cfg -> {
+                var tx = DSL.using(cfg);
+                new AuditContext(ADMIN, PolicyRegistryStore.ACTION_SINGLE_APPROVAL, REASON, null).apply(tx);
+                tx.execute("SELECT set_config('app.single_approval', 'on', true)");
+                tx.execute("UPDATE policy_rule_version SET status = 'active', activated_at = now(), " + set
+                    + " WHERE rule_id = 'class.TCKN' AND version = 2");
+            }), set);
+            assertTrue(half.getMessage().contains("POLICY_SINGLE_APPROVAL_REFUSED"), half.getMessage());
+        }
         assertEquals("pending", registry.version("class.TCKN", 2).orElseThrow().status());
     }
 

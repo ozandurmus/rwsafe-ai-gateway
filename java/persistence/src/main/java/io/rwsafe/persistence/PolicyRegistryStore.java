@@ -193,8 +193,9 @@ public final class PolicyRegistryStore {
      * (non-null only while the pilot switch is on) a {@code security_admin} approval that does not complete the two
      * approvals activates the version at once as a single-approval activation: the version records the administrator
      * and the reason, the transaction declares the switch to the V10 guard, and the ledger records the activation under
-     * {@code single.activation()}. A version that another person already approved in the other role is activated by the
-     * two approvals as before.
+     * {@code single.activation()}. {@code single} with another role, or for a version the other role already approved,
+     * is refused ({@code SINGLE_APPROVAL_NOT_AVAILABLE}) and nothing changes; such a version is activated by the two
+     * approvals as before, without {@code single}.
      */
     public PolicyRuleVersion approve(String ruleId, int version, String role, String approverFingerprint,
                                      AuditContext audit, AuditContext activation, SingleApproval single,
@@ -232,7 +233,14 @@ public final class PolicyRegistryStore {
                 .values(ruleId, version, role, approverFingerprint).execute();
             int roles = tx.fetchCount(tx.selectDistinct(AP_ROLE).from(APPROVAL)
                 .where(AP_RULE_ID.eq(ruleId).and(AP_VERSION.eq(version))));
-            boolean alone = roles < 2 && single != null && ROLE_SECURITY_ADMIN.equals(role);
+            // PR 47 review D-03: a single-approval request (and its reason) is only for the security administrator's
+            // approval that activates alone; with the other role's approval present it is refused, never dropped.
+            if (single != null && (!ROLE_SECURITY_ADMIN.equals(role) || roles >= 2)) {
+                throw new RegistryConflict("SINGLE_APPROVAL_NOT_AVAILABLE",
+                    "Only a security administrator's approval that no privacy officer approval precedes activates "
+                        + "alone with a reason.");
+            }
+            boolean alone = single != null;
             if (roles == 2 || alone) {
                 Instant now = Instant.now();
                 // The new version first, then what it replaces: the guard supersedes an active version only when a

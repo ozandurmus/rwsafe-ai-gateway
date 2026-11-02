@@ -7,6 +7,7 @@ Usage: python3 -B tools/deploy/test_manifest_check.py
 """
 from __future__ import annotations
 
+import base64
 import contextlib
 import copy
 import io
@@ -860,8 +861,8 @@ class AdminIngress(unittest.TestCase):
 
 
 class SingleApprovalSwitch(unittest.TestCase):
-    """PO decision Q-47: the single-approval switch is on in the committed pilot overlay only; every other render refuses
-    it on, whatever the spelling or the place (ConfigMap, env, valueFrom, command or args)."""
+    """PO decision Q-47 and PR 47 review D-01: the single-approval switch is named only as RWSAFE_POLICY_SINGLE_APPROVAL
+    in the control ConfigMap, "true" in the committed pilot overlay only; any other spelling or place is refused."""
 
     def control_config(self, objects: list[dict], product: str = "rwsafe") -> dict:
         return next(o for o in objects if mc.ident(o) == f"ConfigMap/{product}/{product}-control-config")
@@ -884,8 +885,11 @@ class SingleApprovalSwitch(unittest.TestCase):
         objects, contracts = copy.deepcopy(_PILOT_RENDER["rwsafe"])
         failures = self.single_approval_failures(mc.check(objects, contracts)[0])
         self.assertEqual(failures, ['ConfigMap/rwsafe/rwsafe-control-config: RWSAFE_POLICY_SINGLE_APPROVAL is "true" '
-                                    'in a render other than the pilot\'s; the single-approval switch (PO decision '
-                                    'Q-47) may be "true" in the pilot overlay only, else "false"'])
+                                    'in a render other than the pilot\'s render; the single-approval switch (PO '
+                                    'decision Q-47) is "true" in the pilot overlay only, else "false"'])
+        self.control_config(objects)["data"][mc.SINGLE_APPROVAL_ENV] = "false"
+        self.assertEqual(self.single_approval_failures(mc.check(objects, contracts)[0]), [],
+                         "\"false\" in the one place is accepted everywhere")
         with tempfile.TemporaryDirectory() as d:
             rendered = Path(d) / "pilot.yaml"
             text, _ = mc.render(mc.PILOT_OVERLAY)
@@ -903,57 +907,106 @@ class SingleApprovalSwitch(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("--pilot declares a --rendered file", out.getvalue())
 
-    def test_the_k3s_overlay_does_not_turn_it_on(self):
-        text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays/k3s")
-        for obj in mc.to_objects(text):
-            if obj.get("kind") == "ConfigMap":
-                self.assertFalse(any(mc._names_single_approval(k) for k in obj.get("data") or {}), mc.ident(obj))
+    def test_no_committed_render_or_contract_mentions_it_elsewhere(self):
+        for overlay in ("k3s", "pilot"):
+            for product in ("rwsafe", "acme"):
+                with self.subTest(overlay=overlay, product=product):
+                    text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays" / overlay)
+                    objects = mc.rename_objects(mc.to_objects(text), product)
+                    contracts = mc.rename_contracts(CONTRACTS_FILE_JSON, product)
+                    failures, _ = mc.check(objects, contracts, product=product, pilot=overlay == "pilot")
+                    self.assertEqual(self.single_approval_failures(failures), [])
+                    mentions = [mc.ident(o) for o in objects
+                                if any(mc._mentions_single_approval(t) for _, t in mc._strings(o))]
+                    self.assertEqual(mentions, [f"ConfigMap/{product}/{product}-control-config"]
+                                     if overlay == "pilot" else [])
 
-    def test_any_true_spelling_outside_the_pilot_is_refused(self):
-        for key in ("RWSAFE_POLICY_SINGLE_APPROVAL", "RWSAFE_POLICY_SINGLEAPPROVAL", "rwsafe.policy.single-approval"):
-            for value in ("true", "TRUE", "on", "yes", "1", "", None):
-                with self.subTest(key=key, value=value):
-                    objects = compliant()
-                    objects.append({"apiVersion": "v1", "kind": "ConfigMap",
-                                    "metadata": {"name": "fixture-switch", "namespace": "fixture"},
-                                    "data": {key: value}})
-                    failures = self.single_approval_failures(mc.check(objects, CONTRACTS)[0])
-                    self.assertEqual(len(failures), 1, failures)
-                    self.assertTrue(failures[0].startswith("ConfigMap/fixture/fixture-switch:"), failures)
-        objects = compliant()
-        objects.append({"apiVersion": "v1", "kind": "ConfigMap",
-                        "metadata": {"name": "fixture-switch", "namespace": "fixture"},
-                        "data": {mc.SINGLE_APPROVAL_ENV: "false"}})
-        self.assertEqual(self.single_approval_failures(mc.check(objects, CONTRACTS)[0]), [])
+    def test_the_one_place_takes_true_only_in_the_pilot_and_never_another_value(self):
+        for pilot, value, refused in ((True, "yes", True), (True, "TRUE", True), (True, "", True), (True, None, True),
+                                      (True, "false", False), (False, "true", True), (False, "1", True),
+                                      (False, "false", False)):
+            with self.subTest(pilot=pilot, value=value):
+                objects, contracts = copy.deepcopy(_PILOT_RENDER["rwsafe"])
+                self.control_config(objects)["data"][mc.SINGLE_APPROVAL_ENV] = value
+                failures = self.single_approval_failures(mc.check(objects, contracts, pilot=pilot)[0])
+                self.assertEqual(len(failures), 1 if refused else 0, failures)
 
-    def test_a_pilot_value_other_than_true_or_false_is_refused(self):
-        objects, contracts = copy.deepcopy(_PILOT_RENDER["rwsafe"])
-        self.control_config(objects)["data"][mc.SINGLE_APPROVAL_ENV] = "yes"
-        failures = self.single_approval_failures(mc.check(objects, contracts, pilot=True)[0])
-        self.assertEqual(len(failures), 1, failures)
+    # PR 47 review D-01: every other place or spelling is refused, in the pilot too.
 
-    def test_container_env_valuefrom_and_args_are_refused(self):
-        objects = compliant()
-        container(objects).setdefault("env", []).append({"name": mc.SINGLE_APPROVAL_ENV, "value": "true"})
-        failures = self.single_approval_failures(mc.check(objects, CONTRACTS)[0])
-        self.assertEqual(len(failures), 1, failures)
-        self.assertIn("sets RWSAFE_POLICY_SINGLE_APPROVAL to \"true\"", failures[0])
-        self.assertEqual(self.single_approval_failures(mc.check(objects, CONTRACTS, pilot=True)[0]), [])
-
-        objects = compliant()
-        container(objects).setdefault("env", []).append(
-            {"name": mc.SINGLE_APPROVAL_ENV, "valueFrom": {"configMapKeyRef": {"name": "fixture-estate", "key": "names"}}})
+    def assert_mention_refused(self, mutate, where: str):
         for pilot in (False, True):
-            failures = self.single_approval_failures(mc.check(objects, CONTRACTS, pilot=pilot)[0])
-            self.assertEqual(len(failures), 1, failures)
-            self.assertIn("from valueFrom", failures[0])
+            with self.subTest(where=where, pilot=pilot):
+                objects, contracts = copy.deepcopy(_PILOT_RENDER["rwsafe"])
+                mutate(objects, contracts)
+                failures = self.single_approval_failures(mc.check(objects, contracts, pilot=pilot)[0])
+                self.assertTrue(any(where in f for f in failures), failures)
 
-        objects = compliant()
-        container(objects)["args"] = ["--rwsafe.policy.single-approval=true"]
-        for pilot in (False, True):
-            failures = self.single_approval_failures(mc.check(objects, CONTRACTS, pilot=pilot)[0])
-            self.assertEqual(len(failures), 1, failures)
-            self.assertIn("command or args", failures[0])
+    def control_pod(self, objects: list[dict]) -> dict:
+        return mc.containers(mc.pod_template(next(
+            o for o in objects if mc.ident(o) == "Deployment/rwsafe/rwsafe-control"))[1])[0]
+
+    def test_other_configmap_keys_values_and_binary_data_are_refused(self):
+        def other_key(name):
+            def mutate(objects, _):
+                self.control_config(objects)["data"][name] = "true"
+            return mutate
+        for name in ("RWSAFE_POLICY_SINGLEAPPROVAL", "rwsafe.policy.single-approval", "rwsafe_policy_single_approval"):
+            self.assert_mention_refused(other_key(name), f"data.{name}")
+
+        def spring_json(objects, _):
+            self.control_config(objects)["data"]["SPRING_APPLICATION_JSON"] = json.dumps(
+                {"rwsafe": {"policy": {"snapshot-refresh": "PT6H", "single-approval": True}}})
+        self.assert_mention_refused(spring_json, "data.SPRING_APPLICATION_JSON")
+
+        def tool_options(objects, _):
+            self.control_config(objects)["data"]["JAVA_TOOL_OPTIONS"] = "-Drwsafe.policy.single-approval=true"
+        self.assert_mention_refused(tool_options, "data.JAVA_TOOL_OPTIONS")
+
+        def another_configmap(objects, _):
+            config = copy.deepcopy(self.control_config(objects))
+            config["metadata"]["name"] = "rwsafe-other-config"
+            objects.append(config)
+        self.assert_mention_refused(another_configmap, f"data.{mc.SINGLE_APPROVAL_ENV}")
+
+        def binary(objects, _):
+            self.control_config(objects)["binaryData"] = {
+                "application.properties": base64.b64encode(b"rwsafe.policy.single-approval=true").decode()}
+        self.assert_mention_refused(binary, "binaryData.application.properties (decoded)")
+
+    def test_env_names_values_valuefrom_command_and_args_are_refused(self):
+        def env(entry):
+            def mutate(objects, _):
+                self.control_pod(objects).setdefault("env", []).append(entry)
+            return mutate
+        self.assert_mention_refused(env({"name": mc.SINGLE_APPROVAL_ENV, "value": "true"}), "env")
+        self.assert_mention_refused(env({"name": mc.SINGLE_APPROVAL_ENV, "valueFrom": {"configMapKeyRef": {
+            "name": "rwsafe-estate", "key": "trusted-proxies"}}}), "env")
+        self.assert_mention_refused(env({"name": "JDK_JAVA_OPTIONS",
+                                         "value": "-Drwsafe.policy.single-approval=true"}), "env")
+        self.assert_mention_refused(env({"name": "SPRING_APPLICATION_JSON",
+                                         "value": '{"rwsafe":{"policy":{"singleApproval":true}}}'}), "env")
+
+        def args(objects, _):
+            self.control_pod(objects)["args"] = [
+                "--spring.application.json={\"rwsafe\":{\"policy\":{\"x\":1,\"single-approval\":true}}}"]
+        self.assert_mention_refused(args, "args[0]")
+
+        def command(objects, _):
+            self.control_pod(objects)["command"] = ["java", "-Drwsafe.policy.single_approval=true", "-jar", "app.jar"]
+        self.assert_mention_refused(command, "command[1]")
+
+    def test_contract_names_and_keys_are_refused(self):
+        def secret_key(_, contracts):
+            contracts["secrets"]["rwsafe-db-credentials"]["keys"].append("rwsafe.policy.single-approval")
+        self.assert_mention_refused(secret_key, "runtime contract secrets/rwsafe-db-credentials")
+
+        def configmap_key(_, contracts):
+            contracts["configMaps"]["rwsafe-estate"]["keys"].append("RWSAFE_POLICY_SINGLE_APPROVAL")
+        self.assert_mention_refused(configmap_key, "runtime contract configMaps/rwsafe-estate")
+
+        def build_configmap(_, contracts):
+            contracts["build"]["configMaps"]["rwsafe-single-approval"] = {"keys": ["value"]}
+        self.assert_mention_refused(build_configmap, "runtime contract build.configMaps/rwsafe-single-approval")
 
 
 if __name__ == "__main__":

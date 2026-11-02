@@ -167,10 +167,12 @@ BEGIN
         SELECT count(*), count(DISTINCT approver_role), count(DISTINCT approver_fingerprint)
           INTO approvals, roles, people
           FROM policy_approval WHERE rule_id = NEW.rule_id AND version = NEW.version;
-        IF NEW.single_approval_by IS NOT NULL THEN
-            -- Q-47: the switch is on for this transaction, the one approval is the named administrator's as
-            -- security_admin, and the ledger row of the activation names that administrator, the action and the reason.
-            IF current_setting('app.single_approval', true) IS DISTINCT FROM 'on' OR approvals <> 1
+        IF NEW.single_approval_by IS NOT NULL OR NEW.single_approval_reason IS NOT NULL THEN
+            -- Q-47: both fields are written, the switch is on for this transaction, the one approval is the named
+            -- administrator's as security_admin, and the ledger row of the activation names that administrator, the
+            -- action and the reason (PR 47 review D-02: half a record is refused here, never left to the constraint).
+            IF NEW.single_approval_by IS NULL OR NEW.single_approval_reason IS NULL
+                    OR current_setting('app.single_approval', true) IS DISTINCT FROM 'on' OR approvals <> 1
                     OR NOT EXISTS (SELECT 1 FROM policy_approval a
                                     WHERE a.rule_id = NEW.rule_id AND a.version = NEW.version
                                       AND a.approver_role = 'security_admin'

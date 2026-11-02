@@ -517,8 +517,9 @@ function ApprovalSteps({
   const activeStep = 1 + version.approvals.length;
   const trimmed = reason.trim();
   const reasonValid = trimmed.length > 0 && trimmed.length <= 500;
-  // Q-47: while the switch is on, the server requires a reason with every security administrator approval.
-  const withReason = (role: ApproverRole) => single && role === 'security_admin';
+  // Q-47: while the switch is on, a security administrator approval that activates alone (no privacy officer approval
+  // yet) takes a required reason; the second of two approvals takes none (PR 47 review D-03).
+  const withReason = (role: ApproverRole) => single && role === 'security_admin' && !given('privacy_officer');
 
   async function approve(role: ApproverRole) {
     if (!version) {
@@ -588,9 +589,7 @@ function ApprovalSteps({
                           disabled={busy || !reasonValid}
                           onClick={() => void approve(role)}
                         >
-                          {given('privacy_officer')
-                            ? t('approval.approve', { role: roleLabel(i18n, role) })
-                            : t('approval.approveAlone')}
+                          {t('approval.approveAlone')}
                         </Button>
                       </Box>
                     </Box>

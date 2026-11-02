@@ -601,39 +601,48 @@ decide governance details at go-live), the token width is decided at go-live; un
   ServiceLB and the login throttle counts every browser as one client (a go-live item, not decided). The throttle fix
   reaches the pilot with the next image build. The PO imports the CA and adds one hosts-file line (runbook 14.4).
 
-## Done (pilot single-approval switch, branch `worktree-agent-a76ac6137b67b800c`, not yet merged)
+## Done (pilot single-approval switch, branch `feature/pilot-single-approval`, pull request 47, not yet merged)
 
 PO decision Q-47, decision 2 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.md`, RATIFIED); it amends
 Q-39/Q-40 decision 3 for the pilot only, while the switch is on.
 
 - `rwsafe.policy.single-approval` (`RWSAFE_POLICY_SINGLE_APPROVAL`, default `false`). On, a `security_admin` approval
-  carries a reason (the withdrawal checks: 1 to 500 characters, no identifier, no estate term) and activates the version
-  at once; a version the privacy officer already approved (another person) is activated by the two approvals as before.
+  of a version no privacy officer approved yet carries a reason (the withdrawal checks: 1 to 500 characters, no
+  identifier, no estate term) and activates the version at once. A version the privacy officer already approved (another
+  person) is activated by the two approvals as before, and that second approval takes no reason (PR 47 review D-03).
   A privacy officer never activates alone; the masked role and the viewer get 403; a missing reason is
-  `INVALID_SINGLE_APPROVAL`; a reason while the switch is off, or from a privacy officer, is
-  `SINGLE_APPROVAL_NOT_AVAILABLE`. Off, nothing changes. The control plane logs a warning at start while it is on.
+  `INVALID_SINGLE_APPROVAL`; a reason while the switch is off, from a privacy officer, or on the second of two approvals
+  is `SINGLE_APPROVAL_NOT_AVAILABLE` (the store refuses the same inside its transaction, never drops the reason). Off,
+  nothing changes. The control plane logs a warning at start while it is on.
 - Flyway `V10__single_approval_activation.sql`: columns `single_approval_by` and `single_approval_reason`, written once
   by the activation only. The guard accepts a one-approval activation only when the transaction declares the switch
   (`app.single_approval = 'on'`, set by the store only when the control plane's switch is on), the one approval is that
   administrator's `security_admin` approval, and the ledger row names that administrator, the action
-  `policy.activate_single_approval` and the stored reason; every other activation still needs two roles and two people.
+  `policy.activate_single_approval` and the stored reason; half a record (one of the two fields) is refused by the
+  guard (PR 47 review D-02); every other activation still needs two roles and two people.
 - `SnapshotCompiler`: a version with one approval compiles only with a stored single-approval record whose administrator
   is the one `security_admin` approver; the fail-closed checks are unchanged. A version activated under the switch stays
   compilable after the switch is turned off (see Open).
 - API: `GET /api/v1/policy/rules` returns `singleApproval` (the switch) and each version's `singleApproval`
   (administrator pseudonym and reason; the reason withheld for the masked role); the approval body takes an optional
   `reason`. Policies page: an information notice while the switch is on, a required reason field and "Onayla ve
-  etkinleştir" on the security administrator step, and a line on a version activated with one approval (TR and EN).
+  etkinleştir" on the security administrator step when it activates alone (no privacy officer approval yet), and a line
+  on a version activated with one approval (TR and EN).
 - Deploy: `RWSAFE_POLICY_SINGLE_APPROVAL: "true"` in `deploy/rwsafe/overlays/pilot/10-pilot-config.yaml` only.
-  `tools/deploy/manifest_check.py` refuses any value but `"false"` in every render other than the committed pilot
-  overlay's (or a `--rendered` file declared with `--pilot`), any spelling Spring binds, a `valueFrom` and a mention in a
-  container's command or args; `tools/pilot/render.py` passes the pilot target.
+  `tools/deploy/manifest_check.py` (PR 47 review D-01) allows the switch in one place only, the key
+  `RWSAFE_POLICY_SINGLE_APPROVAL` of ConfigMap `<product>-control-config`, `"true"` only in the committed pilot overlay's
+  render (or a `--rendered` file declared with `--pilot`), else `"false"`; any other key or value of any rendered object
+  (ConfigMap data and decoded binaryData, env names and values, command, args, annotations) and any runtime-contract
+  name or key whose letters and digits contain `SINGLEAPPROVAL` is refused (other spellings, `SPRING_APPLICATION_JSON`,
+  `JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS`, JSON in args). `tools/pilot/render.py` passes the pilot target.
 - Tests: `SingleApprovalActivationTest` (persistence), `SnapshotCompilerTest`, `PolicySingleApprovalIntegrationTest`,
   `policies.test.tsx`, `test_manifest_check.py` (`SingleApprovalSwitch`).
-- Open: security-sensitive (policy registry, deploy manifests): needs the second independent review before merge. At
-  go-live the switch is turned off; versions activated with one approval stay active and compiled until replaced by a
-  version with two approvals (refusing them at compile time would stop snapshot issuance). Whether go-live should
-  require re-approving them is not decided.
+- Second review: Argon (`docs/reviews/PR47_2026_11_02_ARGON_PILOT_SINGLE_APPROVAL.md`), MERGE WITH CORRECTIONS, no
+  P0; D-01 (P1, the checker), D-02 and D-03 (P2) fixed with tests.
+- Open (deferred to go-live, Argon Q-1): at go-live the switch is turned off; versions activated with one approval stay
+  active and compiled until replaced by a version with two approvals (refusing them at compile time would stop snapshot
+  issuance). Whether go-live must first supersede every single-approved active version (Argon recommends a go-live
+  readiness check) is not decided.
 
 ## Not done
 

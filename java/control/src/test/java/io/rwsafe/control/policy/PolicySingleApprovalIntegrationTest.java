@@ -171,8 +171,14 @@ class PolicySingleApprovalIntegrationTest {
         assertEquals("REDACT", snapshot().get("classActions").get("PAYMENT_CARD").asText());
         assertEquals(0, ledger("policy_rule_version", "UPDATE", "policy.activate_single_approval"));
 
-        // The security administrator's approval then completes the two approvals: an ordinary activation.
-        ApiClient.Response two = admin.post(approvals, approval("security_admin", REASON), true);
+        // The security administrator's approval then completes the two approvals: an ordinary activation, which takes
+        // no reason (PR 47 review D-03: a reason there is refused, never dropped).
+        ApiClient.Response withAReason = admin.post(approvals, approval("security_admin", REASON), true);
+        assertEquals(400, withAReason.status());
+        assertEquals("SINGLE_APPROVAL_NOT_AVAILABLE", withAReason.body().get("reason").asText());
+        assertEquals(1, ledger("policy_approval", "INSERT", "policy.approve"), "the refusal changed nothing");
+        ApiClient.Response two = admin.post(approvals, approval("security_admin", null), true);
+        assertEquals(200, two.status(), String.valueOf(two.body()));
         assertEquals("active", two.body().get("status").asText());
         assertEquals(2, two.body().get("approvals").size());
         assertTrue(two.body().get("singleApproval").isNull());

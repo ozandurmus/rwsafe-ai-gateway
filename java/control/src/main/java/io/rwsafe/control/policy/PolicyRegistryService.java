@@ -342,8 +342,8 @@ public class PolicyRegistryService {
      * Q-47, decision 2), a {@code security_admin} approval carries a {@code reason} (1 to 500 characters, no identifier,
      * no estate term, as a withdrawal's) and activates the version at once, ledgered as
      * {@code policy.activate_single_approval} under the administrator's pseudonym with that reason; a version the other
-     * role already approved (another person) is activated by the two approvals as before. A privacy officer's approval
-     * never activates alone. While the switch is off, nothing changes, and a reason is refused (the client would
+     * role already approved (another person) is activated by the two approvals as before, and that approval takes no
+     * reason ({@code SINGLE_APPROVAL_NOT_AVAILABLE}). A privacy officer's approval never activates alone. While the switch is off, nothing changes, and a reason is refused (the client would
      * believe it activates alone).
      */
     public PolicyRuleVersion approve(String ruleId, int version, String role, String reason, String loginName,
@@ -356,11 +356,16 @@ public class PolicyRegistryService {
             throw new RegistryRefusal(HttpStatus.FORBIDDEN, "APPROVER_ROLE_MISSING",
                 "Your session does not hold the role this approval is given in.");
         }
-        boolean alone = config.singleApproval() && Roles.SECURITY_ADMIN.equals(role);
+        // PR 47 review D-03: the reason belongs to the activation alone only; with the privacy officer's approval present
+        // the security administrator's approval is the second of two and takes none (the store refuses the same
+        // inside its transaction, should the privacy officer approve in between).
+        boolean alone = config.singleApproval() && Roles.SECURITY_ADMIN.equals(role)
+            && database.policyRegistry().version(ruleId, version).map(v -> v.approvals().stream()
+                .noneMatch(a -> Roles.PRIVACY_OFFICER.equals(a.role()))).orElse(true);
         if (reason != null && !alone) {
             throw new RegistryRefusal(HttpStatus.BAD_REQUEST, "SINGLE_APPROVAL_NOT_AVAILABLE",
-                "Only a security administrator's approval, while the pilot single-approval setting is on, takes a "
-                    + "reason and activates alone.");
+                "Only a security administrator's approval that activates alone, while the pilot single-approval "
+                    + "setting is on, takes a reason.");
         }
         String checked = alone ? reasonText(reason, "INVALID_SINGLE_APPROVAL", "single-approval activation") : null;
         String approver = pseudonym(loginName);

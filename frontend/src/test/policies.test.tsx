@@ -354,6 +354,32 @@ describe('pilot single approval (PO decision Q-47)', () => {
     expect(JSON.parse(String(post.init.body))).toEqual({ role: 'security_admin', reason: 'Synthetic pilot change' });
   });
 
+  it('asks no reason for the second of two approvals while the switch is on', async () => {
+    const server = fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-admin', ['security_admin']) }),
+      'GET /api/v1/policy/rules': () => {
+        const r = singleRegistry();
+        r.rules[1]!.versions[0]!.approvals = [
+          { role: 'privacy_officer', approver: 'USR-00000000b2', approvedAt: '2026-10-30T10:00:00Z' },
+        ];
+        return { status: 200, body: r };
+      },
+      'POST /api/v1/policy/rules/class.TCKN/versions/3/approvals': () => ({
+        status: 200,
+        body: version('class.TCKN', 3, { action: 'BLOCK', source: 'registry' }),
+      }),
+    });
+    renderApp('/policies');
+    await userEvent.click(within(await screen.findByRole('table', { name: 'Politika kuralları' })).getByText('TCKN'));
+    expect(await screen.findByText(/Pilot ayarı: tek bir güvenlik yöneticisinin onayı/)).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Gerekçe' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Onayla ve etkinleştir' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Güvenlik yöneticisi olarak onayla' }));
+    await waitFor(() => expect(server.calls.some((c) => c.method === 'POST')).toBe(true));
+    const post = server.calls.find((c) => c.method === 'POST')!;
+    expect(JSON.parse(String(post.init.body))).toEqual({ role: 'security_admin' });
+  });
+
   it('shows a version activated with one approval and keeps the privacy officer step without a reason', async () => {
     fakeServer({
       'GET /api/v1/auth/me': () => ({ status: 200, body: user('synthetic-officer', ['privacy_officer']) }),
