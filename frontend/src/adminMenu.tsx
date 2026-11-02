@@ -2,6 +2,7 @@ import type { Me } from './api';
 import type { MessageKey } from './i18n';
 import { canReadAuditLog, isAdministrator } from './navigation';
 import { AuditLogPage } from './pages/admin/AuditLogPage';
+import { DirectorySettingsPage } from './pages/admin/DirectorySettingsPage';
 import { JobLogPage } from './pages/admin/JobLogPage';
 import { LocalUsersPage } from './pages/admin/LocalUsersPage';
 import { NotificationsPage } from './pages/admin/NotificationsPage';
@@ -11,7 +12,7 @@ import { SystemLogsPage } from './pages/admin/SystemLogsPage';
 import { SystemPage } from './pages/admin/SystemPage';
 
 // The Administration page's own menu (PO decision Q-47): groups under uppercase headings, plain-text items. This is the
-// one place a later lane adds its screens: Access part 2 (directory settings) joins ACCESS; RECORDS (audit ledger,
+// one place a later lane adds its screens: Access part 2 (LDAP settings) is in ACCESS; RECORDS (audit ledger,
 // scheduled jobs) and PLATFORM (notifications, system logs, version) arrive as new sections. A section without a visible
 // item is not shown.
 
@@ -53,6 +54,13 @@ export const ADMIN_MENU: AdminSection[] = [
         description: 'admin.roles.description',
         visible: isAdministrator,
         element: <RolesPage />,
+      },
+      {
+        path: '/admin/directory',
+        label: 'admin.directory.title',
+        description: 'admin.directory.description',
+        visible: isAdministrator,
+        element: <DirectorySettingsPage />,
       },
     ],
   },

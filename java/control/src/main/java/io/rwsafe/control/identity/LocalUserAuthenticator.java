@@ -2,7 +2,6 @@ package io.rwsafe.control.identity;
 
 import io.rwsafe.persistence.Database;
 import io.rwsafe.persistence.LocalUser;
-import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -26,9 +25,18 @@ public final class LocalUserAuthenticator implements Authenticator {
         this.database = database;
     }
 
+    /**
+     * The form a typed login name is looked up in (PR 50 review D-05): stripped, then the Turkish fold the reason checks
+     * use (İ, I and ı become i; ş, ğ, ü, ö, ç their ASCII letters; combining marks dropped) and lower case. A local login
+     * name is ASCII, so every spelling the directory might treat as the same name finds the local row first.
+     */
+    static String key(String loginName) {
+        return io.rwsafe.control.privacy.IdentifierCheck.fold(loginName.strip());
+    }
+
     @Override
     public Optional<AuthenticatedUser> authenticate(String loginName, char[] password) {
-        String name = loginName.toLowerCase(Locale.ROOT);
+        String name = key(loginName);
         Optional<LocalUser> user = LocalUsers.LOGIN_NAME.matcher(name).matches()
             ? database.localUsers().find(name) : Optional.empty();
         String hash = user.filter(LocalUser::enabled).map(LocalUser::passwordHash).orElse(decoyHash);
@@ -43,7 +51,7 @@ public final class LocalUserAuthenticator implements Authenticator {
     /** A local user row, enabled or not, owns its login name: the directory is never asked for it (D-04). */
     @Override
     public boolean authoritative(String loginName) {
-        String name = loginName.toLowerCase(Locale.ROOT);
+        String name = key(loginName);
         return LocalUsers.LOGIN_NAME.matcher(name).matches() && database.localUsers().find(name).isPresent();
     }
 }

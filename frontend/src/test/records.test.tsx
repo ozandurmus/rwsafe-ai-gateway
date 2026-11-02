@@ -102,6 +102,9 @@ const SYSTEM = {
     singleApproval: true,
     breakGlassSignIn: true,
     directoryConfigured: false,
+    directoryEnabled: false,
+    directoryKeyPresent: true,
+    directoryStatus: 'NOT_CONFIGURED',
     captureMode: 'off',
     siemExport: false,
   },
@@ -289,7 +292,9 @@ describe('platform', () => {
     const switches = screen.getByRole('list', { name: 'Switches' });
     const item = (label: string) => within(switches).getByText(label).closest('li')!;
     expect(within(item('One administrator may activate a policy alone (pilot only)')).getByText('On')).toBeInTheDocument();
-    expect(within(item('Directory (LDAP) connection set')).getByText('Off')).toBeInTheDocument();
+    expect(within(item('Directory (LDAP) settings saved')).getByText('Off')).toBeInTheDocument();
+    expect(within(item('Directory password key present')).getByText('On')).toBeInTheDocument();
+    expect(screen.getByText('Not set up')).toBeInTheDocument();
   });
 
   it('shows the system log as kinds and counts, never a message', async () => {

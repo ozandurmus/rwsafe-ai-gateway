@@ -8,11 +8,14 @@ import io.rwsafe.control.admin.PlatformViews.NotificationsView;
 import io.rwsafe.control.admin.PlatformViews.SwitchesView;
 import io.rwsafe.control.admin.PlatformViews.SystemView;
 import io.rwsafe.control.config.ControlProperties;
+import io.rwsafe.control.identity.DirectoryKey;
+import io.rwsafe.control.identity.DirectorySettingsService;
 import io.rwsafe.control.ops.LogRing;
 import io.rwsafe.control.privacy.IdentifierCheck;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.siem.SiemExportService;
 import io.rwsafe.persistence.Database;
+import io.rwsafe.persistence.DirectorySettings;
 import java.lang.management.ManagementFactory;
 import java.time.Clock;
 import java.time.Duration;
@@ -40,12 +43,13 @@ public class PlatformAdminController {
     private final LogRing logs;
     private final SiemExportService siem;
     private final PrivacyKeys keys;
+    private final DirectorySettingsService directory;
     private final String commit;
     private final Instant buildTime;
     private final Clock clock;
 
     public PlatformAdminController(ControlProperties properties, Database database, LogRing logs,
-                                   SiemExportService siem, PrivacyKeys keys,
+                                   SiemExportService siem, PrivacyKeys keys, DirectorySettingsService directory,
                                    @Value("${rwsafe.build.commit:}") String commit,
                                    @Value("${rwsafe.build.time:}") String buildTime) {
         this.properties = properties;
@@ -53,6 +57,7 @@ public class PlatformAdminController {
         this.logs = logs;
         this.siem = siem;
         this.keys = keys;
+        this.directory = directory;
         this.commit = commit(commit);
         this.buildTime = buildTime(buildTime);
         this.clock = Clock.systemUTC();
@@ -63,11 +68,16 @@ public class PlatformAdminController {
         Instant started = Instant.ofEpochMilli(ManagementFactory.getRuntimeMXBean().getStartTime());
         Instant now = clock.instant();
         ControlProperties.Capture capture = properties.capture();
+        // The stored directory settings (PR 50), as facts only: no URL, DN, group or reason leaves here.
+        DirectorySettingsService.State d = directory.state();
+        String status = d.status().status();
         return new SystemView(SiemExportService.productVersion(), commit, buildTime, Runtime.version().toString(),
             database.schemaVersion(), started, Math.max(0, Duration.between(started, now).toSeconds()),
             new SwitchesView(properties.policy().singleApproval(), properties.identity().breakGlass().enabled(),
-                properties.identity().ldap().configured(), capture.redacted() ? "redacted" : "off",
-                properties.siem().enabled()));
+                d.active().isPresent(), d.active().map(DirectorySettings::enabled).orElse(false),
+                d.key() == DirectoryKey.State.AVAILABLE,
+                Set.of("ACTIVE", "DISABLED", "NOT_CONFIGURED", "UNAVAILABLE").contains(status) ? status : "UNKNOWN",
+                capture.redacted() ? "redacted" : "off", properties.siem().enabled()));
     }
 
     @GetMapping("/logs")

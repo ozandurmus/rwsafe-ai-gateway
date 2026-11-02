@@ -684,6 +684,79 @@ class CommittedOverlay(unittest.TestCase):
                                     for f in failures), failures)
 
 
+class DirectoryKey(unittest.TestCase):
+    """PO decision Q-47, decision 1.2: the control plane mounts the product's own directory key Secret, optional (a
+    missing key leaves directory sign-in unavailable, never the pod down), under the contract, in k3s and the pilot."""
+
+    def test_the_control_plane_mounts_the_directory_key_from_the_contract(self):
+        for overlay in ("k3s", "pilot"):
+            for product in ("rwsafe", "acme"):
+                with self.subTest(overlay=overlay, product=product):
+                    text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays" / overlay)
+                    objects = mc.rename_objects(mc.to_objects(text), product)
+                    contracts = mc.rename_contracts(CONTRACTS_FILE_JSON, product)
+                    self.assertEqual(contracts["secrets"][f"{product}-directory-key"]["keys"], ["key"])
+                    control = next(o for o in objects if mc.ident(o) == f"Deployment/{product}/{product}-control")
+                    spec = mc.pod_template(control)[1]
+                    volume = next(v for v in spec["volumes"] if v["name"] == "directory-key")
+                    self.assertEqual(volume["secret"]["secretName"], f"{product}-directory-key")
+                    self.assertTrue(volume["secret"]["optional"])
+                    self.assertEqual(volume["secret"]["items"], [{"key": "key", "path": "key"}])
+                    c = mc.containers(spec)[0]
+                    self.assertIn({"name": "directory-key", "mountPath": "/run/secrets/rwsafe-directory-key",
+                                   "readOnly": True}, c["volumeMounts"])
+                    env = {e["name"]: e.get("value") for e in c["env"]}
+                    self.assertEqual(env["RWSAFE_DIRECTORY_KEY_FILE"], "/run/secrets/rwsafe-directory-key/key")
+
+    # PR 50 review D-02: the deploy-time directory values only seed the stored settings, so the control plane starts
+    # without them; in the pilot it needs nothing of the contract beyond what tools/pilot/bootstrap_secrets.sh creates.
+    def test_the_control_plane_starts_without_the_directory_seed_objects(self):
+        for overlay in ("k3s", "pilot"):
+            with self.subTest(overlay=overlay):
+                text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays" / overlay)
+                control = next(o for o in mc.to_objects(text) if mc.ident(o) == "Deployment/rwsafe/rwsafe-control")
+                spec = mc.pod_template(control)[1]
+                for e in mc.containers(spec)[0].get("env", []):
+                    if e["name"] in ("RWSAFE_LDAP_URL", "RWSAFE_LDAP_BIND_DN", "RWSAFE_LDAP_USER_SEARCH_BASE"):
+                        self.assertTrue(e["valueFrom"]["configMapKeyRef"].get("optional"), e["name"])
+                for v in spec["volumes"]:
+                    if v["name"] in ("ldap-bind", "directory-key"):
+                        self.assertTrue(v["secret"].get("optional"), v["name"])
+
+    def test_the_pilot_control_plane_needs_only_what_bootstrap_creates(self):
+        created = {("secret", "rwsafe-db-credentials"), ("secret", "rwsafe-privacy-hmac-key"),
+                   ("secret", "rwsafe-snapshot-signing-key"), ("secret", "rwsafe-directory-key"),
+                   ("configMap", "rwsafe-estate:estate-dictionary.txt")}
+        contract = CONTRACTS_FILE_JSON
+        text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays/pilot")
+        control = next(o for o in mc.to_objects(text) if mc.ident(o) == "Deployment/rwsafe/rwsafe-control")
+        spec = mc.pod_template(control)[1]
+        required = set()
+        for v in spec["volumes"]:
+            if "secret" in v and not v["secret"].get("optional"):
+                required.add(("secret", v["secret"]["secretName"]))
+            if "configMap" in v and not v["configMap"].get("optional") and v["configMap"]["name"] in contract["configMaps"]:
+                for item in v["configMap"].get("items", [{"key": "*"}]):
+                    required.add(("configMap", f"{v['configMap']['name']}:{item['key']}"))
+        for c in mc.containers(spec):
+            for e in c.get("env", []):
+                ref = e.get("valueFrom", {}).get("configMapKeyRef") or e.get("valueFrom", {}).get("secretKeyRef")
+                if ref and not ref.get("optional") and (ref["name"] in contract["configMaps"]
+                                                        or ref["name"] in contract["secrets"]):
+                    kind = "configMap" if "configMapKeyRef" in e["valueFrom"] else "secret"
+                    required.add((kind, f"{ref['name']}:{ref['key']}" if kind == "configMap" else ref["name"]))
+        self.assertTrue(required <= created, sorted(required - created))
+
+    def test_a_directory_key_item_outside_the_contract_fails(self):
+        text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays/k3s")
+        objects = mc.to_objects(text)
+        control = next(o for o in objects if mc.ident(o) == "Deployment/rwsafe/rwsafe-control")
+        volume = next(v for v in mc.pod_template(control)[1]["volumes"] if v["name"] == "directory-key")
+        volume["secret"]["items"] = [{"key": "plaintext", "path": "key"}]
+        failures, _ = mc.check(objects, CONTRACTS_FILE_JSON)
+        self.assertTrue(any("plaintext not in the runtime contract" in f for f in failures), failures)
+
+
 def pilot_objects(product: str) -> tuple[list[dict], dict]:
     text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays/pilot")
     return mc.rename_objects(mc.to_objects(text), product), mc.rename_contracts(CONTRACTS_FILE_JSON, product)
@@ -1007,6 +1080,108 @@ class SingleApprovalSwitch(unittest.TestCase):
         def build_configmap(_, contracts):
             contracts["build"]["configMaps"]["rwsafe-single-approval"] = {"keys": ["value"]}
         self.assert_mention_refused(build_configmap, "runtime contract build.configMaps/rwsafe-single-approval")
+
+
+class DirectoryTestSwitch(unittest.TestCase):
+    """PR 50 review Q-1 (confirmation): the directory's test-only switch (plain LDAP and loopback targets) is named by
+    no render and no contract, the pilot's included; every shape a deploy could set it in is refused."""
+
+    def switch_failures(self, failures: list[str]) -> list[str]:
+        return [f for f in failures if "directory test-only switch" in f]
+
+    def control_config(self, objects: list[dict]) -> dict:
+        return next(o for o in objects if mc.ident(o) == "ConfigMap/rwsafe/rwsafe-control-config")
+
+    def control_pod(self, objects: list[dict]) -> dict:
+        return mc.containers(mc.pod_template(next(
+            o for o in objects if mc.ident(o) == "Deployment/rwsafe/rwsafe-control"))[1])[0]
+
+    def assert_refused(self, mutate, where: str):
+        for pilot in (False, True):
+            with self.subTest(where=where, pilot=pilot):
+                objects, contracts = copy.deepcopy(_PILOT_RENDER["rwsafe"])
+                mutate(objects, contracts)
+                failures = self.switch_failures(mc.check(objects, contracts, pilot=pilot)[0])
+                self.assertTrue(any(where in f for f in failures), failures)
+
+    def test_no_committed_render_or_contract_names_it(self):
+        for overlay in ("k3s", "pilot"):
+            for product in ("rwsafe", "acme"):
+                with self.subTest(overlay=overlay, product=product):
+                    text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays" / overlay)
+                    objects = mc.rename_objects(mc.to_objects(text), product)
+                    contracts = mc.rename_contracts(CONTRACTS_FILE_JSON, product)
+                    failures, _ = mc.check(objects, contracts, product=product, pilot=overlay == "pilot")
+                    self.assertEqual(self.switch_failures(failures), [])
+
+    def test_every_spelling_matches(self):
+        for text in ("RWSAFE_IDENTITY_DIRECTORYLOOPBACKFORTESTS", "rwsafe.identity.directory-loopback-for-tests",
+                     "rwsafe_identity_directory_loopback_for_tests", "directoryLoopbackForTests",
+                     '{"rwsafe":{"identity":{"directory-loopback-for-tests":true}}}', "loopback-for-tests"):
+            self.assertTrue(mc._mentions_directory_test_switch(text), text)
+        for text in ("RWSAFE_LDAP_URL", "loopback", "for-tests", None, 1):
+            self.assertFalse(mc._mentions_directory_test_switch(text), text)
+
+    def test_configmap_keys_values_and_binary_data_are_refused(self):
+        for name in ("RWSAFE_IDENTITY_DIRECTORYLOOPBACKFORTESTS", "rwsafe.identity.directory-loopback-for-tests"):
+            def key(objects, _, name=name):
+                self.control_config(objects)["data"][name] = "true"
+            self.assert_refused(key, f"data.{name}")
+
+        def spring_json(objects, _):
+            self.control_config(objects)["data"]["SPRING_APPLICATION_JSON"] = json.dumps(
+                {"rwsafe": {"identity": {"directory-loopback-for-tests": True}}})
+        self.assert_refused(spring_json, "data.SPRING_APPLICATION_JSON")
+
+        def tool_options(objects, _):
+            self.control_config(objects)["data"]["JAVA_TOOL_OPTIONS"] = (
+                "-Drwsafe.identity.directory-loopback-for-tests=true")
+        self.assert_refused(tool_options, "data.JAVA_TOOL_OPTIONS")
+
+        def binary(objects, _):
+            self.control_config(objects)["binaryData"] = {"application.properties": base64.b64encode(
+                b"rwsafe.identity.directory-loopback-for-tests=true").decode()}
+        self.assert_refused(binary, "binaryData.application.properties (decoded)")
+
+    def test_env_command_args_and_annotations_are_refused(self):
+        def env(entry):
+            def mutate(objects, _):
+                self.control_pod(objects).setdefault("env", []).append(entry)
+            return mutate
+        self.assert_refused(env({"name": "RWSAFE_IDENTITY_DIRECTORYLOOPBACKFORTESTS", "value": "true"}), "env")
+        self.assert_refused(env({"name": "JDK_JAVA_OPTIONS",
+                                 "value": "-Drwsafe.identity.directory-loopback-for-tests=true"}), "env")
+        self.assert_refused(env({"name": "JAVA_TOOL_OPTIONS",
+                                 "value": "-Drwsafe.identity.directoryLoopbackForTests=true"}), "env")
+        self.assert_refused(env({"name": "SPRING_APPLICATION_JSON",
+                                 "value": '{"rwsafe":{"identity":{"directoryLoopbackForTests":true}}}'}), "env")
+
+        def args(objects, _):
+            self.control_pod(objects)["args"] = ["--rwsafe.identity.directory-loopback-for-tests=true"]
+        self.assert_refused(args, "args[0]")
+
+        def command(objects, _):
+            self.control_pod(objects)["command"] = ["java", "-Drwsafe.identity.directory-loopback-for-tests=true",
+                                                    "-jar", "app.jar"]
+        self.assert_refused(command, "command[1]")
+
+        def annotation(objects, _):
+            control = next(o for o in objects if mc.ident(o) == "Deployment/rwsafe/rwsafe-control")
+            control["metadata"].setdefault("annotations", {})["note"] = "directory-loopback-for-tests"
+        self.assert_refused(annotation, "metadata.annotations.note")
+
+    def test_contract_names_and_keys_are_refused(self):
+        def secret_key(_, contracts):
+            contracts["secrets"]["rwsafe-db-credentials"]["keys"].append("rwsafe.identity.directory-loopback-for-tests")
+        self.assert_refused(secret_key, "runtime contract secrets/rwsafe-db-credentials")
+
+        def configmap_name(_, contracts):
+            contracts["configMaps"]["rwsafe-loopback-for-tests"] = {"keys": ["value"]}
+        self.assert_refused(configmap_name, "runtime contract configMaps/rwsafe-loopback-for-tests")
+
+        def build_key(_, contracts):
+            contracts["build"]["configMaps"]["rwsafe-build-config"]["keys"].append("DIRECTORY_LOOPBACK_FOR_TESTS")
+        self.assert_refused(build_key, "runtime contract build.configMaps/rwsafe-build-config")
 
 
 if __name__ == "__main__":

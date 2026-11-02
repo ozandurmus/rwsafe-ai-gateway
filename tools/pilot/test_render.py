@@ -67,6 +67,11 @@ class PilotTarget(unittest.TestCase):
         self.assertNotIn("RWSAFE_LDAP_URL", text)
         self.assertNotIn("rwsafe-icap-tls", text)
         self.assertNotIn("rwsafe-ldap-bind", text)
+        # The LDAP settings screen's password key (PO decision Q-47): mounted optional, the pilot keeps it.
+        control = next(o for o in objects if o["kind"] == "Deployment" and o["metadata"]["name"] == "rwsafe-control")
+        key = next(v for v in mc.pod_template(control)[1]["volumes"] if v["name"] == "directory-key")
+        self.assertEqual(key["secret"]["secretName"], "rwsafe-directory-key")
+        self.assertTrue(key["secret"]["optional"])
         policies = {o["metadata"]["name"] for o in objects if o["kind"] == "NetworkPolicy"}
         self.assertFalse({"rwsafe-control-to-directory", "rwsafe-control-to-siem"} & policies)
         self.assertIn("rwsafe-control-from-traefik", policies)

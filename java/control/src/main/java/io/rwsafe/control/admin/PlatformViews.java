@@ -18,9 +18,15 @@ public final class PlatformViews {
     }
 
     /**
-     * The switches that change what the product does. {@code captureMode} is {@code off} or {@code redacted}.
+     * The switches that change what the product does. The directory facts come from the stored settings
+     * ({@code DirectorySettingsService}, PR 50), never the deploy's values, and never a URL, a DN or a group:
+     * {@code directoryConfigured} a stored version exists, {@code directoryEnabled} it is switched on,
+     * {@code directoryKeyPresent} the bind-password key is mounted and usable, {@code directoryStatus} the sign-in
+     * front's state ({@code ACTIVE}, {@code DISABLED}, {@code NOT_CONFIGURED}, {@code UNAVAILABLE}).
+     * {@code captureMode} is {@code off} or {@code redacted}.
      */
     public record SwitchesView(boolean singleApproval, boolean breakGlassSignIn, boolean directoryConfigured,
+                               boolean directoryEnabled, boolean directoryKeyPresent, String directoryStatus,
                                String captureMode, boolean siemExport) {
     }
 

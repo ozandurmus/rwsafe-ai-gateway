@@ -6,17 +6,18 @@ import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import org.springframework.beans.factory.DisposableBean;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Service;
 
 /**
  * The authentication fronts in order: the local break-glass account (when enabled), the local users of the
- * Administration screen (PO decision Q-47), then the directory (when set). One login throttle covers them all.
+ * Administration screen (PO decision Q-47), then the directory with the settings stored on the Administration screen
+ * ({@link DirectorySettingsService}; it answers nothing while no usable version is active). One login throttle covers
+ * them all.
  */
 @Service
-public class IdentityService implements ApplicationRunner, DisposableBean {
+public class IdentityService implements ApplicationRunner {
 
     public enum Outcome { AUTHENTICATED, INVALID, THROTTLED, NO_ROLE }
 
@@ -25,21 +26,17 @@ public class IdentityService implements ApplicationRunner, DisposableBean {
 
     private final ControlProperties properties;
     private final BreakGlassAccounts breakGlass;
-    private final LdapAuthenticator ldap;
     private final List<Authenticator> fronts = new ArrayList<>();
     private final LoginThrottle throttle = new LoginThrottle(Clock.systemUTC());
 
-    public IdentityService(ControlProperties properties, Database database) {
+    public IdentityService(ControlProperties properties, Database database, DirectorySettingsService directory) {
         this.properties = properties;
         this.breakGlass = properties.identity().breakGlass().enabled() ? new BreakGlassAccounts(database) : null;
-        this.ldap = properties.identity().ldap().configured() ? new LdapAuthenticator(properties.identity().ldap()) : null;
         if (breakGlass != null) {
             fronts.add(breakGlass);
         }
         fronts.add(new LocalUserAuthenticator(database));
-        if (ldap != null) {
-            fronts.add(ldap);
-        }
+        fronts.add(directory);
     }
 
     @Override
@@ -55,6 +52,12 @@ public class IdentityService implements ApplicationRunner, DisposableBean {
     public Result login(String loginName, char[] password, String source) {
         if (throttle.locked(loginName, source)) {
             return new Result(Outcome.THROTTLED, null);
+        }
+        // A name with surrounding white space or a control character is refused before any front (PR 50 review D-05):
+        // a variant spelling could otherwise miss the local row that owns the name and reach the directory.
+        if (!wellFormed(loginName)) {
+            throttle.failure(loginName, source);
+            return new Result(Outcome.INVALID, null);
         }
         for (Authenticator front : fronts) {
             Optional<AuthenticatedUser> user = front.authenticate(loginName, password);
@@ -77,6 +80,12 @@ public class IdentityService implements ApplicationRunner, DisposableBean {
         return new Result(Outcome.INVALID, null);
     }
 
+    /** 1 to 256 characters, no surrounding white space, no control character. */
+    static boolean wellFormed(String loginName) {
+        return loginName != null && !loginName.isEmpty() && loginName.length() <= 256
+            && loginName.equals(loginName.strip()) && loginName.chars().noneMatch(Character::isISOControl);
+    }
+
     /** True while {@code loginName} from {@code source} is locked out (the own-password change counts as a login). */
     public boolean throttled(String loginName, String source) {
         return throttle.locked(loginName, source);
@@ -97,12 +106,5 @@ public class IdentityService implements ApplicationRunner, DisposableBean {
                 user.passwordChangeRequired());
         }
         return user;
-    }
-
-    @Override
-    public void destroy() {
-        if (ldap != null) {
-            ldap.close();
-        }
     }
 }

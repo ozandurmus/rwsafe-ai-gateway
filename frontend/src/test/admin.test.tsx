@@ -132,7 +132,7 @@ describe('administration', () => {
     );
     expect(within(menu).getByRole('link', { name: 'Oturumlar' })).toBeInTheDocument();
     expect(within(menu).getByRole('link', { name: 'Roller ve yetkiler' })).toBeInTheDocument();
-    expect(within(menu).queryByText(/LDAP|Dizin ayarları/)).toBeNull();
+    expect(within(menu).getByRole('link', { name: 'LDAP ayarları' })).toBeInTheDocument();
     expect(await screen.findByText('synthetic.person')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Yönetim' })).toHaveAttribute('aria-current', 'page');
   });

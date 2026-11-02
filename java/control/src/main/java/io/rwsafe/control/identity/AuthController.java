@@ -121,10 +121,12 @@ public class AuthController {
     @PostMapping("/login")
     public ResponseEntity<MaskedView> login(@RequestBody LoginRequest body, HttpServletRequest request,
                                             HttpServletResponse response) {
-        String name = body == null || body.loginName() == null ? "" : body.loginName().strip();
+        String name = body == null || body.loginName() == null ? "" : body.loginName();
         String password = body == null || body.password() == null ? "" : body.password();
-        if (name.isEmpty() || name.length() > MAX_LOGIN_NAME || password.isEmpty() || password.length() > MAX_PASSWORD
-            || name.chars().anyMatch(Character::isISOControl)) {
+        // A name is taken as typed: surrounding white space is refused, never stripped, so no spelling of a local
+        // user's name can differ from the one the local row is looked up by (PR 50 review D-05).
+        if (name.isEmpty() || !name.equals(name.strip()) || name.length() > MAX_LOGIN_NAME || password.isEmpty()
+            || password.length() > MAX_PASSWORD || name.chars().anyMatch(Character::isISOControl)) {
             return error(HttpStatus.BAD_REQUEST, "INVALID_LOGIN_REQUEST", "A login name and a password are required.");
         }
         IdentityService.Result result = identity.login(name, password.toCharArray(), request.getRemoteAddr());

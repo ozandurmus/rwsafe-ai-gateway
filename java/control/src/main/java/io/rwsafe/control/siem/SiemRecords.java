@@ -166,8 +166,9 @@ public final class SiemRecords {
             case "local_account" -> KeyShape.ACCOUNT;
             // V11: a local user and an ended session are keyed by the person's USR- pseudonym already.
             case "local_user", "session_end" -> KeyShape.USER_PSEUDONYM;
-            case "login_record", "policy_snapshot", "capture_read", "capture_deletion_receipt", "capture_key_event" ->
-                KeyShape.NUMBER;
+            // V12: a directory settings version is keyed by its number (never a URL, a DN or a group name).
+            case "login_record", "policy_snapshot", "capture_read", "capture_deletion_receipt", "capture_key_event",
+                 "directory_settings" -> KeyShape.NUMBER;
             // ADR-009 §4: a deleted capture's event id leaves as written, so the SIEM can purge the same event.
             case "capture_record", "capture_chunk" -> KeyShape.EVENT_ID;
             case "policy_rule_version" -> KeyShape.RULE_VERSION;

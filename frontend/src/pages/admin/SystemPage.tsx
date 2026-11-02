@@ -46,6 +46,8 @@ export function SystemPage() {
     { label: t('system.switch.singleApproval'), on: s.singleApproval },
     { label: t('system.switch.breakGlassSignIn'), on: s.breakGlassSignIn },
     { label: t('system.switch.directoryConfigured'), on: s.directoryConfigured },
+    { label: t('system.switch.directoryEnabled'), on: s.directoryEnabled },
+    { label: t('system.switch.directoryKeyPresent'), on: s.directoryKeyPresent },
     { label: t('system.switch.capture'), on: s.captureMode !== 'off' },
     { label: t('system.switch.siemExport'), on: s.siemExport },
   ];
@@ -68,6 +70,10 @@ export function SystemPage() {
               <Fact label={t('system.schema')} value={data.schemaVersion ?? '—'} mono />
               <Fact label={t('system.startedAt')} value={fmt.time(data.startedAt)} />
               <Fact label={t('system.uptime')} value={uptimeLabel(i18n, data.uptimeSeconds)} />
+              <Fact
+                label={t('system.directoryStatus')}
+                value={i18n.label(`system.directoryStatus.${s.directoryStatus}`, s.directoryStatus)}
+              />
             </Box>
           </CardContent>
         </Card>

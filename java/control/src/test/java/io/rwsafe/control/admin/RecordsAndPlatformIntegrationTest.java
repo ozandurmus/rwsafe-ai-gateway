@@ -238,7 +238,17 @@ class RecordsAndPlatformIntegrationTest {
         JsonNode s = view.get("switches");
         assertEquals(properties.policy().singleApproval(), s.get("singleApproval").asBoolean());
         assertEquals(properties.identity().breakGlass().enabled(), s.get("breakGlassSignIn").asBoolean());
-        assertTrue(s.get("directoryConfigured").asBoolean(), "the test directory is configured");
+        // The stored directory settings (PR 50: the deploy values seeded version 1 at start), as facts only.
+        assertTrue(s.get("directoryConfigured").asBoolean(), "the seeded settings are stored");
+        assertTrue(s.get("directoryEnabled").asBoolean());
+        assertTrue(s.get("directoryKeyPresent").asBoolean(), "the test mounts the directory key");
+        assertEquals("ACTIVE", s.get("directoryStatus").asText());
+        Set<String> switchFields = new TreeSet<>();
+        s.fieldNames().forEachRemaining(switchFields::add);
+        assertEquals(new TreeSet<>(Set.of("singleApproval", "breakGlassSignIn", "directoryConfigured",
+            "directoryEnabled", "directoryKeyPresent", "directoryStatus", "captureMode", "siemExport")), switchFields,
+            "no URL, DN or group field");
+        assertFalse(view.toString().contains(ControlTestEnvironment.BASE), "no directory name reaches the screen");
         assertEquals("off", s.get("captureMode").asText());
         assertFalse(s.get("siemExport").asBoolean());
     }
