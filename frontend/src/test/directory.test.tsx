@@ -45,6 +45,7 @@ function view(overrides: Record<string, unknown> = {}) {
     maxUrls: 8,
     maxGroups: 500,
     testsPerMinute: 6,
+    plainLdapAllowed: false,
     ...overrides,
   };
 }
@@ -195,5 +196,40 @@ describe('LDAP settings', () => {
     expect('newPassword' in c).toBe(false);
     expect('caCertificatePem' in c).toBe(false);
     expect(formOf(null).tlsMode).toBe('ldaps');
+  });
+
+  it('offers no plain LDAP outside tests and refuses a group name with an equals sign (PR 50 review Q-1, D-08)', async () => {
+    fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: admin }),
+      'GET /api/v1/admin/directory': () => ({ status: 200, body: view() }),
+    });
+    renderApp('/admin/directory', 'en');
+    await screen.findByDisplayValue('synthetic-admins');
+    await userEvent.click(screen.getByRole('combobox', { name: 'Encryption' }));
+    const options = within(await screen.findByRole('listbox')).getAllByRole('option').map((o) => o.textContent);
+    expect(options).toEqual(['LDAPS (encrypted from the start)', 'StartTLS (encrypted after connecting)']);
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByRole('button', { name: 'Add group' }));
+    await userEvent.type(screen.getByLabelText('Group name 2'), 'cn=synthetic');
+    await userEvent.click(screen.getByLabelText('Viewer 2'));
+    expect(screen.getByRole('button', { name: 'Save groups' })).toBeDisabled();
+  });
+
+  it('keeps unsaved group rows when the connection is saved (PR 50 review D-08)', async () => {
+    fakeServer({
+      'GET /api/v1/auth/me': () => ({ status: 200, body: admin }),
+      'GET /api/v1/admin/directory': () => ({ status: 200, body: view() }),
+      'POST /api/v1/admin/directory/connection': () => ({ status: 200, body: view({ version: 4 }) }),
+    });
+    renderApp('/admin/directory', 'en');
+    await screen.findByDisplayValue('synthetic-admins');
+    await userEvent.click(screen.getByRole('button', { name: 'Add group' }));
+    await userEvent.type(screen.getByLabelText('Group name 2'), 'Synthetic-Unsaved');
+    await userEvent.click(screen.getByRole('button', { name: 'Save connection' }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.type(within(dialog).getByLabelText(/Reason/), 'timeout change');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByDisplayValue('Synthetic-Unsaved')).toBeInTheDocument();
   });
 });

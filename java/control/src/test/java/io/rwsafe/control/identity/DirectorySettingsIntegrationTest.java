@@ -66,6 +66,8 @@ class DirectorySettingsIntegrationTest {
     DirectorySettingsService directory;
     @Autowired
     Pseudonymiser pseudonymiser;
+    @Autowired
+    io.rwsafe.persistence.Database database;
 
     private ApiClient signedIn(String login) throws Exception {
         ApiClient c = new ApiClient(port);
@@ -188,7 +190,9 @@ class DirectorySettingsIntegrationTest {
         assertFalse(kept.raw().body().contains(bindPassword));
         int keptVersion = kept.body().get("version").asInt();
         assertEquals(before + 1, keptVersion);
-        assertArrayEquals(sealedBefore, sealed(keptVersion));
+        // Kept, but sealed again for the new version (PR 50 review D-01): the old ciphertext opens only for its own.
+        assertFalse(java.util.Arrays.equals(sealedBefore, sealed(keptVersion)));
+        assertEquals(200, login("synthetic-officer").status());
         List<Map<String, Object>> ledgered = ledger("directory_settings.connection");
         Map<String, Object> last = ledgered.get(ledgered.size() - 1);
         assertEquals(pseudonymiser.user(SAVE_ADMIN), last.get("actor_fingerprint"));
@@ -205,6 +209,45 @@ class DirectorySettingsIntegrationTest {
         right.put("newPassword", bindPassword);
         assertEquals(200, admin.post("/api/v1/admin/directory/connection", right.toString(), true).status());
         assertEquals(200, login("synthetic-officer").status());
+
+        // PR 50 review D-01: without a new password, another server, TLS mode or CA bundle is refused; the stored
+        // password never goes where it was not saved for.
+        JsonNode saved = admin.get("/api/v1/admin/directory").body();
+        ObjectNode elsewhere = connection(saved, "routine move");
+        elsewhere.putArray("urls").add("ldap://127.0.0.1:" + (ControlTestEnvironment.ldapPort() + 1));
+        assertEquals("PASSWORD_REQUIRED", admin.post("/api/v1/admin/directory/connection", elsewhere.toString(), true)
+            .body().get("reason").asText());
+        ObjectNode otherTls = connection(saved, "routine encryption");
+        otherTls.put("tlsMode", "starttls");
+        assertEquals("PASSWORD_REQUIRED", admin.post("/api/v1/admin/directory/connection", otherTls.toString(), true)
+            .body().get("reason").asText());
+        ObjectNode otherDn = connection(saved, "routine account");
+        otherDn.put("bindDn", "cn=synthetic-other," + ControlTestEnvironment.BASE);
+        assertEquals("PASSWORD_REQUIRED", admin.post("/api/v1/admin/directory/connection", otherDn.toString(), true)
+            .body().get("reason").asText());
+        ObjectNode farPort = connection(saved, "routine port");
+        farPort.put("tlsMode", "ldaps").putArray("urls").add("ldaps://synthetic-dc.example.test:5432");
+        assertEquals("PORT_NOT_ALLOWED", admin.post("/api/v1/admin/directory/connection", farPort.toString(), true)
+            .body().get("reason").asText());
+        // PR 50 review D-06: a word of a directory DN in the reason (here the user search base's) is refused.
+        assertEquals("REASON_HOLDS_IDENTIFIER", admin.post("/api/v1/admin/directory/connection",
+            connection(saved, "the people branch moved").toString(), true).body().get("reason").asText());
+
+        // PR 50 review D-08: switching the directory off ends the open directory sessions, not the administrator's own.
+        ApiClient open = signedIn("synthetic-viewer");
+        assertEquals(200, open.get("/api/v1/auth/me").status());
+        ObjectNode off = connection(saved, "routine pause");
+        off.put("enabled", false);
+        ApiClient.Response paused = admin.post("/api/v1/admin/directory/connection", off.toString(), true);
+        assertEquals(200, paused.status(), String.valueOf(paused.body()));
+        assertEquals("DISABLED", paused.body().get("status").asText());
+        assertEquals(401, open.get("/api/v1/auth/me").status(), "the open directory session ended");
+        assertEquals(200, admin.get("/api/v1/admin/directory").status(), "the administrator's own session stays");
+        assertEquals(401, login("synthetic-viewer").status());
+        ObjectNode on = connection(paused.body(), "routine resume");
+        on.put("enabled", true);
+        assertEquals(200, admin.post("/api/v1/admin/directory/connection", on.toString(), true).status());
+        assertEquals(200, login("synthetic-viewer").status(), "the password was kept across the pause");
 
         // A stale version, a missing reason, a reason holding an identifier, plain LDAP to a remote host: refused.
         ApiClient.Response stale = admin.post("/api/v1/admin/directory/connection", keep.toString(), true);
@@ -232,6 +275,7 @@ class DirectorySettingsIntegrationTest {
     void theGroupBindingsAreTheOneSourceOfDirectoryRolesAndApplyAtOnce(CapturedOutput output) throws Exception {
         ApiClient admin = signedIn(GROUP_ADMIN);
         assertEquals("viewer", login(GROUP_USER).body().get("roles").get(0).asText());
+        ApiClient openSession = signedIn(GROUP_USER);
         JsonNode view = admin.get("/api/v1/admin/directory").body();
         List<Map.Entry<String, List<String>>> original = current(view);
 
@@ -243,6 +287,9 @@ class DirectorySettingsIntegrationTest {
         ApiClient.Response saved = admin.post("/api/v1/admin/directory/group-roles",
             groups(view, "routine regrouping", changed).toString(), true);
         assertEquals(200, saved.status(), String.valueOf(saved.body()));
+        // PR 50 review D-08: changed bindings end the open directory sessions, never the administrator's own.
+        assertEquals(401, openSession.get("/api/v1/auth/me").status());
+        assertEquals(200, admin.get("/api/v1/admin/directory").status());
         ApiClient.Response relogged = login(GROUP_USER);
         assertEquals(200, relogged.status());
         assertEquals("privacy_officer", relogged.body().get("roles").get(0).asText());
@@ -320,6 +367,10 @@ class DirectorySettingsIntegrationTest {
             .set("settings", elsewhere).toString(), true);
         assertEquals(400, refused.status());
         assertEquals("PASSWORD_REQUIRED", refused.body().get("reason").asText());
+        ObjectNode otherMode = connection(view, null);
+        otherMode.put("tlsMode", "starttls");
+        assertEquals("PASSWORD_REQUIRED", admin.post("/api/v1/admin/directory/test", JSON.createObjectNode()
+            .set("settings", otherMode).toString(), true).body().get("reason").asText());
         elsewhere.put("newPassword", "synthetic-entered");
         assertEquals("UNREACHABLE", admin.post("/api/v1/admin/directory/test", JSON.createObjectNode()
             .set("settings", elsewhere).toString(), true).body().get("result").asText());
@@ -330,7 +381,9 @@ class DirectorySettingsIntegrationTest {
             .toString(), true).body();
         assertEquals("BIND_REFUSED", bind.get("result").asText());
 
-        // Six tests a minute per administrator, then a refusal that names the limit; nothing was saved by a test.
+        // Six tests a minute per administrator (a refused request spends none: the PASSWORD_REQUIRED above), then a
+        // refusal that names the limit; nothing was saved by a test.
+        assertEquals("OK", admin.post("/api/v1/admin/directory/test", "{}", true).body().get("result").asText());
         ApiClient.Response limited = admin.post("/api/v1/admin/directory/test", "{}", true);
         assertEquals(429, limited.status());
         assertEquals("DIRECTORY_TEST_RATE_LIMITED", limited.body().get("reason").asText());
@@ -338,6 +391,32 @@ class DirectorySettingsIntegrationTest {
         assertFalse(output.getAll().contains("synthetic-nobody"), "the tested login name reached the log");
         assertFalse(output.getAll().contains("synthetic-people"), "a directory DN reached the log");
         assertTrue(output.getAll().contains("directory connection test: USER_NOT_FOUND"));
+    }
+
+    /**
+     * PR 50 review D-05: a local user owns its login name in every spelling the sign-in folds to it (Turkish İ/I/ı,
+     * case), and a name with surrounding white space is refused before any front, so neither reaches the directory.
+     */
+    @Test
+    void aLocalUserOwnsItsNameInEverySpelling() throws Exception {
+        ControlTestEnvironment.addUser("synthetic.dirtwin", "security_admin");
+        String directoryPassword = ControlTestEnvironment.PASSWORDS.get("synthetic.dirtwin");
+        assertEquals(200, new ApiClient(port).login("synthetic.dirtwin", directoryPassword).status());
+        assertEquals(400, new ApiClient(port).login(" synthetic.dirtwin", directoryPassword).status());
+        assertEquals(400, new ApiClient(port).login("synthetic.dirtwin\t", directoryPassword).status());
+
+        ApiClient admin = signedIn("synthetic-admin");
+        ObjectNode local = JSON.createObjectNode().put("loginName", "synthetic.dirtwin").put("displayName", "Twin")
+            .put("reason", "onboarding");
+        local.putArray("roles").add("viewer");
+        assertEquals(201, admin.post("/api/v1/admin/users", local.toString(), true).status());
+        LocalUserAuthenticator locals = new LocalUserAuthenticator(database);
+        for (String spelling : List.of("synthetic.dirtwin", "SYNTHETIC.DIRTWIN", "SYNTHET\u0130C.D\u0130RTW\u0130N",
+            "synthet\u0131c.d\u0131rtw\u0131n")) {
+            assertTrue(locals.authoritative(spelling), "the local row owns this spelling");
+            assertEquals(401, new ApiClient(port).login(spelling, directoryPassword).status(),
+                "the directory is never asked for a local name");
+        }
     }
 
     @Test

@@ -20,7 +20,7 @@ public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFe
         captureSink = captureSink == null ? new CaptureSink(8092, "127.0.0.1") : captureSink;
         snapshotFeed = snapshotFeed == null ? new SnapshotFeed(8091, "127.0.0.1") : snapshotFeed;
         privacy = privacy == null ? new Privacy(null, null) : privacy;
-        identity = identity == null ? new Identity(null, null, false, null) : identity;
+        identity = identity == null ? new Identity(null, null, false, null, false) : identity;
         policy = policy == null ? new Policy(null, null, null, null, null) : policy;
         sample = sample == null ? new Sample(0, 1) : sample;
         siem = siem == null ? new Siem(false, null, null, 0, 0, 0, null, null, null, null) : siem;
@@ -215,8 +215,12 @@ public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFe
      * @param directoryKeyFile the directory key (PO decision Q-47, decision 1.2): 32 random bytes from the product's own
      *                         Secret {@code rwsafe-directory-key}, the AES-256-GCM key of the stored bind password. Without
      *                         it the control plane starts and the directory is unavailable with that reason
+     * @param directoryLoopbackForTests test-only (PR 50 review Q-1, D-03): lets the directory settings use plain LDAP and
+     *                         loopback targets on any port, for the in-memory test directory. Never set by a deploy:
+     *                         application.yaml maps no environment variable to it and every overlay leaves it off
      */
-    public record Identity(Ldap ldap, BreakGlass breakGlass, boolean cookieSecure, Path directoryKeyFile) {
+    public record Identity(Ldap ldap, BreakGlass breakGlass, boolean cookieSecure, Path directoryKeyFile,
+                           boolean directoryLoopbackForTests) {
 
         public Identity {
             ldap = ldap == null ? new Ldap(null, null, null, null, null, null, null) : ldap;

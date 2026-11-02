@@ -17,7 +17,9 @@ import javax.crypto.spec.SecretKeySpec;
  * The directory bind password's own key (PO decision Q-47, decision 1.2): 32 random bytes in the product's Kubernetes
  * Secret {@code rwsafe-directory-key} (key {@code key}), mounted as a file, never the privacy or the capture key. The
  * password is sealed with AES-256-GCM: format byte {@code 0x01}, a random 12-byte nonce, the ciphertext and the 16-byte
- * tag, with a fixed associated text. The file is read at each use, so the key is never held longer than one seal or open.
+ * tag. The associated data binds the ciphertext to the settings it was saved for (PR 50 review D-01): the version, the
+ * TLS mode, the bind DN, the URLs and the CA bundle's digest ({@link #context}); a sealed value copied to other settings
+ * does not open. The file is read at each use, so the key is never held longer than one seal or open.
  * Without a readable 32-byte key nothing is sealed or opened: there is no plaintext fallback (AGENTS.md 4.10).
  */
 public final class DirectoryKey {
@@ -46,7 +48,38 @@ public final class DirectoryKey {
     static final int KEY_BYTES = 32;
     private static final int NONCE_BYTES = 12;
     private static final int TAG_BITS = 128;
-    private static final byte[] AAD = "rwsafe.directory.bind-password.v1".getBytes(StandardCharsets.US_ASCII);
+    private static final String AAD_PREFIX = "rwsafe.directory.bind-password.v1";
+
+    /**
+     * The canonical associated data of one settings version: a fixed label, then each field as its UTF-8 byte length,
+     * a colon, the bytes and a semicolon (so no two field lists encode alike): the version, the TLS mode, the bind DN,
+     * the URLs in order, and the SHA-256 of the CA bundle (empty when none).
+     */
+    public static byte[] context(int version, String tlsMode, String bindDn, java.util.List<String> urls,
+                                 String caPem) {
+        StringBuilder b = new StringBuilder(AAD_PREFIX).append(';');
+        field(b, Integer.toString(version));
+        field(b, tlsMode);
+        field(b, bindDn);
+        field(b, Integer.toString(urls.size()));
+        urls.forEach(u -> field(b, u));
+        String digest = "";
+        if (caPem != null) {
+            try {
+                digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(caPem.getBytes(StandardCharsets.UTF_8)));
+            } catch (java.security.NoSuchAlgorithmException e) {
+                throw new IllegalStateException("SHA-256 is not available in this runtime", e);
+            }
+        }
+        field(b, digest);
+        return b.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static void field(StringBuilder b, String value) {
+        String v = value == null ? "" : value;
+        b.append(v.getBytes(StandardCharsets.UTF_8).length).append(':').append(v).append(';');
+    }
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Path file;
@@ -65,7 +98,7 @@ public final class DirectoryKey {
     }
 
     /** Seals {@code password} (UTF-8); the caller clears its own copy. */
-    public byte[] seal(char[] password) throws Unavailable {
+    public byte[] seal(char[] password, byte[] context) throws Unavailable {
         byte[] key = read();
         byte[] plain = utf8(password);
         try {
@@ -73,7 +106,7 @@ public final class DirectoryKey {
             RANDOM.nextBytes(nonce);
             Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
             c.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(TAG_BITS, nonce));
-            c.updateAAD(AAD);
+            c.updateAAD(context);
             byte[] sealed = c.doFinal(plain);
             return ByteBuffer.allocate(1 + NONCE_BYTES + sealed.length).put(FORMAT).put(nonce).put(sealed).array();
         } catch (GeneralSecurityException e) {
@@ -85,7 +118,7 @@ public final class DirectoryKey {
     }
 
     /** Opens a sealed password; {@code BIND_PASSWORD_UNREADABLE} when it was sealed under another key or altered. */
-    public char[] open(byte[] sealed) throws Unavailable {
+    public char[] open(byte[] sealed, byte[] context) throws Unavailable {
         byte[] key = read();
         try {
             if (sealed == null || sealed.length < 1 + NONCE_BYTES + TAG_BITS / 8 + 1 || sealed[0] != FORMAT) {
@@ -94,7 +127,7 @@ public final class DirectoryKey {
             Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
             c.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"),
                 new GCMParameterSpec(TAG_BITS, sealed, 1, NONCE_BYTES));
-            c.updateAAD(AAD);
+            c.updateAAD(context);
             byte[] plain = c.doFinal(sealed, 1 + NONCE_BYTES, sealed.length - 1 - NONCE_BYTES);
             try {
                 CharBuffer chars = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(plain));
@@ -107,7 +140,8 @@ public final class DirectoryKey {
             }
         } catch (javax.crypto.AEADBadTagException e) {
             throw new Unavailable("BIND_PASSWORD_UNREADABLE",
-                "The stored bind password does not open under the current directory key (was the key replaced?).");
+                "The stored bind password does not open under the current directory key and settings (was the key "
+                    + "replaced?).");
         } catch (java.nio.charset.CharacterCodingException e) {
             throw new Unavailable("BIND_PASSWORD_UNREADABLE", "The stored bind password is not text.");
         } catch (GeneralSecurityException e) {

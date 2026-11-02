@@ -112,6 +112,8 @@ export interface DirectoryView {
   maxUrls: number;
   maxGroups: number;
   testsPerMinute: number;
+  /** Only under the server's test-only switch: the screen offers plain LDAP otherwise never (PR 50 review Q-1). */
+  plainLdapAllowed: boolean;
 }
 
 /** The connection fields of a save or a test; an empty `newPassword` keeps the stored password. */

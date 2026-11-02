@@ -99,7 +99,7 @@ class LoginThrottleTest {
             remote = new LdapAuthenticator(new DirectoryConfig(java.util.List.of(new com.unboundid.ldap.sdk.LDAPURL(
                 "ldap://synthetic.example.test:389")), DirectoryConfig.TlsMode.NONE, java.util.List.of(),
                 "cn=synthetic-service,dc=example,dc=test", "synthetic".toCharArray(), "dc=example,dc=test",
-                "(uid={0})", "memberOf", null, null, 500, 500, java.util.Map.of()));
+                "(uid={0})", "memberOf", null, null, 500, 500, java.util.Map.of(), false));
         } catch (com.unboundid.ldap.sdk.LDAPException e) {
             throw new IllegalStateException(e);
         }

@@ -6,8 +6,10 @@ import io.rwsafe.control.admin.DirectoryViews.GroupRolesRequest;
 import io.rwsafe.control.admin.DirectoryViews.TestRequest;
 import io.rwsafe.control.admin.DirectoryViews.TestView;
 import io.rwsafe.control.identity.AccessRefusal;
+import io.rwsafe.control.identity.ActiveSessions;
 import io.rwsafe.control.identity.DirectorySettingsService;
 import io.rwsafe.control.identity.LocalUsers;
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
@@ -31,9 +33,16 @@ import org.springframework.web.bind.annotation.RestController;
 public class DirectoryAdminController {
 
     private final DirectorySettingsService directory;
+    private final ActiveSessions sessions;
 
-    public DirectoryAdminController(DirectorySettingsService directory) {
+    public DirectoryAdminController(DirectorySettingsService directory, ActiveSessions sessions) {
         this.directory = directory;
+        this.sessions = sessions;
+    }
+
+    /** The administrator's own session, which a change that ends directory sessions keeps (D-08). */
+    private String own(HttpServletRequest request) {
+        return sessions.handle(request.getSession(false)).orElse("");
     }
 
     @GetMapping
@@ -42,13 +51,15 @@ public class DirectoryAdminController {
     }
 
     @PostMapping("/connection")
-    public ResponseEntity<DirectoryView> saveConnection(@RequestBody ConnectionRequest body, Authentication auth) {
+    public ResponseEntity<DirectoryView> saveConnection(@RequestBody ConnectionRequest body, Authentication auth,
+                                                        HttpServletRequest request) {
         if (body == null) {
             throw missing();
         }
         DirectorySettingsService.Connection connection = body.connection();
         try {
-            directory.saveConnection(LocalUsers.Actor.of(auth), expected(body.expectedVersion()), connection, body.reason());
+            directory.saveConnection(LocalUsers.Actor.of(auth), expected(body.expectedVersion()), connection,
+                body.reason(), own(request));
         } finally {
             clear(connection);
         }
@@ -56,14 +67,16 @@ public class DirectoryAdminController {
     }
 
     @PostMapping("/group-roles")
-    public ResponseEntity<DirectoryView> saveGroupRoles(@RequestBody GroupRolesRequest body, Authentication auth) {
+    public ResponseEntity<DirectoryView> saveGroupRoles(@RequestBody GroupRolesRequest body, Authentication auth,
+                                                        HttpServletRequest request) {
         if (body == null) {
             throw missing();
         }
         List<DirectorySettingsService.GroupBinding> bindings = body.bindings() == null ? List.of() : body.bindings()
             .stream().map(b -> b == null ? null : new DirectorySettingsService.GroupBinding(b.group(), b.roles()))
             .toList();
-        directory.saveGroupRoles(LocalUsers.Actor.of(auth), expected(body.expectedVersion()), bindings, body.reason());
+        directory.saveGroupRoles(LocalUsers.Actor.of(auth), expected(body.expectedVersion()), bindings, body.reason(),
+            own(request));
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(DirectoryView.of(directory.state()));
     }
 

@@ -85,6 +85,10 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
     public static final int DEFAULT_CONNECT_MS = 5_000;
     public static final int DEFAULT_RESPONSE_MS = 10_000;
     public static final int TESTS_PER_MINUTE = 6;
+    /** All administrators together (PR 50 review D-03). */
+    public static final int TESTS_PER_MINUTE_GLOBAL = 20;
+    /** A bind password's longest UTF-8 form (D-01). */
+    public static final int MAX_PASSWORD_BYTES = 1024;
     static final int HISTORY = 50;
     private static final int MAX_TEXT = 1024;
     private static final long MAX_TEST_MS = 45_000;
@@ -116,7 +120,8 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
 
     /** The settings screen: the active version (if any), the front's status, the key's state and the history. */
     public record State(Optional<DirectorySettings> active, Status status, DirectoryKey.State key,
-                        boolean deployValuesPresent, List<DirectorySettingsStore.HistoryEntry> history) {
+                        boolean deployValuesPresent, List<DirectorySettingsStore.HistoryEntry> history,
+                        boolean localTargets) {
     }
 
     private record Active(int version, LdapAuthenticator ldap, Status status) {
@@ -129,9 +134,14 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
     private final Pseudonymiser pseudonymiser;
     private final PrivacyKeys keys;
     private final Clock clock;
+    private final ActiveSessions sessions;
+    private final boolean localTargets;
     private final Semaphore oneTest = new Semaphore(1);
     private final Map<String, Deque<Instant>> testsByActor = new HashMap<>();
-    private final ExecutorService testRunner = Executors.newCachedThreadPool(r -> {
+    private final Deque<Instant> testsAll = new ArrayDeque<>();
+    // One test in flight: the permit is released by the test's own task, so a test that outlives its time limit still
+    // holds it and no second one overlaps it (D-03).
+    private final ExecutorService testRunner = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "rwsafe-directory-test");
         t.setDaemon(true);
         return t;
@@ -139,7 +149,7 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
     private volatile Active active = new Active(0, null, new Status("NOT_CONFIGURED", null, 0));
 
     public DirectorySettingsService(Database database, ControlProperties properties, LocalUsers users,
-                                    Pseudonymiser pseudonymiser, PrivacyKeys keys) {
+                                    Pseudonymiser pseudonymiser, PrivacyKeys keys, ActiveSessions sessions) {
         this.database = database;
         this.deploy = properties.identity().ldap();
         this.key = new DirectoryKey(properties.identity().directoryKeyFile());
@@ -147,6 +157,13 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
         this.pseudonymiser = pseudonymiser;
         this.keys = keys;
         this.clock = Clock.systemUTC();
+        this.sessions = sessions;
+        this.localTargets = properties.identity().directoryLoopbackForTests();
+    }
+
+    /** True under the test-only switch: plain LDAP and loopback targets for a test directory (PR 50 review Q-1). */
+    public boolean localTargets() {
+        return localTargets;
     }
 
     @Override
@@ -178,7 +195,7 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
 
     public State state() {
         return new State(database.directorySettings().active(), active.status(), key.state(), deploy.configured(),
-            database.directorySettings().history(HISTORY));
+            database.directorySettings().history(HISTORY), localTargets);
     }
 
     /** Rebuilds the directory front from the active stored version; the replaced one is closed. */
@@ -207,7 +224,7 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
         }
         char[] password = null;
         try {
-            password = key.open(s.bindPasswordSealed());
+            password = key.open(s.bindPasswordSealed(), context(s, s.version()));
             DirectoryConfig config = config(s, password);
             return new Active(s.version(), new LdapAuthenticator(config), new Status("ACTIVE", null, s.version()));
         } catch (DirectoryKey.Unavailable e) {
@@ -253,8 +270,8 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
             int skipped = 0;
             if (deploy.groupRoles() != null) {
                 for (Map.Entry<String, String> e : deploy.groupRoles().entrySet()) {
-                    String name = seedGroupName(e.getKey());
-                    String k = DirectoryConfig.groupKey(name);
+                    String name = shortName(e.getKey());
+                    String k = DirectoryConfig.nameKey(name);
                     if (k == null || !Roles.ALL.contains(e.getValue())) {
                         skipped++;
                         continue;
@@ -266,8 +283,14 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
                         orderedRoles(roles)));
                 }
             }
-            byte[] sealed = password == null ? null : key.seal(password);
-            DirectorySettings seed = settings(validate(c), sealed, null, SEED_ACTOR, "seed", SEED_REASON,
+            if (groups.size() > MAX_GROUPS) {
+                LOG.warn("the deploy's directory values are not copied into the stored settings: TOO_MANY_GROUPS");
+                return;
+            }
+            Validated v = validate(c, localTargets);
+            byte[] sealed = password == null ? null : key.seal(password, DirectoryKey.context(1, v.tlsMode().stored(),
+                v.bindDn(), v.urls(), null));
+            DirectorySettings seed = settings(v, sealed, null, SEED_ACTOR, "seed", SEED_REASON,
                 new ArrayList<>(groups.values()));
             boolean seeded = database.directorySettings().seedIfEmpty(seed,
                 new AuditContext(SEED_ACTOR, "directory_settings.seed", SEED_REASON, UUID.randomUUID().toString()));
@@ -279,6 +302,9 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
             LOG.warn("the deploy's directory values are not copied into the stored settings: {}", e.reason());
         } catch (DirectoryKey.Unavailable e) {
             LOG.warn("the deploy's directory values are not copied into the stored settings: {}", e.reason());
+        } catch (RuntimeException e) {
+            // A value the database refuses (a check, the guard) never stops the start: the seed is skipped (D-07).
+            LOG.warn("the deploy's directory values are not copied into the stored settings: SEED_REFUSED");
         } finally {
             if (password != null) {
                 Arrays.fill(password, '\0');
@@ -298,19 +324,21 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
         }
     }
 
-    /** A seeded binding's name: the first RDN value of a distinguished name, else the key as written. */
-    private static String seedGroupName(String key) {
-        if (key != null && key.indexOf('=') > 0) {
-            try {
-                var rdn = new DN(key).getRDN();
-                if (rdn != null && rdn.getAttributeValues().length > 0) {
-                    return rdn.getAttributeValues()[0];
-                }
-            } catch (LDAPException notADn) {
-                return key;
-            }
+    /**
+     * A seeded binding's name: the value of a distinguished name's first, single-valued RDN, else the key as written
+     * when it holds no {@code '='}; null when neither (the binding is skipped).
+     */
+    private static String shortName(String key) {
+        if (key == null || key.indexOf('=') < 0) {
+            return key;
         }
-        return key;
+        try {
+            var rdn = new DN(key).getRDN();
+            return rdn == null || rdn.isMultiValued() || rdn.getAttributeValues().length != 1 ? null
+                : rdn.getAttributeValues()[0];
+        } catch (LDAPException notADn) {
+            return null;
+        }
     }
 
     private static boolean loopbackUrl(String url) {
@@ -323,42 +351,112 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
 
     // ---- saves ---------------------------------------------------------------------------------------------------
 
-    /** Saves the connection fields as the next version; the group bindings are carried over. */
-    public DirectorySettings saveConnection(LocalUsers.Actor by, int expectedVersion, Connection input, String reason) {
+    /**
+     * Saves the connection fields as the next version; the group bindings are carried over. Without a new password the
+     * stored one is kept only when the URLs, the bind DN, the TLS mode and the CA bundle are all the saved ones, and it
+     * is sealed again under the new version's associated data (PR 50 review D-01); otherwise {@code PASSWORD_REQUIRED}.
+     * Switching the directory off ends the open directory sessions but {@code keepHandle} (D-08).
+     */
+    public DirectorySettings saveConnection(LocalUsers.Actor by, int expectedVersion, Connection input, String reason,
+                                            String keepHandle) {
         String actor = pseudonym(by.loginName());
-        Validated v = validate(input);
+        Validated v = validate(input, localTargets);
         Optional<DirectorySettings> current = database.directorySettings().active();
-        String why = reason(reason, by, current.map(DirectorySettings::groupRoles).orElse(List.of()));
-        byte[] sealed = current.map(DirectorySettings::bindPasswordSealed).orElse(null);
-        char[] newPassword = input.newPassword();
-        if (newPassword != null && newPassword.length > 0) {
-            sealed = seal(newPassword);
-        }
         String ca = input.clearCaCertificate() ? null : v.caPem() != null ? v.caPem()
             : current.map(DirectorySettings::caCertificatePem).orElse(null);
-        DirectorySettings next = settings(v, sealed, ca, actor, "connection", why,
+        List<String> identifiers = new ArrayList<>(List.of(v.bindDn(), v.userSearchBase()));
+        if (v.groupSearchBase() != null) {
+            identifiers.add(v.groupSearchBase());
+        }
+        String why = reason(reason, by, current, List.of(), identifiers);
+        int next = expectedVersion + 1;
+        byte[] sealed;
+        char[] newPassword = input.newPassword();
+        if (newPassword != null && newPassword.length > 0) {
+            sealed = seal(newPassword, DirectoryKey.context(next, v.tlsMode().stored(), v.bindDn(), v.urls(), ca));
+        } else if (current.isEmpty() || current.get().bindPasswordSealed() == null) {
+            sealed = null;
+        } else if (!sameConnection(current.get(), v, ca)) {
+            throw passwordRequired();
+        } else {
+            sealed = reseal(current.get(), next);
+        }
+        DirectorySettings settings = settings(v, sealed, ca, actor, "connection", why,
             current.map(DirectorySettings::groupRoles).orElse(List.of()));
-        DirectorySettings saved = conflicts(() -> database.directorySettings().save(next, expectedVersion,
+        DirectorySettings saved = conflicts(() -> database.directorySettings().save(settings, expectedVersion,
             audit(actor, "directory_settings.connection", why)));
         reload();
+        if (current.map(DirectorySettings::enabled).orElse(false) && !saved.enabled()) {
+            endDirectorySessions(keepHandle);
+        }
         return saved;
     }
 
-    /** Saves the group -> role bindings as the next version; the connection is carried over. */
+    /**
+     * Saves the group -> role bindings as the next version; the connection is carried over, its password sealed again
+     * under the new version. When the bindings change, the open directory sessions but {@code keepHandle} end, so a
+     * removed role does not outlive the change (D-08).
+     */
     public DirectorySettings saveGroupRoles(LocalUsers.Actor by, int expectedVersion, List<GroupBinding> bindings,
-                                            String reason) {
+                                            String reason, String keepHandle) {
         String actor = pseudonym(by.loginName());
         List<DirectorySettings.GroupRoles> groups = groups(bindings);
         DirectorySettings current = database.directorySettings().active().orElseThrow(() -> new AccessRefusal(
             HttpStatus.CONFLICT, "DIRECTORY_NOT_CONFIGURED", "Save the directory connection before binding groups."));
-        List<DirectorySettings.GroupRoles> named = new ArrayList<>(current.groupRoles());
-        named.addAll(groups);
-        String why = reason(reason, by, named);
-        DirectorySettings next = current.as("group_roles", actor, why).withGroups(groups);
+        String why = reason(reason, by, Optional.of(current), groups, List.of());
+        byte[] sealed = current.bindPasswordSealed() == null ? null : reseal(current, expectedVersion + 1);
+        DirectorySettings next = new DirectorySettings(0, null, actor, "group_roles", why, current.enabled(),
+            current.urls(), current.tlsMode(), current.caCertificatePem(), current.bindDn(), sealed,
+            current.userSearchBase(), current.userSearchFilter(), current.groupAttribute(), current.groupSearchBase(),
+            current.groupSearchFilter(), current.connectTimeoutMs(), current.responseTimeoutMs(), groups);
         DirectorySettings saved = conflicts(() -> database.directorySettings().save(next, expectedVersion,
             audit(actor, "directory_settings.group_roles", why)));
         reload();
+        if (!bindingKeys(current.groupRoles()).equals(bindingKeys(saved.groupRoles()))) {
+            endDirectorySessions(keepHandle);
+        }
         return saved;
+    }
+
+    /** The bindings in their comparison form, to tell a change from a re-save. */
+    private static Map<String, Set<String>> bindingKeys(List<DirectorySettings.GroupRoles> groups) {
+        Map<String, Set<String>> out = new HashMap<>();
+        for (DirectorySettings.GroupRoles g : groups) {
+            out.computeIfAbsent(String.valueOf(DirectoryConfig.nameKey(g.group())), k -> new java.util.TreeSet<>())
+                .addAll(g.roles());
+        }
+        return out;
+    }
+
+    private void endDirectorySessions(String keepHandle) {
+        int ended = sessions.endSource("ldap", keepHandle);
+        LOG.info("directory settings changed: {} open directory sessions ended", ended);
+    }
+
+    /** True when {@code v} (with the effective CA bundle {@code ca}) connects where {@code s} does, as {@code s} does. */
+    private static boolean sameConnection(DirectorySettings s, Validated v, String ca) {
+        return s.urls().equals(v.urls()) && s.bindDn().equals(v.bindDn()) && s.tlsMode().equals(v.tlsMode().stored())
+            && java.util.Objects.equals(s.caCertificatePem(), ca);
+    }
+
+    /** The associated data of {@code s}'s connection under {@code version}. */
+    private static byte[] context(DirectorySettings s, int version) {
+        return DirectoryKey.context(version, s.tlsMode(), s.bindDn(), s.urls(), s.caCertificatePem());
+    }
+
+    /** Opens {@code s}'s password and seals it for the same connection under {@code version}. */
+    private byte[] reseal(DirectorySettings s, int version) {
+        char[] password = storedPassword(s);
+        try {
+            return seal(password, context(s, version));
+        } finally {
+            Arrays.fill(password, '\0');
+        }
+    }
+
+    private static AccessRefusal passwordRequired() {
+        return new AccessRefusal(HttpStatus.BAD_REQUEST, "PASSWORD_REQUIRED", "Enter the bind password: the stored one "
+            + "is used only with the saved URLs, bind DN, TLS mode and CA certificate.");
     }
 
     // ---- connection test -----------------------------------------------------------------------------------------
@@ -370,16 +468,18 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
      */
     public LdapAuthenticator.Probe test(LocalUsers.Actor by, Connection input, String loginName) {
         String login = testLogin(loginName);
-        admit(by.loginName());
+        // Validated before a rate-limit token is spent (D-03).
+        DirectoryConfig config = testConfig(input);
         try {
-            DirectoryConfig config = testConfig(input);
-            LdapAuthenticator.Probe probe = run(config, login);
-            LOG.info("directory connection test: {}{}", probe.result(), probe.detail() == null ? ""
-                : " (" + probe.detail() + ")");
-            return probe;
-        } finally {
-            oneTest.release();
+            admit(by.loginName());
+        } catch (AccessRefusal e) {
+            config.clear();
+            throw e;
         }
+        LdapAuthenticator.Probe probe = run(config, login);
+        LOG.info("directory connection test: {}{}", probe.result(), probe.detail() == null ? ""
+            : " (" + probe.detail() + ")");
+        return probe;
     }
 
     private DirectoryConfig testConfig(Connection input) {
@@ -393,17 +493,16 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
                 password = storedPassword(s);
                 config = config(s, password);
             } else {
-                Validated v = validate(input);
+                Validated v = validate(input, localTargets);
+                String ca = input.clearCaCertificate() ? null : v.caPem() != null ? v.caPem()
+                    : stored.map(DirectorySettings::caCertificatePem).orElse(null);
                 if (input.newPassword() != null && input.newPassword().length > 0) {
                     password = input.newPassword().clone();
                 } else {
-                    DirectorySettings s = stored.filter(x -> x.urls().equals(v.urls()) && x.bindDn().equals(v.bindDn()))
-                        .orElseThrow(() -> new AccessRefusal(HttpStatus.BAD_REQUEST, "PASSWORD_REQUIRED",
-                            "Enter the bind password: the stored one is used only with the saved URLs and bind DN."));
+                    DirectorySettings s = stored.filter(x -> x.bindPasswordSealed() != null && sameConnection(x, v, ca))
+                        .orElseThrow(DirectorySettingsService::passwordRequired);
                     password = storedPassword(s);
                 }
-                String ca = input.clearCaCertificate() ? null : v.caPem() != null ? v.caPem()
-                    : stored.map(DirectorySettings::caCertificatePem).orElse(null);
                 config = config(settings(v, null, ca, SEED_ACTOR, "connection", "test",
                     stored.map(DirectorySettings::groupRoles).orElse(List.of())), password);
             }
@@ -421,11 +520,26 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
             ldap = new LdapAuthenticator(config);
         } catch (IllegalArgumentException e) {
             config.clear();
+            oneTest.release();
             return LdapAuthenticator.Probe.of(LdapAuthenticator.TestResult.TLS_FAILED, "TLS_SETUP_FAILED", 0);
         }
         long limit = Math.min(MAX_TEST_MS, (long) config.connectTimeoutMs() * config.urls().size()
             + 3L * config.responseTimeoutMs() + 1_000);
-        Future<LdapAuthenticator.Probe> f = testRunner.submit(() -> ldap.probe(login));
+        Future<LdapAuthenticator.Probe> f;
+        try {
+            f = testRunner.submit(() -> {
+                try {
+                    return ldap.probe(login);
+                } finally {
+                    ldap.close();
+                    oneTest.release();
+                }
+            });
+        } catch (RuntimeException rejected) {
+            ldap.close();
+            oneTest.release();
+            return LdapAuthenticator.Probe.of(LdapAuthenticator.TestResult.UNREACHABLE, "TEST_FAILED", 0);
+        }
         try {
             return f.get(limit, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
@@ -437,21 +551,24 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
             return LdapAuthenticator.Probe.of(LdapAuthenticator.TestResult.UNREACHABLE, "INTERRUPTED", 0);
         } catch (ExecutionException e) {
             return LdapAuthenticator.Probe.of(LdapAuthenticator.TestResult.UNREACHABLE, "TEST_FAILED", 0);
-        } finally {
-            ldap.close();
         }
     }
 
-    /** One test at a time, and at most {@value #TESTS_PER_MINUTE} a minute per administrator. */
+    /**
+     * One test at a time, at most {@value #TESTS_PER_MINUTE} a minute per administrator and
+     * {@value #TESTS_PER_MINUTE_GLOBAL} a minute in all. The permit is released by the test's task ({@link #run}).
+     */
     private void admit(String actorLogin) {
         String who = actorLogin == null ? "" : actorLogin.toLowerCase(Locale.ROOT);
         Instant now = clock.instant();
         synchronized (testsByActor) {
             Deque<Instant> recent = testsByActor.computeIfAbsent(who, k -> new ArrayDeque<>());
-            while (!recent.isEmpty() && recent.peekFirst().isBefore(now.minusSeconds(60))) {
-                recent.pollFirst();
+            for (Deque<Instant> d : List.of(recent, testsAll)) {
+                while (!d.isEmpty() && d.peekFirst().isBefore(now.minusSeconds(60))) {
+                    d.pollFirst();
+                }
             }
-            if (recent.size() >= TESTS_PER_MINUTE) {
+            if (recent.size() >= TESTS_PER_MINUTE || testsAll.size() >= TESTS_PER_MINUTE_GLOBAL) {
                 throw new AccessRefusal(HttpStatus.TOO_MANY_REQUESTS, "DIRECTORY_TEST_RATE_LIMITED",
                     "Too many connection tests in the last minute; wait a moment.");
             }
@@ -460,25 +577,59 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
                     "Another connection test is running; try again when it ends.");
             }
             recent.addLast(now);
+            testsAll.addLast(now);
         }
     }
 
     /**
      * The local users' reason rule ({@link LocalUsers#reason}: no identifier, no estate term, no name a person on the
-     * screens is known by), and no directory group name this version or the saved one binds: a group name is a
-     * directory identifier, and the ledger and the SIEM read the reason as written. The refusal never echoes the text.
+     * screens is known by), and no directory identifier (PR 50 review D-06): not a group name of the saved or the new
+     * bindings, not a value of an RDN of the bind DN or a search base, saved or entered. Matched word by word as
+     * {@link LocalUsers#namesPerson} does (tokens of 3 or more letters, Turkish folding, a Turkish suffix after a token
+     * of 4 or more), and as a whole name. The ledger and the SIEM read the reason as written; the refusal never echoes
+     * it.
      */
-    private String reason(String raw, LocalUsers.Actor by, List<DirectorySettings.GroupRoles> groups) {
+    private String reason(String raw, LocalUsers.Actor by, Optional<DirectorySettings> current,
+                          List<DirectorySettings.GroupRoles> groups, List<String> distinguishedNames) {
         String why = users.reason(raw, by);
-        String folded = IdentifierCheck.fold(why);
-        for (DirectorySettings.GroupRoles g : groups) {
-            String name = IdentifierCheck.fold(g.group());
-            if (name.length() >= 3 && folded.contains(name)) {
-                throw invalid("REASON_HOLDS_IDENTIFIER", "The reason names a directory group; describe the change "
-                    + "without the group's name.");
+        List<String> names = new ArrayList<>();
+        List<String> dns = new ArrayList<>(distinguishedNames);
+        current.ifPresent(c -> {
+            c.groupRoles().forEach(g -> names.add(g.group()));
+            dns.add(c.bindDn());
+            dns.add(c.userSearchBase());
+            if (c.groupSearchBase() != null) {
+                dns.add(c.groupSearchBase());
             }
+        });
+        groups.forEach(g -> names.add(g.group()));
+        for (String dn : dns) {
+            names.addAll(rdnValues(dn));
+        }
+        String folded = IdentifierCheck.fold(why);
+        boolean whole = names.stream().map(n -> IdentifierCheck.fold(n)).anyMatch(n -> n.length() >= 3
+            && folded.contains(n));
+        if (whole || LocalUsers.namesPerson(why, names)) {
+            throw invalid("REASON_HOLDS_IDENTIFIER", "The reason names a directory group, account or location; describe "
+                + "the change without it.");
         }
         return why;
+    }
+
+    /** Every attribute value of every RDN of {@code dn}; nothing when it does not parse. */
+    static List<String> rdnValues(String dn) {
+        List<String> out = new ArrayList<>();
+        if (dn == null) {
+            return out;
+        }
+        try {
+            for (com.unboundid.ldap.sdk.RDN rdn : new DN(dn).getRDNs()) {
+                out.addAll(Arrays.asList(rdn.getAttributeValues()));
+            }
+        } catch (LDAPException notADn) {
+            return out;
+        }
+        return out;
     }
 
     private static String testLogin(String raw) {
@@ -498,15 +649,15 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
                 "No bind password is stored; enter one to test.");
         }
         try {
-            return key.open(s.bindPasswordSealed());
+            return key.open(s.bindPasswordSealed(), context(s, s.version()));
         } catch (DirectoryKey.Unavailable e) {
             throw new AccessRefusal(HttpStatus.SERVICE_UNAVAILABLE, e.reason(), e.getMessage());
         }
     }
 
-    private byte[] seal(char[] password) {
+    private byte[] seal(char[] password, byte[] context) {
         try {
-            return key.seal(password);
+            return key.seal(password, context);
         } catch (DirectoryKey.Unavailable e) {
             throw new AccessRefusal(HttpStatus.SERVICE_UNAVAILABLE, e.reason(), e.getMessage()
                 + " The bind password cannot be stored without it; nothing changed.");
@@ -521,7 +672,12 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
                      String groupSearchFilter, int connectTimeoutMs, int responseTimeoutMs) {
     }
 
-    static Validated validate(Connection c) {
+    /**
+     * @param localTargets the test-only switch: plain LDAP ({@code none}) and loopback targets on any port; off, the
+     *                     TLS mode is LDAPS or StartTLS and every literal target is a routable address on a directory
+     *                     port (names are checked again, resolved, at connect time)
+     */
+    static Validated validate(Connection c, boolean localTargets) {
         if (c == null) {
             throw invalid("INVALID_DIRECTORY_SETTINGS", "The directory settings are missing.");
         }
@@ -529,10 +685,16 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
         try {
             mode = TlsMode.ofStored(c.tlsMode() == null ? "" : c.tlsMode().strip());
         } catch (IllegalArgumentException e) {
-            throw invalid("INVALID_TLS_MODE", "The TLS mode is LDAPS or StartTLS (plain LDAP only to a loopback "
-                + "test directory).");
+            throw invalid("INVALID_TLS_MODE", "The TLS mode is LDAPS or StartTLS.");
         }
-        List<String> urls = urls(c.urls(), mode);
+        if (mode == TlsMode.NONE && !localTargets) {
+            throw invalid("PLAIN_LDAP_REFUSED", "Without TLS the password would cross the network in clear text: the "
+                + "TLS mode is LDAPS or StartTLS.");
+        }
+        if (c.newPassword() != null && utf8Length(c.newPassword()) > MAX_PASSWORD_BYTES) {
+            throw invalid("PASSWORD_TOO_LONG", "The bind password may hold at most " + MAX_PASSWORD_BYTES + " bytes.");
+        }
+        List<String> urls = urls(c.urls(), mode, localTargets);
         String caPem = c.caCertificatePem() == null || c.caCertificatePem().isBlank() ? null
             : caBundle(c.caCertificatePem());
         if (caPem != null && mode == TlsMode.NONE) {
@@ -560,7 +722,16 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
             attribute, groupBase, groupFilter, connect, response);
     }
 
-    private static List<String> urls(List<String> raw, TlsMode mode) {
+    private static int utf8Length(char[] chars) {
+        java.nio.ByteBuffer b = StandardCharsets.UTF_8.encode(java.nio.CharBuffer.wrap(chars));
+        int n = b.remaining();
+        if (b.hasArray()) {
+            Arrays.fill(b.array(), (byte) 0);
+        }
+        return n;
+    }
+
+    private static List<String> urls(List<String> raw, TlsMode mode, boolean localTargets) {
         List<String> out = new ArrayList<>();
         for (String r : raw == null ? List.<String>of() : raw) {
             if (blank(r)) {
@@ -581,9 +752,18 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
             if (mode == TlsMode.LDAPS && !ldaps || mode != TlsMode.LDAPS && ldaps) {
                 throw invalid("URL_TLS_MISMATCH", "LDAPS takes ldaps:// URLs; StartTLS takes ldap:// URLs.");
             }
-            if (mode == TlsMode.NONE && !LdapAuthenticator.loopback(host)) {
+            boolean loopback = LdapAuthenticator.loopback(host);
+            if (mode == TlsMode.NONE && !loopback) {
                 throw invalid("PLAIN_LDAP_REFUSED", "Without TLS the password would cross the network in clear text: "
                     + "plain LDAP is allowed only to a loopback test directory.");
+            }
+            if (literalNotRoutable(host) && !(localTargets && loopback)) {
+                throw invalid("TARGET_NOT_ALLOWED", "A directory URL names a routable server: not this machine, a "
+                    + "link-local, unspecified or multicast address.");
+            }
+            if (!(localTargets && loopback) && !DirectoryConfig.DIRECTORY_PORTS.contains(url.getPort())) {
+                throw invalid("PORT_NOT_ALLOWED", "A directory URL uses a directory port: 389 or 3268 (StartTLS), 636 or "
+                    + "3269 (LDAPS).");
             }
             String normalised = url.getScheme() + "://" + (host.contains(":") && !host.startsWith("[") ? "[" + host
                 + "]" : host) + ":" + url.getPort();
@@ -595,6 +775,23 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
             throw invalid("INVALID_URL", "Enter 1 to " + MAX_URLS + " directory URLs.");
         }
         return out;
+    }
+
+    /** A literal address (never a name: nothing is resolved here) that is loopback, link-local, unspecified or multicast. */
+    private static boolean literalNotRoutable(String host) {
+        String h = host.startsWith("[") && host.endsWith("]") ? host.substring(1, host.length() - 1) : host;
+        if ("localhost".equalsIgnoreCase(h)) {
+            return true;
+        }
+        if (io.rwsafe.control.privacy.Pseudonymiser.ipv4(h) == null && h.indexOf(':') < 0) {
+            return false;
+        }
+        try {
+            java.net.InetAddress a = java.net.InetAddress.getByName(h);
+            return a.isLoopbackAddress() || a.isLinkLocalAddress() || a.isAnyLocalAddress() || a.isMulticastAddress();
+        } catch (java.net.UnknownHostException e) {
+            return true;
+        }
     }
 
     /** The bundle re-encoded certificate by certificate (comments and keys dropped; a key in it is refused). */
@@ -683,7 +880,7 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
         List<DirectorySettings.GroupRoles> out = new ArrayList<>();
         for (GroupBinding b : list) {
             String name = b == null || b.group() == null ? "" : b.group().strip();
-            String k = name.indexOf('=') >= 0 ? null : io.rwsafe.policy.GroupNames.normalise(name);
+            String k = DirectoryConfig.nameKey(name);
             if (k == null) {
                 throw invalid("INVALID_GROUP_NAME", "A group is named by its name (the value of its cn), 1 to 256 "
                     + "characters without a comma or '='; not by its distinguished name.");
@@ -712,13 +909,17 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
     }
 
     /** The connection one authenticator uses: the stored (or entered) fields re-validated, and the opened password. */
-    static DirectoryConfig config(DirectorySettings s, char[] password) {
+    private DirectoryConfig config(DirectorySettings s, char[] password) {
+        return config(s, password, localTargets);
+    }
+
+    static DirectoryConfig config(DirectorySettings s, char[] password, boolean localTargets) {
         if (password == null || password.length == 0) {
             throw invalid("BIND_PASSWORD_NOT_SET", "No bind password is set.");
         }
         TlsMode mode = TlsMode.ofStored(s.tlsMode());
         List<LDAPURL> urls = new ArrayList<>();
-        for (String u : urls(s.urls(), mode)) {
+        for (String u : urls(s.urls(), mode, localTargets)) {
             try {
                 urls.add(new LDAPURL(u));
             } catch (LDAPException e) {
@@ -727,7 +928,7 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
         }
         Map<String, Set<String>> roles = new HashMap<>();
         for (DirectorySettings.GroupRoles g : s.groupRoles()) {
-            String k = DirectoryConfig.groupKey(g.group());
+            String k = DirectoryConfig.nameKey(g.group());
             if (k != null) {
                 roles.computeIfAbsent(k, x -> new LinkedHashSet<>()).addAll(g.roles());
             }
@@ -737,7 +938,7 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
         return new DirectoryConfig(urls, mode, s.caCertificatePem() == null ? List.of()
             : certificates(s.caCertificatePem()), s.bindDn(), password, s.userSearchBase(), s.userSearchFilter(),
             s.groupAttribute(), s.groupSearchBase(), s.groupSearchFilter(), s.connectTimeoutMs(),
-            s.responseTimeoutMs(), frozen);
+            s.responseTimeoutMs(), frozen, localTargets);
     }
 
     private static boolean blank(String s) {

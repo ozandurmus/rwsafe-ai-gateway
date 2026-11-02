@@ -131,6 +131,20 @@ public class ActiveSessions implements HttpSessionListener {
         return ended;
     }
 
+    /**
+     * Ends every session from one source but {@code keep} (PR 50 review D-08: the directory was switched off or its
+     * group roles changed, so every directory session signs in again under the new settings).
+     */
+    public int endSource(String source, String keep) {
+        int ended = 0;
+        for (Entry e : List.copyOf(entries.values())) {
+            if (e.source().equals(source) && !e.handle().equals(keep) && end(e.handle()).isPresent()) {
+                ended++;
+            }
+        }
+        return ended;
+    }
+
     @Override
     public void sessionDestroyed(HttpSessionEvent event) {
         handle(event.getSession()).ifPresent(entries::remove);

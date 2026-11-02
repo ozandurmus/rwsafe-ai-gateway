@@ -1,6 +1,7 @@
 package io.rwsafe.control.identity;
 
 import com.unboundid.ldap.sdk.BindResult;
+import com.unboundid.ldap.sdk.DN;
 import com.unboundid.ldap.sdk.ExtendedResult;
 import com.unboundid.ldap.sdk.Filter;
 import com.unboundid.ldap.sdk.LDAPConnection;
@@ -9,6 +10,7 @@ import com.unboundid.ldap.sdk.LDAPConnectionPool;
 import com.unboundid.ldap.sdk.LDAPException;
 import com.unboundid.ldap.sdk.LDAPInterface;
 import com.unboundid.ldap.sdk.LDAPURL;
+import com.unboundid.ldap.sdk.NameResolver;
 import com.unboundid.ldap.sdk.ResultCode;
 import com.unboundid.ldap.sdk.SearchRequest;
 import com.unboundid.ldap.sdk.SearchResult;
@@ -21,6 +23,7 @@ import com.unboundid.util.ssl.SSLSocketVerifier;
 import io.rwsafe.control.identity.DirectoryConfig.TlsMode;
 import io.rwsafe.control.privacy.Pseudonymiser;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.nio.CharBuffer;
@@ -51,7 +54,9 @@ import org.slf4j.LoggerFactory;
  * LDAP/AD bind (Q-9) with the settings of one directory settings version (PO decision Q-47, decision 1.2): the service
  * account searches the login name (escaped into the configured filter), then the user's own credentials are bound on a
  * pooled connection and the pool reverts to the service account; the user's groups map to roles through the stored
- * bindings only, matched in the {@link io.rwsafe.policy.GroupNames} comparison form ({@link DirectoryConfig#groupKey}).
+ * bindings only, matched in one comparison form on both sides ({@link DirectoryConfig#nameKey},
+ * {@link DirectoryConfig#valueKey}); with a group search base set, a {@code memberOf} group outside it counts for nothing
+ * (PR 50 review D-04, Q-3), and the masked role, when a group gives it, is the only role.
  * One small pool, never a burst of connections (AGENTS.md section 14); the URLs are tried in order. An empty password is
  * refused before any bind, because a simple bind with an empty password is an anonymous bind that many directories
  * accept. Credentials never cross the network in clear text: TLS (LDAPS or StartTLS) with host-name verification, plain
@@ -117,6 +122,8 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
     private final DirectoryConfig config;
     private final SSLContext tls;
     private LDAPConnectionPool pool;
+    /** The pool's service bind credential, kept for reconnects and wiped on close. */
+    private byte[] poolCredential;
     private boolean closed;
 
     /** @throws IllegalArgumentException when the TLS context cannot be built from the CA certificates */
@@ -144,20 +151,26 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
         }
         try {
             LDAPConnectionPool p = pool();
-            SearchResult found = p.search(new SearchRequest(config.userSearchBase(), SearchScope.SUB,
-                userFilter(loginName), attributes()));
+            SearchResult found = p.search(userSearch(loginName));
             if (found.getEntryCount() != 1) {
                 return Attempt.REFUSED;
             }
             SearchResultEntry entry = found.getSearchEntries().get(0);
-            BindResult bind = p.bindAndRevertAuthentication(new SimpleBindRequest(entry.getDN(), utf8(password)));
+            byte[] credential = utf8(password);
+            BindResult bind;
+            try {
+                bind = p.bindAndRevertAuthentication(new SimpleBindRequest(entry.getDN(), credential));
+            } finally {
+                Arrays.fill(credential, (byte) 0);
+            }
             if (bind.getResultCode() != ResultCode.SUCCESS) {
                 return Attempt.REFUSED;
             }
             Set<String> roles = roles(groups(p, entry, loginName));
             return new Attempt(new AuthenticatedUser(loginName, roles, "ldap"), false);
         } catch (LDAPException e) {
-            if (e.getResultCode() == ResultCode.INVALID_CREDENTIALS) {
+            // A wrong password, or more than one entry for the name (the search asks for two at most): refused.
+            if (e.getResultCode() == ResultCode.INVALID_CREDENTIALS || e.getResultCode() == ResultCode.SIZE_LIMIT_EXCEEDED) {
                 return Attempt.REFUSED;
             }
             LOG.warn("directory sign-in failed with result {}", e.getResultCode().getName());
@@ -190,13 +203,15 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
         }
         try (LDAPConnection c = connection) {
             char[] password = config.bindPassword();
+            byte[] credential = utf8(password);
+            Arrays.fill(password, '\0');
             try {
-                c.bind(new SimpleBindRequest(config.bindDn(), utf8(password)));
+                c.bind(new SimpleBindRequest(config.bindDn(), credential));
             } catch (LDAPException e) {
                 return disconnected(e) ? Probe.of(TestResult.UNREACHABLE, code(e), server)
                     : Probe.of(TestResult.BIND_REFUSED, code(e), server);
             } finally {
-                Arrays.fill(password, '\0');
+                Arrays.fill(credential, (byte) 0);
             }
             if (loginName == null) {
                 try {
@@ -209,10 +224,11 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
             }
             SearchResult found;
             try {
-                found = c.search(new SearchRequest(config.userSearchBase(), SearchScope.SUB, userFilter(loginName),
-                    attributes()));
+                found = c.search(userSearch(loginName));
             } catch (LDAPException e) {
-                return Probe.of(TestResult.SEARCH_FAILED, code(e), server);
+                return e.getResultCode() == ResultCode.SIZE_LIMIT_EXCEEDED
+                    ? Probe.of(TestResult.USER_NOT_FOUND, "AMBIGUOUS", server)
+                    : Probe.of(TestResult.SEARCH_FAILED, code(e), server);
             }
             if (found.getEntryCount() != 1) {
                 return Probe.of(TestResult.USER_NOT_FOUND, found.getEntryCount() == 0 ? null : "AMBIGUOUS", server);
@@ -225,22 +241,23 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
             }
             int bound = 0;
             for (String g : groups) {
-                String key = DirectoryConfig.groupKey(g);
+                String key = DirectoryConfig.valueKey(g);
                 if (key != null && config.groupRoles().containsKey(key)) {
                     bound++;
                 }
             }
             Set<String> roles = roles(groups);
-            if (roles.contains(Roles.REPLAY_VIEWER)) {
-                roles = Set.of(Roles.REPLAY_VIEWER);
-            }
             List<String> ordered = Roles.ORDERED.stream().filter(roles::contains).toList();
             return new Probe(TestResult.OK, null, server, groups.size(), bound, ordered);
         }
     }
 
-    private Filter userFilter(String loginName) throws LDAPException {
-        return Filter.create(config.userSearchFilter().replace("{0}", Filter.encodeValue(loginName)));
+    /** The user search: at most two entries, so an ambiguous name is refused without reading the directory (D-05). */
+    private SearchRequest userSearch(String loginName) throws LDAPException {
+        SearchRequest request = new SearchRequest(config.userSearchBase(), SearchScope.SUB,
+            Filter.create(config.userSearchFilter().replace("{0}", Filter.encodeValue(loginName))), attributes());
+        request.setSizeLimit(2);
+        return request;
     }
 
     private String[] attributes() {
@@ -248,13 +265,22 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
             : new String[] {config.groupAttribute()};
     }
 
-    /** The user's group values: the group attribute's values, then the group search's entries, each once. */
+    /**
+     * The user's group values: the group attribute's values, then the group search's entries, each once. With a group
+     * search base set, a group attribute value counts only when it is a distinguished name below that base (PR 50
+     * review Q-3): a group of the same name elsewhere in the directory grants nothing.
+     */
     private List<String> groups(LDAPInterface ldap, SearchResultEntry entry, String loginName) throws LDAPException {
         Set<String> out = new LinkedHashSet<>();
+        DN base = config.groupSearchBase() == null ? null : new DN(config.groupSearchBase());
         if (config.groupAttribute() != null) {
             String[] values = entry.getAttributeValues(config.groupAttribute());
             if (values != null) {
-                out.addAll(Arrays.asList(values));
+                for (String v : values) {
+                    if (base == null || below(v, base)) {
+                        out.add(v);
+                    }
+                }
             }
         }
         if (config.groupSearchBase() != null && config.groupSearchFilter() != null) {
@@ -265,22 +291,33 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
                 SearchRequest.NO_ATTRIBUTES);
             request.setSizeLimit(GROUP_SEARCH_LIMIT);
             for (SearchResultEntry g : ldap.search(request).getSearchEntries()) {
-                out.add(g.getDN());
+                if (below(g.getDN(), base)) {
+                    out.add(g.getDN());
+                }
             }
         }
         return new ArrayList<>(out);
     }
 
+    private static boolean below(String value, DN base) {
+        try {
+            return new DN(value).isDescendantOf(base, false);
+        } catch (LDAPException notADn) {
+            return false;
+        }
+    }
+
+    /** The bound roles of {@code groups}; the masked role, when one of them gives it, alone (D-04). */
     private Set<String> roles(List<String> groups) {
         Set<String> roles = new TreeSet<>();
         for (String group : groups) {
-            String key = DirectoryConfig.groupKey(group);
+            String key = DirectoryConfig.valueKey(group);
             Set<String> bound = key == null ? null : config.groupRoles().get(key);
             if (bound != null) {
                 roles.addAll(bound);
             }
         }
-        return roles;
+        return roles.contains(Roles.REPLAY_VIEWER) ? Set.of(Roles.REPLAY_VIEWER) : roles;
     }
 
     private synchronized LDAPConnectionPool pool() throws LDAPException {
@@ -291,10 +328,14 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
             return pool;
         }
         char[] password = config.bindPassword();
+        poolCredential = utf8(password);
+        Arrays.fill(password, '\0');
         try {
-            pool = new LDAPConnectionPool(new Servers(), new SimpleBindRequest(config.bindDn(), utf8(password)), 1, 2);
-        } finally {
-            Arrays.fill(password, '\0');
+            pool = new LDAPConnectionPool(new Servers(), new SimpleBindRequest(config.bindDn(), poolCredential), 1, 2);
+        } catch (LDAPException e) {
+            Arrays.fill(poolCredential, (byte) 0);
+            poolCredential = null;
+            throw e;
         }
         pool.setRetryFailedOperationsDueToInvalidConnections(true);
         return pool;
@@ -324,17 +365,22 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
 
     LDAPConnection connect(LDAPURL url) throws LDAPException {
         boolean ldaps = "ldaps".equals(url.getScheme());
-        // Re-checked here as well as on save: never a clear-text bind to anything but a loopback test directory.
-        if (config.tlsMode() == TlsMode.NONE && !loopback(url.getHost())) {
-            throw new LDAPException(ResultCode.CONFIDENTIALITY_REQUIRED, "plain LDAP is for a loopback directory only");
+        // Re-checked here as well as on save: never a clear-text bind, and plain LDAP only to a loopback test directory
+        // under the test-only switch (PR 50 review Q-1).
+        if (config.tlsMode() == TlsMode.NONE && !(config.localTargets() && loopback(url.getHost()))) {
+            throw new LDAPException(ResultCode.CONFIDENTIALITY_REQUIRED, "plain LDAP is for a loopback test directory");
         }
         if (ldaps != (config.tlsMode() == TlsMode.LDAPS)) {
             throw new LDAPException(ResultCode.PARAM_ERROR, "the URL scheme does not match the TLS mode");
         }
+        InetAddress[] addresses = targets(url.getHost(), url.getPort(), config.localTargets());
         LDAPConnectionOptions options = new LDAPConnectionOptions();
         options.setConnectTimeoutMillis(config.connectTimeoutMs());
         options.setResponseTimeoutMillis(config.responseTimeoutMs());
         options.setSSLSocketVerifier(new Verifier());
+        // The name is resolved once, above, and the connection goes to those addresses only; the name itself stays the
+        // one the certificate is checked against (D-03).
+        options.setNameResolver(new Pinned(url.getHost(), addresses));
         LDAPConnection connection = ldaps
             ? new LDAPConnection(tls.getSocketFactory(), options, url.getHost(), url.getPort())
             : new LDAPConnection(options, url.getHost(), url.getPort());
@@ -355,6 +401,72 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
             }
         }
         return connection;
+    }
+
+    /** A target the policy refuses: loopback, link-local, unspecified or multicast, or a port that is not a directory's. */
+    static final class TargetRefused extends LDAPException {
+
+        private static final long serialVersionUID = 1L;
+
+        TargetRefused() {
+            super(ResultCode.CONNECT_ERROR, "the directory target is not allowed");
+        }
+    }
+
+    /**
+     * Resolves {@code host} once and applies the target policy (PR 50 review D-03): every address must be routable (not
+     * loopback, link-local, unspecified or multicast) and the port one of {@link DirectoryConfig#DIRECTORY_PORTS}; under
+     * the test-only switch a loopback address is allowed on any port. One refused address refuses the name.
+     */
+    static InetAddress[] targets(String host, int port, boolean localTargets) throws LDAPException {
+        InetAddress[] addresses;
+        try {
+            addresses = InetAddress.getAllByName(host);
+        } catch (UnknownHostException e) {
+            throw new LDAPException(ResultCode.CONNECT_ERROR, "the directory name is not known", e);
+        }
+        boolean allLoopback = addresses.length > 0;
+        for (InetAddress a : addresses) {
+            boolean loopback = a.isLoopbackAddress();
+            allLoopback &= loopback;
+            if ((loopback && !localTargets) || a.isLinkLocalAddress() || a.isAnyLocalAddress() || a.isMulticastAddress()) {
+                throw new TargetRefused();
+            }
+        }
+        if (!(localTargets && allLoopback) && !DirectoryConfig.DIRECTORY_PORTS.contains(port)) {
+            throw new TargetRefused();
+        }
+        return addresses;
+    }
+
+    /** Answers only the one name resolved before the connection, with the addresses resolved then. */
+    private static final class Pinned extends NameResolver {
+
+        private final String host;
+        private final InetAddress[] addresses;
+
+        Pinned(String host, InetAddress[] addresses) {
+            this.host = host;
+            this.addresses = addresses.clone();
+        }
+
+        @Override
+        public InetAddress getByName(String name) throws UnknownHostException {
+            return getAllByName(name)[0];
+        }
+
+        @Override
+        public InetAddress[] getAllByName(String name) throws UnknownHostException {
+            if (name == null || !name.equalsIgnoreCase(host)) {
+                throw new UnknownHostException("not the resolved directory name");
+            }
+            return addresses.clone();
+        }
+
+        @Override
+        public void toString(StringBuilder buffer) {
+            buffer.append("PinnedDirectoryName");
+        }
     }
 
     /**
@@ -447,6 +559,9 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
 
     /** The class of a failed connect: TLS with its reason, or unreachable with its reason. Never the message. */
     static Probe connectFailure(LDAPException e) {
+        if (has(e, TargetRefused.class)) {
+            return Probe.of(TestResult.UNREACHABLE, "TARGET_NOT_ALLOWED", 0);
+        }
         if (has(e, HostNameMismatch.class)) {
             return Probe.of(TestResult.TLS_FAILED, "HOSTNAME_MISMATCH", 0);
         }
@@ -536,6 +651,10 @@ public final class LdapAuthenticator implements Authenticator, AutoCloseable {
         if (pool != null) {
             pool.close();
             pool = null;
+        }
+        if (poolCredential != null) {
+            Arrays.fill(poolCredential, (byte) 0);
+            poolCredential = null;
         }
         config.clear();
     }

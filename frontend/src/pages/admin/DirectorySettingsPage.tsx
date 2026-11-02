@@ -147,6 +147,8 @@ export function DirectorySettingsPage() {
   const [form, setForm] = useState<ConnectionForm>(formOf(null));
   const [dirty, setDirty] = useState(false);
   const [bindings, setBindings] = useState<DirectoryGroupRoles[]>([]);
+  // Unsaved edits of one section survive a save of the other (PR 50 review D-08).
+  const [bindingsDirty, setBindingsDirty] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
   const [testLogin, setTestLogin] = useState('');
   const [testing, setTesting] = useState(false);
@@ -155,11 +157,20 @@ export function DirectorySettingsPage() {
 
   useEffect(() => {
     if (data) {
-      setForm(formOf(data.settings));
-      setBindings(data.settings?.groupRoles ?? []);
-      setDirty(false);
+      if (!dirty) {
+        setForm(formOf(data.settings));
+      }
+      if (!bindingsDirty) {
+        setBindings(data.settings?.groupRoles ?? []);
+      }
     }
+    // Only a new answer from the server refreshes the sections; the dirty flags are read as they are then.
   }, [data]);
+
+  const editBindings = (change: (all: DirectoryGroupRoles[]) => DirectoryGroupRoles[]) => {
+    setBindings(change);
+    setBindingsDirty(true);
+  };
 
   const reload = () => setGeneration((g) => g + 1);
   const set = <K extends keyof ConnectionForm>(key: K, value: ConnectionForm[K]) => {
@@ -183,12 +194,14 @@ export function DirectorySettingsPage() {
   async function save(reason: string, view: DirectoryView) {
     if (pending?.kind === 'connection') {
       await api.saveDirectoryConnection(view.version, connectionOf(form), reason);
+      setDirty(false);
     } else {
       await api.saveDirectoryGroupRoles(
         view.version,
         bindings.map((b) => ({ group: b.group.trim(), roles: b.roles })),
         reason,
       );
+      setBindingsDirty(false);
     }
     setPending(null);
     reload();
@@ -211,7 +224,9 @@ export function DirectorySettingsPage() {
   }
   const s = data.settings;
   const bindingsReady =
-    bindings.every((b) => b.group.trim().length > 0 && !b.group.includes(',') && b.roles.length > 0) &&
+    bindings.every(
+      (b) => b.group.trim().length > 0 && !b.group.includes(',') && !b.group.includes('=') && b.roles.length > 0,
+    ) &&
     bindings.length <= data.maxGroups;
 
   return (
@@ -256,7 +271,9 @@ export function DirectorySettingsPage() {
         >
           <MenuItem value="ldaps">{t('directory.tls.ldaps')}</MenuItem>
           <MenuItem value="starttls">{t('directory.tls.starttls')}</MenuItem>
-          <MenuItem value="none">{t('directory.tls.none')}</MenuItem>
+          {(data.plainLdapAllowed || form.tlsMode === 'none') && (
+            <MenuItem value="none">{t('directory.tls.none')}</MenuItem>
+          )}
         </TextField>
         <Box display="grid" gap={1}>
           <Typography variant="body2" color="text.secondary">
@@ -420,7 +437,7 @@ export function DirectorySettingsPage() {
                       value={b.group}
                       inputProps={{ 'aria-label': t('directory.groupRow', { n: String(index + 1) }) }}
                       onChange={(e) =>
-                        setBindings((all) => all.map((x, i) => (i === index ? { ...x, group: e.target.value } : x)))
+                        editBindings((all) => all.map((x, i) => (i === index ? { ...x, group: e.target.value } : x)))
                       }
                     />
                   </TableCell>
@@ -434,7 +451,7 @@ export function DirectorySettingsPage() {
                               size="small"
                               checked={b.roles.includes(r)}
                               onChange={() =>
-                                setBindings((all) =>
+                                editBindings((all) =>
                                   all.map((x, i) => (i === index ? { ...x, roles: toggleRole(x.roles, r) } : x)),
                                 )
                               }
@@ -449,7 +466,7 @@ export function DirectorySettingsPage() {
                   <TableCell>
                     <IconButton
                       aria-label={t('directory.removeGroup', { n: String(index + 1) })}
-                      onClick={() => setBindings((all) => all.filter((_, i) => i !== index))}
+                      onClick={() => editBindings((all) => all.filter((_, i) => i !== index))}
                     >
                       ✕
                     </IconButton>
@@ -460,7 +477,7 @@ export function DirectorySettingsPage() {
           </Table>
         </TableContainer>
         <Stack direction="row" gap={2}>
-          <Button onClick={() => setBindings((all) => [...all, { group: '', roles: [] }])}>
+          <Button onClick={() => editBindings((all) => [...all, { group: '', roles: [] }])}>
             {t('directory.addGroup')}
           </Button>
           <Button

@@ -708,6 +708,45 @@ class DirectoryKey(unittest.TestCase):
                     env = {e["name"]: e.get("value") for e in c["env"]}
                     self.assertEqual(env["RWSAFE_DIRECTORY_KEY_FILE"], "/run/secrets/rwsafe-directory-key/key")
 
+    # PR 50 review D-02: the deploy-time directory values only seed the stored settings, so the control plane starts
+    # without them; in the pilot it needs nothing of the contract beyond what tools/pilot/bootstrap_secrets.sh creates.
+    def test_the_control_plane_starts_without_the_directory_seed_objects(self):
+        for overlay in ("k3s", "pilot"):
+            with self.subTest(overlay=overlay):
+                text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays" / overlay)
+                control = next(o for o in mc.to_objects(text) if mc.ident(o) == "Deployment/rwsafe/rwsafe-control")
+                spec = mc.pod_template(control)[1]
+                for e in mc.containers(spec)[0].get("env", []):
+                    if e["name"] in ("RWSAFE_LDAP_URL", "RWSAFE_LDAP_BIND_DN", "RWSAFE_LDAP_USER_SEARCH_BASE"):
+                        self.assertTrue(e["valueFrom"]["configMapKeyRef"].get("optional"), e["name"])
+                for v in spec["volumes"]:
+                    if v["name"] in ("ldap-bind", "directory-key"):
+                        self.assertTrue(v["secret"].get("optional"), v["name"])
+
+    def test_the_pilot_control_plane_needs_only_what_bootstrap_creates(self):
+        created = {("secret", "rwsafe-db-credentials"), ("secret", "rwsafe-privacy-hmac-key"),
+                   ("secret", "rwsafe-snapshot-signing-key"), ("secret", "rwsafe-directory-key"),
+                   ("configMap", "rwsafe-estate:estate-dictionary.txt")}
+        contract = CONTRACTS_FILE_JSON
+        text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays/pilot")
+        control = next(o for o in mc.to_objects(text) if mc.ident(o) == "Deployment/rwsafe/rwsafe-control")
+        spec = mc.pod_template(control)[1]
+        required = set()
+        for v in spec["volumes"]:
+            if "secret" in v and not v["secret"].get("optional"):
+                required.add(("secret", v["secret"]["secretName"]))
+            if "configMap" in v and not v["configMap"].get("optional") and v["configMap"]["name"] in contract["configMaps"]:
+                for item in v["configMap"].get("items", [{"key": "*"}]):
+                    required.add(("configMap", f"{v['configMap']['name']}:{item['key']}"))
+        for c in mc.containers(spec):
+            for e in c.get("env", []):
+                ref = e.get("valueFrom", {}).get("configMapKeyRef") or e.get("valueFrom", {}).get("secretKeyRef")
+                if ref and not ref.get("optional") and (ref["name"] in contract["configMaps"]
+                                                        or ref["name"] in contract["secrets"]):
+                    kind = "configMap" if "configMapKeyRef" in e["valueFrom"] else "secret"
+                    required.add((kind, f"{ref['name']}:{ref['key']}" if kind == "configMap" else ref["name"]))
+        self.assertTrue(required <= created, sorted(required - created))
+
     def test_a_directory_key_item_outside_the_contract_fails(self):
         text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays/k3s")
         objects = mc.to_objects(text)

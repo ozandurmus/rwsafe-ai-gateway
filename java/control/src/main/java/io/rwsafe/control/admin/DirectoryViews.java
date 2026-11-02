@@ -111,23 +111,25 @@ public final class DirectoryViews {
      * @param status       {@code ACTIVE}, {@code DISABLED}, {@code NOT_CONFIGURED} or {@code UNAVAILABLE}
      * @param statusReason why it is not active ({@code DIRECTORY_KEY_MISSING}, {@code BIND_PASSWORD_NOT_SET} ...)
      * @param keyState     the directory key: {@code AVAILABLE}, {@code MISSING} or {@code INVALID}
+     * @param plainLdapAllowed only under the test-only switch: the screen offers no plain LDAP otherwise (Q-1)
      */
     public record DirectoryView(String status, String statusReason, String keyState, boolean deployValuesPresent,
                                 int version, SettingsView settings, List<String> roles, List<HistoryView> history,
-                                int maxUrls, int maxGroups, int testsPerMinute) implements MaskedView {
+                                int maxUrls, int maxGroups, int testsPerMinute, boolean plainLdapAllowed)
+        implements MaskedView {
 
         static DirectoryView of(DirectorySettingsService.State s) {
             return new DirectoryView(s.status().status(), s.status().reason(), s.key().name(), s.deployValuesPresent(),
                 s.active().map(DirectorySettings::version).orElse(0), s.active().map(SettingsView::of).orElse(null),
                 Roles.ORDERED, s.history().stream().map(HistoryView::of).toList(), DirectorySettingsService.MAX_URLS,
-                DirectorySettingsService.MAX_GROUPS, DirectorySettingsService.TESTS_PER_MINUTE);
+                DirectorySettingsService.MAX_GROUPS, DirectorySettingsService.TESTS_PER_MINUTE, s.localTargets());
         }
 
         @Override
         public MaskedView masked(TextMasker masker) {
             return new DirectoryView(status, statusReason, keyState, deployValuesPresent, version, null, roles,
                 history.stream().map(h -> new HistoryView(h.version(), h.createdAt(), h.actor(), h.changeKind(),
-                    TextMasker.WITHHELD)).toList(), maxUrls, maxGroups, testsPerMinute);
+                    TextMasker.WITHHELD)).toList(), maxUrls, maxGroups, testsPerMinute, plainLdapAllowed);
         }
     }
 

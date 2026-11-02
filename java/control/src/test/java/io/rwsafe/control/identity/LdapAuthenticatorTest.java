@@ -85,6 +85,10 @@ class LdapAuthenticatorTest {
         s.add(new Entry("uid=synthetic-masked," + PEOPLE, new Attribute("uid", "synthetic-masked"),
             new Attribute("userPassword", USER_PASSWORD),
             new Attribute("memberOf", "cn=synthetic-idari," + GROUPS, "cn=synthetic-auditors," + GROUPS)));
+        // A group of a bound name in another branch of the directory (PR 50 review D-04, Q-3).
+        s.add(new Entry("uid=synthetic-outsider," + PEOPLE, new Attribute("uid", "synthetic-outsider"),
+            new Attribute("userPassword", USER_PASSWORD),
+            new Attribute("memberOf", "cn=synthetic-idari,ou=synthetic-elsewhere," + BASE)));
         // A group found by a group search (member holds the user's DN) rather than by memberOf.
         s.add(new Entry("cn=synthetic-searched," + GROUPS, new Attribute("objectClass", "groupOfNames"),
             new Attribute("member", "uid=synthetic-person," + PEOPLE)));
@@ -102,14 +106,14 @@ class LdapAuthenticatorTest {
     private static DirectoryConfig config(String url, TlsMode mode, List<X509Certificate> ca, String password,
                                           Map<String, Set<String>> roles) throws Exception {
         return new DirectoryConfig(List.of(new LDAPURL(url)), mode, ca, SERVICE, password.toCharArray(), PEOPLE,
-            "(uid={0})", "memberOf", null, null, 2_000, 2_000, roles);
+            "(uid={0})", "memberOf", null, null, 2_000, 2_000, roles, true);
     }
 
     private static Map<String, Set<String>> bindings() {
         // Keyed by the GroupNames comparison form: "Synthetic-İdari", "SYNTHETIC-IDARI" and "synthetic-idari" are one.
-        return Map.of(DirectoryConfig.groupKey("SYNTHETIC-IDARI"), Set.of(Roles.SECURITY_ADMIN, Roles.VIEWER),
-            DirectoryConfig.groupKey("synthetic-auditors"), Set.of(Roles.REPLAY_VIEWER),
-            DirectoryConfig.groupKey("synthetic-searched"), Set.of(Roles.PRIVACY_OFFICER));
+        return Map.of(DirectoryConfig.nameKey("SYNTHETIC-IDARI"), Set.of(Roles.SECURITY_ADMIN, Roles.VIEWER),
+            DirectoryConfig.nameKey("synthetic-auditors"), Set.of(Roles.REPLAY_VIEWER),
+            DirectoryConfig.nameKey("synthetic-searched"), Set.of(Roles.PRIVACY_OFFICER));
     }
 
     private static Probe probe(DirectoryConfig config, String login) {
@@ -138,7 +142,7 @@ class LdapAuthenticatorTest {
             assertTrue(ldap.authenticate("synthetic-nobody", USER_PASSWORD.toCharArray()).isEmpty());
             // The directory gives the masked role with another: the identity service keeps the masked role alone.
             AuthenticatedUser masked = ldap.authenticate("synthetic-masked", USER_PASSWORD.toCharArray()).orElseThrow();
-            assertTrue(masked.roles().contains(Roles.REPLAY_VIEWER));
+            assertEquals(Set.of(Roles.REPLAY_VIEWER), masked.roles(), "the front itself keeps the masked role alone");
             assertEquals(Set.of(Roles.REPLAY_VIEWER), IdentityService.exclusive(masked).roles());
             assertEquals(List.of(Roles.REPLAY_VIEWER), ldap.probe("synthetic-masked").roles());
         }
@@ -148,7 +152,7 @@ class LdapAuthenticatorTest {
     void aGroupSearchAddsTheGroupsThatNameTheUser() throws Exception {
         DirectoryConfig config = new DirectoryConfig(List.of(new LDAPURL(plainUrl(plain))), TlsMode.NONE, List.of(),
             SERVICE, BIND.toCharArray(), PEOPLE, "(uid={0})", "memberOf", GROUPS, "(member={0})", 2_000, 2_000,
-            bindings());
+            bindings(), true);
         try (LdapAuthenticator ldap = new LdapAuthenticator(config)) {
             assertEquals(Set.of(Roles.SECURITY_ADMIN, Roles.VIEWER, Roles.PRIVACY_OFFICER),
                 ldap.authenticate("synthetic-person", USER_PASSWORD.toCharArray()).orElseThrow().roles());
@@ -182,7 +186,7 @@ class LdapAuthenticatorTest {
             // A closed front clears its copy of the password, so every probe gets a config of its own.
             DirectoryConfig badBase = new DirectoryConfig(List.of(new LDAPURL(plainUrl(plain))), TlsMode.NONE,
                 List.of(), SERVICE, BIND.toCharArray(), "ou=synthetic-missing," + BASE, "(uid={0})", "memberOf", null,
-                null, 2_000, 2_000, Map.of());
+                null, 2_000, 2_000, Map.of(), true);
             assertEquals(TestResult.SEARCH_FAILED, probe(badBase, login).result());
         }
 
@@ -205,7 +209,7 @@ class LdapAuthenticatorTest {
 
     private static DirectoryConfig failover(String dead) throws Exception {
         return new DirectoryConfig(List.of(new LDAPURL(dead), new LDAPURL(plainUrl(plain))), TlsMode.NONE, List.of(),
-            SERVICE, BIND.toCharArray(), PEOPLE, "(uid={0})", "memberOf", null, null, 2_000, 2_000, bindings());
+            SERVICE, BIND.toCharArray(), PEOPLE, "(uid={0})", "memberOf", null, null, 2_000, 2_000, bindings(), true);
     }
 
     @Test
@@ -267,10 +271,84 @@ class LdapAuthenticatorTest {
 
     @Test
     void groupKeysTakeTheFirstRdnAndFoldTurkishLetters() {
-        assertEquals("synthetic-idari", DirectoryConfig.groupKey("CN=Synthetic-İdari,OU=x,DC=example,DC=test"));
-        assertEquals("synthetic-idari", DirectoryConfig.groupKey("SYNTHETIC-IDARI"));
-        assertEquals("synthetic-idari", DirectoryConfig.groupKey("synthetic-ıdari"));
-        assertNull(DirectoryConfig.groupKey(""));
-        assertNull(DirectoryConfig.groupKey(null));
+        assertEquals("synthetic-idari", DirectoryConfig.valueKey("CN=Synthetic-İdari,OU=x,DC=example,DC=test"));
+        assertEquals("synthetic-idari", DirectoryConfig.nameKey("SYNTHETIC-IDARI"));
+        assertEquals("synthetic-idari", DirectoryConfig.valueKey("synthetic-ıdari"));
+        assertNull(DirectoryConfig.valueKey(""));
+        assertNull(DirectoryConfig.valueKey(null));
+    }
+
+    @Test
+    void multiValuedRdnsAndEqualsSignsNeverMatch() {
+        assertNull(DirectoryConfig.valueKey("cn=synthetic-idari+uid=synthetic,ou=x,dc=example,dc=test"));
+        assertNull(DirectoryConfig.valueKey("cn=synthetic\\=idari,ou=x,dc=example,dc=test"));
+        assertNull(DirectoryConfig.nameKey("synthetic=idari"));
+        assertNull(DirectoryConfig.valueKey("cn=,broken"));
+    }
+
+    @Test
+    void withAGroupSearchBaseAGroupElsewhereGrantsNothing() throws Exception {
+        try (LdapAuthenticator open = new LdapAuthenticator(config(plainUrl(plain), TlsMode.NONE, List.of(), BIND,
+            bindings()))) {
+            assertEquals(Set.of(Roles.SECURITY_ADMIN, Roles.VIEWER),
+                open.authenticate("synthetic-outsider", USER_PASSWORD.toCharArray()).orElseThrow().roles());
+        }
+        DirectoryConfig scoped = new DirectoryConfig(List.of(new LDAPURL(plainUrl(plain))), TlsMode.NONE, List.of(),
+            SERVICE, BIND.toCharArray(), PEOPLE, "(uid={0})", "memberOf", GROUPS, "(member={0})", 2_000, 2_000,
+            bindings(), true);
+        try (LdapAuthenticator ldap = new LdapAuthenticator(scoped)) {
+            assertEquals(Set.of(), ldap.authenticate("synthetic-outsider", USER_PASSWORD.toCharArray()).orElseThrow()
+                .roles());
+            assertEquals(0, ldap.probe("synthetic-outsider").groupsFound());
+        }
+    }
+
+    @Test
+    void anAmbiguousNameIsRefused() throws Exception {
+        DirectoryConfig both = new DirectoryConfig(List.of(new LDAPURL(plainUrl(plain))), TlsMode.NONE, List.of(),
+            SERVICE, BIND.toCharArray(), PEOPLE, "(|(uid={0})(uid=synthetic-masked))", "memberOf", null, null, 2_000,
+            2_000, bindings(), true);
+        try (LdapAuthenticator ldap = new LdapAuthenticator(both)) {
+            assertTrue(ldap.authenticate("synthetic-person", USER_PASSWORD.toCharArray()).isEmpty());
+            Probe p = ldap.probe("synthetic-person");
+            assertEquals(TestResult.USER_NOT_FOUND, p.result());
+            assertEquals("AMBIGUOUS", p.detail());
+        }
+    }
+
+    /** PR 50 review D-03 and Q-1: without the test-only switch, no plain LDAP, no local target, directory ports only. */
+    @Test
+    void outsideTestsOnlyRoutableTargetsOnDirectoryPortsAreReached() throws Exception {
+        DirectoryConfig plainProduction = new DirectoryConfig(List.of(new LDAPURL(plainUrl(plain))), TlsMode.NONE,
+            List.of(), SERVICE, BIND.toCharArray(), PEOPLE, "(uid={0})", "memberOf", null, null, 2_000, 2_000,
+            bindings(), false);
+        Probe plainRefused = probe(plainProduction, null);
+        assertEquals(TestResult.TLS_FAILED, plainRefused.result());
+        assertEquals("PLAIN_LDAP_REFUSED", plainRefused.detail());
+
+        DirectoryConfig loopbackProduction = new DirectoryConfig(List.of(new LDAPURL(ldapsUrl(ldaps))), TlsMode.LDAPS,
+            List.of(pki.ca()), SERVICE, BIND.toCharArray(), PEOPLE, "(uid={0})", "memberOf", null, null, 2_000, 2_000,
+            bindings(), false);
+        Probe loopbackRefused = probe(loopbackProduction, null);
+        assertEquals(TestResult.UNREACHABLE, loopbackRefused.result());
+        assertEquals("TARGET_NOT_ALLOWED", loopbackRefused.detail());
+
+        // Addresses are built at runtime: documentation, link-local, unspecified, multicast and loopback.
+        String documentation = String.join(".", "192", "0", "2", "10");
+        assertEquals(1, LdapAuthenticator.targets(documentation, 636, false).length);
+        assertEquals(1, LdapAuthenticator.targets(documentation, 3268, false).length);
+        for (int port : new int[] {5432, 8080, 8091, 8092, 9400, 22}) {
+            org.junit.jupiter.api.Assertions.assertThrows(LdapAuthenticator.TargetRefused.class,
+                () -> LdapAuthenticator.targets(documentation, port, false), "port " + port);
+        }
+        for (String refused : List.of(String.join(".", "169", "254", "1", "1"), String.join(".", "0", "0", "0", "0"),
+            String.join(".", "224", "0", "0", "1"), String.join(".", "127", "0", "0", "1"), ":" + ":1")) {
+            org.junit.jupiter.api.Assertions.assertThrows(LdapAuthenticator.TargetRefused.class,
+                () -> LdapAuthenticator.targets(refused, 636, false), "a refused class");
+        }
+        // The test-only switch admits loopback on any port, and nothing else more.
+        assertEquals(1, LdapAuthenticator.targets(String.join(".", "127", "0", "0", "1"), 5432, true).length);
+        org.junit.jupiter.api.Assertions.assertThrows(LdapAuthenticator.TargetRefused.class,
+            () -> LdapAuthenticator.targets(documentation, 5432, true));
     }
 }

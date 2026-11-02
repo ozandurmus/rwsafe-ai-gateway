@@ -53,6 +53,12 @@ public class IdentityService implements ApplicationRunner {
         if (throttle.locked(loginName, source)) {
             return new Result(Outcome.THROTTLED, null);
         }
+        // A name with surrounding white space or a control character is refused before any front (PR 50 review D-05):
+        // a variant spelling could otherwise miss the local row that owns the name and reach the directory.
+        if (!wellFormed(loginName)) {
+            throttle.failure(loginName, source);
+            return new Result(Outcome.INVALID, null);
+        }
         for (Authenticator front : fronts) {
             Optional<AuthenticatedUser> user = front.authenticate(loginName, password);
             if (user.isPresent()) {
@@ -72,6 +78,12 @@ public class IdentityService implements ApplicationRunner {
         }
         throttle.failure(loginName, source);
         return new Result(Outcome.INVALID, null);
+    }
+
+    /** 1 to 256 characters, no surrounding white space, no control character. */
+    static boolean wellFormed(String loginName) {
+        return loginName != null && !loginName.isEmpty() && loginName.length() <= 256
+            && loginName.equals(loginName.strip()) && loginName.chars().noneMatch(Character::isISOControl);
     }
 
     /** True while {@code loginName} from {@code source} is locked out (the own-password change counts as a login). */

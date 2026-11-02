@@ -7,11 +7,13 @@
 --
 --   - The bind password is stored only sealed (AES-256-GCM under the product's own directory key, a Kubernetes Secret
 --     the database never sees): format byte 0x01, a 12-byte nonce, the ciphertext and the 16-byte tag. NULL means no
---     password is set. A save without a new password copies the previous version's sealed value.
+--     password is set. The GCM associated data binds the value to its version, TLS mode, bind DN, URLs and CA bundle,
+--     so a value copied to another row or other settings does not open; a save that keeps the password seals it again
+--     for the new version, and only when the connection is unchanged (PR 50 review D-01).
 --   - group_names and group_role_sets are the one source of directory group -> role bindings, position by position:
 --     the group's name as the administrator entered it, and its roles separated by one space. The control plane
 --     validates them (group names unique in the GroupNames comparison form, never a distinguished name); the guard
---     below checks the role vocabulary and that the masked role stands alone.
+--     below refuses a comma or '=' in a name, checks the role vocabulary, each role once and the masked role alone.
 --   - change_kind says what the version changed: 'seed' (the deploy's RWSAFE_LDAP_* values, copied once into an empty
 --     table at start, by the system actor), 'connection' or 'group_roles' (a security_admin on the screen).
 --   - The ledger row (audit trigger) is keyed by the version number; created_by must be the ledger's actor.
@@ -76,16 +78,28 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
     IF EXISTS (SELECT 1 FROM unnest(NEW.group_names) AS g(name)
-               WHERE name IS NULL OR length(btrim(name)) NOT BETWEEN 1 AND 256 OR name ~ '[[:cntrl:],]')
+               WHERE name IS NULL OR length(btrim(name)) NOT BETWEEN 1 AND 256 OR name ~ '[[:cntrl:],=]')
         OR EXISTS (SELECT 1 FROM unnest(NEW.group_role_sets) AS r(roles)
                    WHERE roles IS NULL
                       OR roles !~ '^(security_admin|privacy_officer|viewer|replay_viewer)( (security_admin|privacy_officer|viewer))*$'
-                      OR (roles LIKE '%replay_viewer%' AND roles <> 'replay_viewer')) THEN
-        RAISE EXCEPTION 'DIRECTORY_GROUP_ROLES: group names without a comma, known roles, the masked role alone'
+                      OR (roles LIKE '%replay_viewer%' AND roles <> 'replay_viewer')
+                      OR (SELECT count(*) FROM regexp_split_to_table(roles, ' ') AS t(role))
+                         <> (SELECT count(DISTINCT role) FROM regexp_split_to_table(roles, ' ') AS t(role))) THEN
+        RAISE EXCEPTION 'DIRECTORY_GROUP_ROLES: group names without a comma or =, known roles once each, the masked role alone'
             USING ERRCODE = 'check_violation';
     END IF;
-    IF NEW.change_kind = 'seed' AND (latest IS NOT NULL OR NEW.created_by NOT LIKE 'system:%') THEN
+    -- Only the seed is the system's, and the system only seeds (PR 50 review D-07).
+    IF (NEW.change_kind = 'seed') IS DISTINCT FROM (NEW.created_by LIKE 'system:%') THEN
+        RAISE EXCEPTION 'DIRECTORY_SETTINGS_SEED_ACTOR: the system actor seeds, and only seeds'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF NEW.change_kind = 'seed' AND latest IS NOT NULL THEN
         RAISE EXCEPTION 'DIRECTORY_SETTINGS_SEED: the deploy values seed an empty table once, as the system actor'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    -- Group bindings change a saved connection; they are never the first version.
+    IF NEW.change_kind = 'group_roles' AND latest IS NULL THEN
+        RAISE EXCEPTION 'DIRECTORY_SETTINGS_GROUPS_FIRST: bind groups after a connection is saved'
             USING ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;

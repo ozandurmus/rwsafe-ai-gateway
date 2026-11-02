@@ -107,6 +107,32 @@ class DirectorySettingsStoreTest {
             List.of()), 1, audit(ADMIN, "directory_settings.seed", "r")));
     }
 
+    /** PR 50 review D-04 and D-07: the guard's further rules. */
+    @Test
+    void theGuardRefusesSystemEditsGroupsFirstRepeatedRolesAndEqualsSigns() {
+        // The system actor only seeds.
+        assertThrows(DataAccessException.class, () -> db.directorySettings().save(settings(SYSTEM, "connection", "r",
+            null, List.of()), 0, audit(SYSTEM, "directory_settings.connection", "r")));
+        // Group bindings never come first.
+        assertThrows(DataAccessException.class, () -> db.directorySettings().save(settings(ADMIN, "group_roles", "r",
+            null, List.of()), 0, audit(ADMIN, "directory_settings.group_roles", "r")));
+        db.directorySettings().save(settings(ADMIN, "connection", "r", null, List.of()), 0,
+            audit(ADMIN, "directory_settings.connection", "r"));
+        assertThrows(DataAccessException.class, () -> db.directorySettings().save(settings(SYSTEM, "group_roles", "r",
+            null, List.of()), 1, audit(SYSTEM, "directory_settings.group_roles", "r")));
+        // Each role once; no '=' in a group name.
+        assertThrows(DataAccessException.class, () -> db.directorySettings().save(settings(ADMIN, "group_roles", "r",
+            null, List.of(new DirectorySettings.GroupRoles("synthetic", List.of("viewer", "viewer")))), 1,
+            audit(ADMIN, "directory_settings.group_roles", "r")));
+        assertThrows(DataAccessException.class, () -> db.directorySettings().save(settings(ADMIN, "group_roles", "r",
+            null, List.of(new DirectorySettings.GroupRoles("synthetic=idari", List.of("viewer")))), 1,
+            audit(ADMIN, "directory_settings.group_roles", "r")));
+        DirectorySettings ok = db.directorySettings().save(settings(ADMIN, "group_roles", "r", null,
+            List.of(new DirectorySettings.GroupRoles("synthetic", List.of("security_admin", "viewer")))), 1,
+            audit(ADMIN, "directory_settings.group_roles", "r"));
+        assertEquals(2, ok.version());
+    }
+
     @Test
     void theHistoryIsImmutableAndTheGuardHoldsTheShape() {
         db.directorySettings().save(settings(ADMIN, "connection", "r", sealed(), List.of()), 0,

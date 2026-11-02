@@ -698,7 +698,7 @@ PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.m
   from `3532f13`); V10 and V11 dry-run in BEGIN/ROLLBACK on the live database first, then applied by Flyway at start;
   through Traefik: UI 200, health 200, `/api/v1/admin/roles` 401 without a session; the single-approval warning logged.
 
-## Done (Access part 2: directory settings and group roles, branch `worktree-agent-a74a709eabb848635`, not yet merged)
+## Done (Access part 2: directory settings and group roles, branch `feature/admin-access-2`, pull request 50)
 
 PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.md`), decision 1.2.
 - Stored settings (V12 `directory_settings`): URLs (1 to 8, tried in order), TLS mode (LDAPS, StartTLS; plain LDAP only
@@ -729,6 +729,23 @@ PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.m
   `POST /api/v1/admin/directory/connection`, `POST /api/v1/admin/directory/group-roles`,
   `POST /api/v1/admin/directory/test`. UI: Administration -> ACCESS -> LDAP settings (status in plain words, the
   connection form with a write-only password and a CA paste or file, the test, the group -> role table, the history).
+- Second review (Argon, `docs/reviews/PR50_2026_11_02_ARGON_ADMIN_ACCESS_PART2_DIRECTORY.md`, DO NOT MERGE) and its
+  corrections, each with tests: D-01 the bind password is sealed with associated data over the version, TLS mode,
+  bind DN, URLs and the CA bundle's digest, re-sealed on every save that keeps it, and kept (save or test) only when the
+  URLs, bind DN, TLS mode and CA are unchanged, else `PASSWORD_REQUIRED`; at most 1024 bytes; credential bytes wiped.
+  D-02 the `RWSAFE_LDAP_*` estate keys and the `rwsafe-ldap-bind` Secret are optional (the pilot needs only what
+  `bootstrap_secrets.sh` creates). D-03 directory targets: ports 389, 636, 3268, 3269 only; loopback, link-local,
+  unspecified and multicast refused (checked on save and, resolved once and pinned, at connect); the test is validated
+  before it spends a rate token, 6 a minute per administrator and 20 in all, one in flight until its own task ends.
+  D-04 one name form on both sides (no `=`, a single-valued first RDN), `memberOf` groups outside a set group search
+  base ignored (Q-3), the masked role alone in the front itself; V12 refuses `=`. D-05 a login name with surrounding
+  white space is refused (the form trims), and a local user owns every Turkish-folded spelling of its name; the user
+  search asks for two entries at most (ambiguous: refused). D-06 reasons refuse group names and DN words by token.
+  D-07 V12: only the system seeds and only seeds, no group bindings as the first version, each role once; a seed the
+  database refuses is skipped. D-08 switching the directory off or changing bindings ends the open directory sessions
+  but the administrator's own (Q-2); the screen keeps the other section's unsaved edits and refuses `=`. Q-1: plain LDAP
+  and loopback targets only under the test-only property `rwsafe.identity.directory-loopback-for-tests` (no
+  environment variable, off in every overlay); the screen offers no plain LDAP otherwise.
 - Open: the pilot overlay still removes the directory NetworkPolicy (`rwsafe-control-to-directory`) and its CIDR, so a
   pilot test against the real directory answers UNREACHABLE until that egress is restored with the directory's address
   range; group names are matched by name only (two groups with the same name in different branches are one). Security-

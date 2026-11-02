@@ -98,6 +98,7 @@ public final class DevControlApplication {
             ownerOnly(directoryKey, bytes);
         }
         set("rwsafe.identity.directory-key-file", directoryKey.toString());
+        set("rwsafe.identity.directory-loopback-for-tests", "true");
         InMemoryDirectoryServer ldap = directory(bindPassword, credentials,
             Integer.parseInt(env("RWSAFE_DEV_LDAP_PORT", "33389")));
         Path breakGlassFile = dir.resolve("break-glass-initial-password");
