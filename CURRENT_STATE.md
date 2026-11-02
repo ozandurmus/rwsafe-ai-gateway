@@ -601,7 +601,7 @@ decide governance details at go-live), the token width is decided at go-live; un
   ServiceLB and the login throttle counts every browser as one client (a go-live item, not decided). The throttle fix
   reaches the pilot with the next image build. The PO imports the CA and adds one hosts-file line (runbook 14.4).
 
-## Done (pilot single-approval switch, branch `feature/pilot-single-approval`, pull request 47, not yet merged)
+## Done (pilot single-approval switch, pull request 47, merged)
 
 PO decision Q-47, decision 2 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.md`, RATIFIED); it amends
 Q-39/Q-40 decision 3 for the pilot only, while the switch is on.
@@ -644,6 +644,57 @@ Q-39/Q-40 decision 3 for the pilot only, while the switch is on.
   issuance). Whether go-live must first supersede every single-approved active version (Argon recommends a go-live
   readiness check) is not decided.
 
+## Done (admin layout and Access part 1, branch `feature/admin-access-1`, pull request 48)
+
+PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.md`), decisions 1.1 and 3.
+- Layout: a narrow left rail (icon over label, collapse button, product mark) with sections named after the product
+  principle (Overview; SEE: Traffic; GUARD: Policies, Platforms; GOVERN: Notice; OPERATE: Health, Administration), a top
+  bar with a screen search, the masked mark and the user menu. Every earlier path is unchanged. Administration
+  (`/admin/...`) has a title, a one-line description and a grouped sub-menu (ACCESS: Local users, Sessions, Roles &
+  permissions); `frontend/src/adminMenu.tsx` is the one place later lanes add Access part 2, RECORDS and PLATFORM. It
+  is shown to a `security_admin` session only, never to the masked role. TR/EN catalogues extended.
+- Local users (V11 `local_user`): a `security_admin` creates a user (login name, display name, roles), changes its
+  roles, disables, enables and resets its password. The server generates the initial and every reset password (20
+  characters, as break-glass), returns it once (`Cache-Control: no-store`) and stores a BCrypt hash; the user's session
+  holds `PASSWORD_CHANGE_PENDING` and reaches only its own routes until `POST /api/v1/auth/password` sets a new one (14
+  to 128 characters within 72 bytes, six different characters, not the login name, not the old one; the current
+  password is checked under the login throttle). Local users sign in through the `Authenticator` seam between
+  break-glass and the directory (source `local_user`), under the same throttle; a disabled user is refused like a wrong
+  password. No self-disable, self role change or self-reset; the last enabled `security_admin` (local users plus the
+  break-glass account while its sign-in is on) cannot be disabled or demoted (advisory lock in the same transaction).
+  Disable, reset and role change end the user's open sessions. Break-glass is listed read-only. Users are named by
+  their `USR-` pseudonym in every route, so no login name reaches a URL or an access log.
+- Roles & permissions: `AccessRules` is the one list the security chain is built from; `GET /api/v1/admin/roles`
+  evaluates it per role, so the page cannot drift from what is enforced.
+- Sessions: `ActiveSessions` (an `HttpSessionListener` over the container's in-memory sessions) lists user, source,
+  roles, sign-in time and last activity under a random handle (never the session id, never the client address); a
+  `security_admin` ends another session with a reason and the user is signed out at the next request.
+- Ledger: every change carries a reason (checked as a retirement reason: no identifier, no estate term) and is written
+  by the audit trigger with the administrator's pseudonym as actor and the user's pseudonym as row key
+  (`local_user.create|roles_change|disable|enable|password_reset|password_change`, `session.end` on the V11
+  `session_end` table, whose guard requires the ledger actor to be the administrator); the SIEM export passes these row
+  keys as pseudonyms. Masked role: every `/api/v1/admin/**` route is refused 403 by the chain (leak probe and both
+  fail-closed probes walk them).
+- Endpoints (all `security_admin`, never masked): `GET|POST /api/v1/admin/users`,
+  `POST /api/v1/admin/users/{subject}/roles|disable|enable|password-reset`, `GET /api/v1/admin/roles`,
+  `GET /api/v1/admin/sessions`, `POST /api/v1/admin/sessions/{handle}/end`; any signed-in local user:
+  `POST /api/v1/auth/password`. `GET /api/v1/auth/me` now also returns the session's source and
+  `passwordChangeRequired`.
+- Second review: Argon (`docs/reviews/PR48_2026_11_02_ARGON_ADMIN_ACCESS_PART1.md`), MERGE WITH CORRECTIONS, no P0;
+  D-01..D-08 fixed with tests: no role change on oneself at all (`SELF_ROLES_CHANGE_REFUSED`), "self" being the same
+  login name signed in as a local user; the own password change re-checks the enabled flag and the unchanged hash
+  inside the update, keeps the stored roles, ends the user's other sessions and refuses a masked session without
+  masking (503); a sign-in whose local user changed meanwhile is ended (401); a local user row, enabled or not, owns its
+  login name and the directory is never asked for it (Argon's Q-1 adopted); a reason naming the actor, the target or any
+  stored local user (tokens of 3 or more letters, Turkish suffixes included) is refused; ending a session invalidates
+  it first, 404 when none is live, then ledgers; V11 accepts only a whole cost-12 BCrypt hash and guards the change
+  mark and its time; login and display names carry no identifier or estate term (503 without masking); the UI keys the
+  language choice by a digest of the name, never the name, and moves an old clear key.
+- Open: sessions are per control-plane instance (one replica in the pilot); whether local users stay after go-live is
+  the record's open item; go-live item (Argon's Q-2, behaviour unchanged): while break-glass sign-in is on it counts as
+  the last `security_admin`, so the last local administrator can be disabled; before break-glass is turned off at
+  go-live, at least one enabled local (or directory) `security_admin` must exist, or the product is left without one.
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape
@@ -654,8 +705,9 @@ Every UNVERIFIED mark (phase 0 measures them); the prerequisite neXus PR (phase 
 neXus delivery scripts (`tools/delivery/VENDORED_FROM_NEXUS.md`); Semgrep TypeScript rules for `frontend/`; control plane
 later slices (mTLS on 8091 and 8092, SAML, policy exceptions with expiry for non-fail-closed rules, a server-side user
 settings store for the UI language, the
-ratified decision record that mirrors the seed fixture, the C4 raw capture and its grants, the Incidents, Identities
-and roles and Administration screens, a browser-level (Playwright) masked-role leak probe on top of the API-level one,
+ratified decision record that mirrors the seed fixture, the C4 raw capture and its grants, the Incidents screen,
+Administration Access part 2 (directory settings), Records and Platform (Q-47 decisions 1.2 to 1.4) and the pilot
+single-approval switch (Q-47 decision 2), a browser-level (Playwright) masked-role leak probe on top of the API-level one,
 the cluster PostgreSQL Job); the Jazzer targets for the LLM-gateway HTTP decoder and the SSE parser (they arrive with
 them); Trivy image scanning and SBOM (with the first image, ship pipeline). SIEM export, later: a
 client certificate towards the SIEM, the raw-access SIEM copy (with raw access), and one QRadar test event per format to

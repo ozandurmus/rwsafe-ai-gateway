@@ -38,6 +38,11 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(e.status()).body(ApiError.of(e.reason(), e.getMessage()));
     }
 
+    @ExceptionHandler(io.rwsafe.control.identity.AccessRefusal.class)
+    ResponseEntity<ApiError> access(io.rwsafe.control.identity.AccessRefusal e) {
+        return ResponseEntity.status(e.status()).body(ApiError.of(e.reason(), e.getMessage()));
+    }
+
     @ExceptionHandler(io.rwsafe.control.capture.CaptureReadController.CaptureRefusal.class)
     ResponseEntity<ApiError> capture(io.rwsafe.control.capture.CaptureReadController.CaptureRefusal e) {
         return ResponseEntity.status(e.status()).body(ApiError.of(e.reason(), e.getMessage()));

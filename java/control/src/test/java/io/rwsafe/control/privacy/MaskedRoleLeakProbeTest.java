@@ -72,6 +72,8 @@ class MaskedRoleLeakProbeTest {
 
     /** The events seeded with redacted capture (PR 25). */
     private final List<String> capturedIds = new ArrayList<>();
+    /** A local user the administrator created with a canary display name (PO decision Q-47). */
+    private String localUserSubject;
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry r) throws Exception {
@@ -188,6 +190,10 @@ class MaskedRoleLeakProbeTest {
         // positive control is a security_admin read with a reason, which shows the stored text: the seeded person as
         // the NAME-<WORD> token the free-text layers wrote at persistence (SR-PRIV-15, PR 26), never the name.
         for (Probed p : masked) {
+            if (p.endpoint().contains(" /api/v1/admin/")) {
+                assertEquals(403, p.response().status(), p.endpoint());
+                assertEquals("FORBIDDEN", p.response().body().path("reason").asText(), "refused by the security chain");
+            }
             if (p.endpoint().equals("POST /api/v1/captures/{}/read")) {
                 assertEquals(403, p.response().status());
                 assertEquals("FORBIDDEN", p.response().body().path("reason").asText(), "refused by the security chain");
@@ -392,6 +398,15 @@ class MaskedRoleLeakProbeTest {
             "a refused batch stored nothing");
 
         ApiClient admin = signedIn(canaries.admin);
+
+        // A local user (PO decision Q-47) whose display name is a canary person: only the administrator's screens hold
+        // it, and the walk proves the masked role and the viewer reach none of them.
+        ObjectNode local = JSON.createObjectNode().put("loginName", "synthetic.localprobe")
+            .put("displayName", canaries.claimants.get(0).displayName()).put("reason", "probe onboarding");
+        local.putArray("roles").add("viewer");
+        ApiClient.Response createdLocal = admin.post("/api/v1/admin/users", local.toString(), true);
+        assertEquals(201, createdLocal.status(), String.valueOf(createdLocal.body()));
+        localUserSubject = createdLocal.body().get("user").get("subject").asText();
 
         // Notice acknowledgements (PR 22) through the internal intake on the capture-sink port, with the claimants'
         // identity claims; the intake answers on no other port.
@@ -644,6 +659,29 @@ class MaskedRoleLeakProbeTest {
             c.post("/api/v1/policy/rules/platform.devin/retirement", reason, true)));
         out.add(new Probed("POST /api/v1/policy/rules/{}/exceptions",
             c.post("/api/v1/policy/rules/" + enc(someRule) + "/exceptions", "{}", true)));
+        // Administration -> Access (PO decision Q-47): security_admin only; the masked role and the viewer are refused
+        // by the security chain on every route, reads included.
+        out.add(get(c, "GET /api/v1/admin/users", "/api/v1/admin/users"));
+        out.add(get(c, "GET /api/v1/admin/roles", "/api/v1/admin/roles"));
+        out.add(get(c, "GET /api/v1/admin/sessions", "/api/v1/admin/sessions"));
+        ObjectNode newUser = JSON.createObjectNode().put("loginName", "synthetic.probe").put("displayName", "Probe")
+            .put("reason", "synthetic probe");
+        newUser.putArray("roles").add("security_admin");
+        out.add(new Probed("POST /api/v1/admin/users", c.post("/api/v1/admin/users", newUser.toString(), true)));
+        String subject = localUserSubject == null ? "USR-0000000000" : localUserSubject;
+        ObjectNode roles = JSON.createObjectNode().put("reason", "synthetic probe");
+        roles.putArray("roles").add("security_admin");
+        out.add(new Probed("POST /api/v1/admin/users/{}/roles", c.post("/api/v1/admin/users/" + subject + "/roles",
+            roles.toString(), true)));
+        for (String change : List.of("disable", "enable", "password-reset")) {
+            out.add(new Probed("POST /api/v1/admin/users/{}/" + change, c.post("/api/v1/admin/users/" + subject + "/"
+                + change, reason, true)));
+        }
+        out.add(new Probed("POST /api/v1/admin/sessions/{}/end", c.post("/api/v1/admin/sessions/"
+            + java.util.UUID.randomUUID() + "/end", reason, true)));
+        // The own-password change of a local user: a directory session is told it has none.
+        out.add(new Probed("POST /api/v1/auth/password", c.post("/api/v1/auth/password", JSON.createObjectNode()
+            .put("currentPassword", "synthetic").put("newPassword", "synthetic").toString(), true)));
         out.add(new Probed("POST /api/v1/auth/logout", c.post("/api/v1/auth/logout", "", true)));
         return out;
     }

@@ -63,6 +63,11 @@ public final class Database {
         return new LocalAccountStore(dsl);
     }
 
+    /** Local users and administrator-ended sessions (V11). */
+    public LocalUserStore localUsers() {
+        return new LocalUserStore(dsl);
+    }
+
     public LoginRecordStore loginRecords() {
         return new LoginRecordStore(dsl);
     }

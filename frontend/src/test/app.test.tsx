@@ -2,6 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SYNTHETIC_EVENT, fakeServer } from './fakeServer';
+import { userStorageKey } from '../i18n';
 import { renderApp } from './render';
 
 const viewer = { displayName: 'synthetic-viewer', roles: ['viewer'], masked: false, source: 'ldap' };
@@ -123,7 +124,7 @@ describe('app', () => {
     });
     renderApp('/');
     expect(await screen.findByText('İncelenen işlem')).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Genel bakış' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Genel bakış' })).toBeInTheDocument();
     expect(screen.getAllByText('3.000').length).toBeGreaterThan(0);
     expect(screen.getByText('toplamın %33,3')).toBeInTheDocument();
     expect(screen.getByText('GitHub Copilot')).toBeInTheDocument();
@@ -145,7 +146,9 @@ describe('app', () => {
     expect(await screen.findByRole('heading', { name: 'Health' })).toBeInTheDocument();
     expect(screen.getByText(/1,234 events stored/)).toBeInTheDocument();
     expect(screen.getByText('Database')).toBeInTheDocument();
-    expect(window.localStorage.getItem('rwsafe.ui.lang:synthetic-viewer')).toBe('en');
+    expect(window.localStorage.getItem(userStorageKey('synthetic-viewer'))).toBe('en');
+    // PR 48 review D-08: the key never spells the user's name.
+    expect(Object.keys(window.localStorage).some((k) => k.includes('synthetic-viewer'))).toBe(false);
     first.unmount();
 
     renderApp('/health');

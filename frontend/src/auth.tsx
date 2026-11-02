@@ -7,6 +7,8 @@ interface AuthState {
   error: unknown;
   login: (loginName: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** A local user replaces their password; the session then carries no pending mark. */
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -52,7 +54,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  return <AuthContext.Provider value={{ me, checking, error, login, logout }}>{children}</AuthContext.Provider>;
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    setMe(await api.changePassword(currentPassword, newPassword));
+  }, []);
+
+  return (
+    <AuthContext.Provider value={{ me, checking, error, login, logout, changePassword }}>{children}</AuthContext.Provider>
+  );
 }
 
 export function useAuth(): AuthState {

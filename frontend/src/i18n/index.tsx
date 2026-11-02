@@ -18,18 +18,47 @@ export const DEFAULT_LANG: Lang = 'tr';
 const LOCALE: Record<Lang, string> = { tr: 'tr-TR', en: 'en-GB' };
 const ISTANBUL = 'Europe/Istanbul';
 
-// Preference store: no server-side user settings store exists yet, so the choice lives in this browser, keyed by the
-// signed-in user's display name (the last choice also applies on the sign-in page). Storage can be unavailable (private
-// windows, blocked site data): every access is guarded and the UI falls back to the default.
+// Preference store: no server-side user settings store exists yet, so the choice lives in this browser, keyed by a
+// digest of the signed-in user's display name, never the name itself, which is the login name for an unmasked session
+// (PR 48 review D-08); a key an earlier version wrote with the name in clear is moved and removed on first use. The last
+// choice also applies on the sign-in page. Storage can be unavailable (private windows, blocked site data): every access
+// is guarded and the UI falls back to the default.
 const STORAGE_KEY = 'rwsafe.ui.lang';
 
 function isLang(v: unknown): v is Lang {
   return v === 'tr' || v === 'en';
 }
 
+/** FNV-1a (64-bit) of the name as hex: a stable key that does not spell the name. */
+function digest(name: string): string {
+  let h = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(name)) {
+    h ^= BigInt(byte);
+    h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return h.toString(16).padStart(16, '0');
+}
+
+/** The storage key of one user's language choice. */
+export function userStorageKey(user: string): string {
+  return `${STORAGE_KEY}:u-${digest(user)}`;
+}
+
 export function storedLanguage(user: string | null): Lang | null {
   try {
-    const v = window.localStorage.getItem(user ? `${STORAGE_KEY}:${user}` : STORAGE_KEY);
+    if (!user) {
+      const v = window.localStorage.getItem(STORAGE_KEY);
+      return isLang(v) ? v : null;
+    }
+    const legacyKey = `${STORAGE_KEY}:${user}`;
+    const legacy = window.localStorage.getItem(legacyKey);
+    if (legacy !== null) {
+      window.localStorage.removeItem(legacyKey);
+      if (isLang(legacy) && window.localStorage.getItem(userStorageKey(user)) === null) {
+        window.localStorage.setItem(userStorageKey(user), legacy);
+      }
+    }
+    const v = window.localStorage.getItem(userStorageKey(user));
     return isLang(v) ? v : null;
   } catch {
     return null;
@@ -40,7 +69,7 @@ function storeLanguage(lang: Lang, user: string | null) {
   try {
     window.localStorage.setItem(STORAGE_KEY, lang);
     if (user) {
-      window.localStorage.setItem(`${STORAGE_KEY}:${user}`, lang);
+      window.localStorage.setItem(userStorageKey(user), lang);
     }
   } catch {
     // the choice then lasts for this page only
