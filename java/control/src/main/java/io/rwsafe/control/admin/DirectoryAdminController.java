@@ -7,6 +7,7 @@ import io.rwsafe.control.admin.DirectoryViews.TestRequest;
 import io.rwsafe.control.admin.DirectoryViews.TestView;
 import io.rwsafe.control.identity.AccessRefusal;
 import io.rwsafe.control.identity.DirectorySettingsService;
+import io.rwsafe.control.identity.LocalUsers;
 import java.util.List;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
@@ -47,7 +48,7 @@ public class DirectoryAdminController {
         }
         DirectorySettingsService.Connection connection = body.connection();
         try {
-            directory.saveConnection(auth.getName(), expected(body.expectedVersion()), connection, body.reason());
+            directory.saveConnection(LocalUsers.Actor.of(auth), expected(body.expectedVersion()), connection, body.reason());
         } finally {
             clear(connection);
         }
@@ -62,7 +63,7 @@ public class DirectoryAdminController {
         List<DirectorySettingsService.GroupBinding> bindings = body.bindings() == null ? List.of() : body.bindings()
             .stream().map(b -> b == null ? null : new DirectorySettingsService.GroupBinding(b.group(), b.roles()))
             .toList();
-        directory.saveGroupRoles(auth.getName(), expected(body.expectedVersion()), bindings, body.reason());
+        directory.saveGroupRoles(LocalUsers.Actor.of(auth), expected(body.expectedVersion()), bindings, body.reason());
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(DirectoryView.of(directory.state()));
     }
 
@@ -72,7 +73,7 @@ public class DirectoryAdminController {
             : body.settings().connection();
         try {
             return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(TestView.of(directory.test(
-                auth.getName(), connection, body == null ? null : body.loginName())));
+                LocalUsers.Actor.of(auth), connection, body == null ? null : body.loginName())));
         } finally {
             clear(connection);
         }

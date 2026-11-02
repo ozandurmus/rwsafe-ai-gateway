@@ -60,6 +60,10 @@ spec:
               value: /run/secrets/rwsafe-privacy-hmac-key/key
             - name: RWSAFE_SNAPSHOT_SIGNING_KEY
               value: /run/secrets/rwsafe-snapshot-signing-key/rwsafe-snapshot-1.pem
+            # The stored directory bind password's key (PO decision Q-47, decision 1.2); the RWSAFE_LDAP_* values below
+            # only seed the stored directory settings once, into an empty table.
+            - name: RWSAFE_DIRECTORY_KEY_FILE
+              value: /run/secrets/rwsafe-directory-key/key
             - name: RWSAFE_LDAP_BIND_PASSWORD_FILE
               value: /run/secrets/rwsafe-ldap/password
             - name: RWSAFE_LDAP_URL
@@ -161,6 +165,9 @@ spec:
             - name: ldap-bind
               mountPath: /run/secrets/rwsafe-ldap
               readOnly: true
+            - name: directory-key
+              mountPath: /run/secrets/rwsafe-directory-key
+              readOnly: true
             - name: estate-dictionary
               mountPath: /etc/rwsafe/estate
               readOnly: true
@@ -204,6 +211,15 @@ spec:
             defaultMode: 288
             items:
               - { key: password, path: password }
+        # The directory key (PO decision Q-47, decision 1.2): optional, so a missing Secret leaves the control plane
+        # running with directory sign-in unavailable and the reason shown (fail closed, no plaintext fallback).
+        - name: directory-key
+          secret:
+            secretName: rwsafe-directory-key
+            optional: true
+            defaultMode: 288
+            items:
+              - { key: key, path: key }
         - name: estate-dictionary
           configMap:
             name: rwsafe-estate

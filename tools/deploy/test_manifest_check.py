@@ -684,6 +684,40 @@ class CommittedOverlay(unittest.TestCase):
                                     for f in failures), failures)
 
 
+class DirectoryKey(unittest.TestCase):
+    """PO decision Q-47, decision 1.2: the control plane mounts the product's own directory key Secret, optional (a
+    missing key leaves directory sign-in unavailable, never the pod down), under the contract, in k3s and the pilot."""
+
+    def test_the_control_plane_mounts_the_directory_key_from_the_contract(self):
+        for overlay in ("k3s", "pilot"):
+            for product in ("rwsafe", "acme"):
+                with self.subTest(overlay=overlay, product=product):
+                    text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays" / overlay)
+                    objects = mc.rename_objects(mc.to_objects(text), product)
+                    contracts = mc.rename_contracts(CONTRACTS_FILE_JSON, product)
+                    self.assertEqual(contracts["secrets"][f"{product}-directory-key"]["keys"], ["key"])
+                    control = next(o for o in objects if mc.ident(o) == f"Deployment/{product}/{product}-control")
+                    spec = mc.pod_template(control)[1]
+                    volume = next(v for v in spec["volumes"] if v["name"] == "directory-key")
+                    self.assertEqual(volume["secret"]["secretName"], f"{product}-directory-key")
+                    self.assertTrue(volume["secret"]["optional"])
+                    self.assertEqual(volume["secret"]["items"], [{"key": "key", "path": "key"}])
+                    c = mc.containers(spec)[0]
+                    self.assertIn({"name": "directory-key", "mountPath": "/run/secrets/rwsafe-directory-key",
+                                   "readOnly": True}, c["volumeMounts"])
+                    env = {e["name"]: e.get("value") for e in c["env"]}
+                    self.assertEqual(env["RWSAFE_DIRECTORY_KEY_FILE"], "/run/secrets/rwsafe-directory-key/key")
+
+    def test_a_directory_key_item_outside_the_contract_fails(self):
+        text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays/k3s")
+        objects = mc.to_objects(text)
+        control = next(o for o in objects if mc.ident(o) == "Deployment/rwsafe/rwsafe-control")
+        volume = next(v for v in mc.pod_template(control)[1]["volumes"] if v["name"] == "directory-key")
+        volume["secret"]["items"] = [{"key": "plaintext", "path": "key"}]
+        failures, _ = mc.check(objects, CONTRACTS_FILE_JSON)
+        self.assertTrue(any("plaintext not in the runtime contract" in f for f in failures), failures)
+
+
 def pilot_objects(product: str) -> tuple[list[dict], dict]:
     text, _ = mc.render(mc.REPO_ROOT / "deploy/rwsafe/overlays/pilot")
     return mc.rename_objects(mc.to_objects(text), product), mc.rename_contracts(CONTRACTS_FILE_JSON, product)

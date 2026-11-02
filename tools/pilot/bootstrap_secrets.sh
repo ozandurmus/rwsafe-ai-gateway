@@ -6,12 +6,16 @@
 #   Secret    <product>-snapshot-signing-key   rwsafe-snapshot-1.pem        Ed25519 PKCS#8 signing key (openssl genpkey)
 #   ConfigMap <product>-snapshot-public-keys   rwsafe-snapshot-1.pem        its public key (SubjectPublicKeyInfo PEM)
 #   Secret    <product>-privacy-hmac-key       key                          32 bytes from /dev/urandom
+#   Secret    <product>-directory-key          key                          32 bytes from /dev/urandom (the LDAP
+#                                                                           settings screen's bind-password key)
 #   Secret    <product>-db-credentials         spring.datasource.password   48 hex characters (openssl rand)
 #                                              rwsafe.migration.password    48 hex characters (openssl rand)
 #   ConfigMap <product>-estate                 estate-dictionary.txt        ONE synthetic placeholder term (see below)
 #
 # Not created, because the pilot does not use them: the ICAP TLS Secret (plain ICAP, H-2), the directory bind Secret
-# (break-glass sign-in only), the SIEM objects, the capture key, the end-user notice values.
+# (the directory is entered on the LDAP settings screen, PO decision Q-47), the SIEM objects, the capture key, the
+# end-user notice values. Never recreate the directory key while settings are stored: the saved bind password would no
+# longer open and must be entered again on the screen.
 #
 # The estate dictionary: an empty or comment-only dictionary is refused by design (masked views answer 503, PR 26 review
 # D-07), so it is created with one synthetic placeholder term. Replace it with the estate's real terms before anyone
@@ -56,6 +60,7 @@ import sys
 contract = json.load(open(sys.argv[1], encoding="utf-8"))
 need = {
     "secrets": {"rwsafe-snapshot-signing-key": ["rwsafe-snapshot-1.pem"], "rwsafe-privacy-hmac-key": ["key"],
+                "rwsafe-directory-key": ["key"],
                 "rwsafe-db-credentials": ["spring.datasource.password", "rwsafe.migration.password"]},
     "configMaps": {"rwsafe-snapshot-public-keys": ["rwsafe-snapshot-1.pem"], "rwsafe-estate": ["estate-dictionary.txt"]},
 }
@@ -145,6 +150,17 @@ else
   mkdir -p "${WORK}/hmac"
   head -c 32 /dev/urandom > "${WORK}/hmac/key"
   create_secret "${HMAC}" "${WORK}/hmac" || exit 1
+fi
+
+# 2b. The directory key: 32 random bytes, the AES-256-GCM key of the bind password the LDAP settings screen stores
+#     (PO decision Q-47, decision 1.2); never the privacy key.
+DIRKEY="${PRODUCT}-directory-key"
+if exists secret "${DIRKEY}"; then
+  skip "secret ${DIRKEY}"
+else
+  mkdir -p "${WORK}/dirkey"
+  head -c 32 /dev/urandom > "${WORK}/dirkey/key"
+  create_secret "${DIRKEY}" "${WORK}/dirkey" || exit 1
 fi
 
 # 3. The two database role passwords (ADR-002): no trailing newline, the way the config tree and the image read them.

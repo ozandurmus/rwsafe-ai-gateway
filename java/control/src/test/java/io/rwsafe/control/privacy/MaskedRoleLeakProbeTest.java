@@ -408,6 +408,20 @@ class MaskedRoleLeakProbeTest {
         assertEquals(201, createdLocal.status(), String.valueOf(createdLocal.body()));
         localUserSubject = createdLocal.body().get("user").get("subject").asText();
 
+        // Directory settings (PO decision Q-47, decision 1.2): a canary group bound to a role. Only the administrator's
+        // screen holds it; the masked role and the viewer reach none of the directory routes.
+        JsonNode directory = admin.get("/api/v1/admin/directory").body();
+        ObjectNode binding = JSON.createObjectNode().put("expectedVersion", directory.get("version").asInt())
+            .put("reason", "probe binding");
+        var bindings = binding.putArray("bindings");
+        for (JsonNode g : directory.get("settings").get("groupRoles")) {
+            bindings.add(g.deepCopy());
+        }
+        bindings.addObject().put("group", canaries.groups.get(0)).putArray("roles").add("viewer");
+        ApiClient.Response bound = admin.post("/api/v1/admin/directory/group-roles", binding.toString(), true);
+        assertEquals(200, bound.status(), String.valueOf(bound.body()));
+        assertTrue(bound.raw().body().contains(canaries.groups.get(0)), "the administrator sees the bound group");
+
         // Notice acknowledgements (PR 22) through the internal intake on the capture-sink port, with the claimants'
         // identity claims; the intake answers on no other port.
         JsonNode notice = admin.get("/api/v1/notice").body();
@@ -679,6 +693,13 @@ class MaskedRoleLeakProbeTest {
         }
         out.add(new Probed("POST /api/v1/admin/sessions/{}/end", c.post("/api/v1/admin/sessions/"
             + java.util.UUID.randomUUID() + "/end", reason, true)));
+        // Administration -> Access -> Directory settings (Q-47 decision 1.2): refused like the other admin routes.
+        out.add(get(c, "GET /api/v1/admin/directory", "/api/v1/admin/directory"));
+        out.add(new Probed("POST /api/v1/admin/directory/connection", c.post("/api/v1/admin/directory/connection",
+            reason, true)));
+        out.add(new Probed("POST /api/v1/admin/directory/group-roles", c.post("/api/v1/admin/directory/group-roles",
+            reason, true)));
+        out.add(new Probed("POST /api/v1/admin/directory/test", c.post("/api/v1/admin/directory/test", "{}", true)));
         // The own-password change of a local user: a directory session is told it has none.
         out.add(new Probed("POST /api/v1/auth/password", c.post("/api/v1/auth/password", JSON.createObjectNode()
             .put("currentPassword", "synthetic").put("newPassword", "synthetic").toString(), true)));

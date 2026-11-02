@@ -6,6 +6,7 @@ import com.unboundid.ldap.sdk.LDAPException;
 import com.unboundid.ldap.sdk.LDAPURL;
 import io.rwsafe.control.config.ControlProperties;
 import io.rwsafe.control.identity.DirectoryConfig.TlsMode;
+import io.rwsafe.control.privacy.IdentifierCheck;
 import io.rwsafe.control.privacy.PrivacyKeys;
 import io.rwsafe.control.privacy.Pseudonymiser;
 import io.rwsafe.persistence.AuditContext;
@@ -323,11 +324,11 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
     // ---- saves ---------------------------------------------------------------------------------------------------
 
     /** Saves the connection fields as the next version; the group bindings are carried over. */
-    public DirectorySettings saveConnection(String actorLogin, int expectedVersion, Connection input, String reason) {
-        String actor = pseudonym(actorLogin);
-        String why = users.reason(reason);
+    public DirectorySettings saveConnection(LocalUsers.Actor by, int expectedVersion, Connection input, String reason) {
+        String actor = pseudonym(by.loginName());
         Validated v = validate(input);
         Optional<DirectorySettings> current = database.directorySettings().active();
+        String why = reason(reason, by, current.map(DirectorySettings::groupRoles).orElse(List.of()));
         byte[] sealed = current.map(DirectorySettings::bindPasswordSealed).orElse(null);
         char[] newPassword = input.newPassword();
         if (newPassword != null && newPassword.length > 0) {
@@ -344,13 +345,15 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
     }
 
     /** Saves the group -> role bindings as the next version; the connection is carried over. */
-    public DirectorySettings saveGroupRoles(String actorLogin, int expectedVersion, List<GroupBinding> bindings,
+    public DirectorySettings saveGroupRoles(LocalUsers.Actor by, int expectedVersion, List<GroupBinding> bindings,
                                             String reason) {
-        String actor = pseudonym(actorLogin);
-        String why = users.reason(reason);
+        String actor = pseudonym(by.loginName());
         List<DirectorySettings.GroupRoles> groups = groups(bindings);
         DirectorySettings current = database.directorySettings().active().orElseThrow(() -> new AccessRefusal(
             HttpStatus.CONFLICT, "DIRECTORY_NOT_CONFIGURED", "Save the directory connection before binding groups."));
+        List<DirectorySettings.GroupRoles> named = new ArrayList<>(current.groupRoles());
+        named.addAll(groups);
+        String why = reason(reason, by, named);
         DirectorySettings next = current.as("group_roles", actor, why).withGroups(groups);
         DirectorySettings saved = conflicts(() -> database.directorySettings().save(next, expectedVersion,
             audit(actor, "directory_settings.group_roles", why)));
@@ -365,9 +368,9 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
      * user and counts its groups under the saved bindings. A test of unsaved fields uses the stored password only when
      * the URLs and the bind DN are the saved ones: the stored password never goes to a server it was not saved for.
      */
-    public LdapAuthenticator.Probe test(String actorLogin, Connection input, String loginName) {
+    public LdapAuthenticator.Probe test(LocalUsers.Actor by, Connection input, String loginName) {
         String login = testLogin(loginName);
-        admit(actorLogin);
+        admit(by.loginName());
         try {
             DirectoryConfig config = testConfig(input);
             LdapAuthenticator.Probe probe = run(config, login);
@@ -458,6 +461,24 @@ public class DirectorySettingsService implements Authenticator, InitializingBean
             }
             recent.addLast(now);
         }
+    }
+
+    /**
+     * The local users' reason rule ({@link LocalUsers#reason}: no identifier, no estate term, no name a person on the
+     * screens is known by), and no directory group name this version or the saved one binds: a group name is a
+     * directory identifier, and the ledger and the SIEM read the reason as written. The refusal never echoes the text.
+     */
+    private String reason(String raw, LocalUsers.Actor by, List<DirectorySettings.GroupRoles> groups) {
+        String why = users.reason(raw, by);
+        String folded = IdentifierCheck.fold(why);
+        for (DirectorySettings.GroupRoles g : groups) {
+            String name = IdentifierCheck.fold(g.group());
+            if (name.length() >= 3 && folded.contains(name)) {
+                throw invalid("REASON_HOLDS_IDENTIFIER", "The reason names a directory group; describe the change "
+                    + "without the group's name.");
+            }
+        }
+        return why;
     }
 
     private static String testLogin(String raw) {

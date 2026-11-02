@@ -104,7 +104,8 @@ class DirectorySettingsIntegrationTest {
         ArrayNode list = body.putArray("bindings");
         for (Map.Entry<String, List<String>> b : bindings) {
             ObjectNode e = list.addObject().put("group", b.getKey());
-            b.getValue().forEach(e.putArray("roles")::add);
+            ArrayNode roles = e.putArray("roles");
+            b.getValue().forEach(r -> roles.add(r));
         }
         return body;
     }
@@ -151,7 +152,7 @@ class DirectorySettingsIntegrationTest {
         assertTrue(names.stream().noneMatch(n -> n.contains(",")));
 
         // A screen save, then what a restart does: the seed is skipped and the saved value stays.
-        ObjectNode change = connection(view, "synthetic timeout change");
+        ObjectNode change = connection(view, "routine timeout change");
         change.put("responseTimeoutMs", 9_000);
         ApiClient.Response saved = admin.post("/api/v1/admin/directory/connection", change.toString(), true);
         assertEquals(200, saved.status(), String.valueOf(saved.body()));
@@ -180,7 +181,7 @@ class DirectorySettingsIntegrationTest {
         assertFalse(new String(sealedBefore, StandardCharsets.ISO_8859_1).contains(bindPassword));
 
         // Without a new password the stored one is carried over unchanged.
-        ObjectNode keep = connection(view, "synthetic keep password");
+        ObjectNode keep = connection(view, "routine keep password");
         keep.put("connectTimeoutMs", 4_000);
         ApiClient.Response kept = admin.post("/api/v1/admin/directory/connection", keep.toString(), true);
         assertEquals(200, kept.status(), String.valueOf(kept.body()));
@@ -191,16 +192,16 @@ class DirectorySettingsIntegrationTest {
         List<Map<String, Object>> ledgered = ledger("directory_settings.connection");
         Map<String, Object> last = ledgered.get(ledgered.size() - 1);
         assertEquals(pseudonymiser.user(SAVE_ADMIN), last.get("actor_fingerprint"));
-        assertEquals("synthetic keep password", last.get("reason_code"));
+        assertEquals("routine keep password", last.get("reason_code"));
         assertEquals(String.valueOf(keptVersion), last.get("row_key"));
 
         // A wrong new password: the next sign-in already uses it (no restart) and fails; the right one restores it.
-        ObjectNode wrong = connection(kept.body(), "synthetic wrong password");
+        ObjectNode wrong = connection(kept.body(), "routine wrong password");
         wrong.put("newPassword", "not-" + bindPassword);
         assertEquals(200, admin.post("/api/v1/admin/directory/connection", wrong.toString(), true).status());
         assertEquals(401, login("synthetic-officer").status());
         JsonNode now = admin.get("/api/v1/admin/directory").body();
-        ObjectNode right = connection(now, "synthetic right password");
+        ObjectNode right = connection(now, "routine right password");
         right.put("newPassword", bindPassword);
         assertEquals(200, admin.post("/api/v1/admin/directory/connection", right.toString(), true).status());
         assertEquals(200, login("synthetic-officer").status());
@@ -214,11 +215,11 @@ class DirectorySettingsIntegrationTest {
             connection(latest, null).toString(), true).body().get("reason").asText());
         assertEquals("REASON_HOLDS_IDENTIFIER", admin.post("/api/v1/admin/directory/connection",
             connection(latest, "moved to 192.0.2.10").toString(), true).body().get("reason").asText());
-        ObjectNode remote = connection(latest, "synthetic remote");
+        ObjectNode remote = connection(latest, "routine remote");
         remote.putArray("urls").add("ldap://synthetic-dc.example.test:389");
         assertEquals("PLAIN_LDAP_REFUSED", admin.post("/api/v1/admin/directory/connection", remote.toString(), true)
             .body().get("reason").asText());
-        ObjectNode key = connection(latest, "synthetic key paste");
+        ObjectNode key = connection(latest, "routine key paste");
         key.put("tlsMode", "starttls").put("caCertificatePem", "-----BEGIN PRIVATE" + " KEY-----\nAAAA\n");
         assertEquals("CA_HOLDS_KEY", admin.post("/api/v1/admin/directory/connection", key.toString(), true)
             .body().get("reason").asText());
@@ -240,14 +241,14 @@ class DirectorySettingsIntegrationTest {
             changed.add(b.getKey().equals("rwsafe-viewer") ? Map.entry("RWSAFE-VİEWER", List.of("privacy_officer")) : b);
         }
         ApiClient.Response saved = admin.post("/api/v1/admin/directory/group-roles",
-            groups(view, "synthetic regrouping", changed).toString(), true);
+            groups(view, "routine regrouping", changed).toString(), true);
         assertEquals(200, saved.status(), String.valueOf(saved.body()));
         ApiClient.Response relogged = login(GROUP_USER);
         assertEquals(200, relogged.status());
         assertEquals("privacy_officer", relogged.body().get("roles").get(0).asText());
         Map<String, Object> ledgered = ledger("directory_settings.group_roles").get(0);
         assertEquals(pseudonymiser.user(GROUP_ADMIN), ledgered.get("actor_fingerprint"));
-        assertEquals("synthetic regrouping", ledgered.get("reason_code"));
+        assertEquals("routine regrouping", ledgered.get("reason_code"));
         assertEquals(saved.body().get("version").asText(), ledgered.get("row_key"));
         assertFalse(new JdbcTemplate(dataSource).queryForList("SELECT row_key FROM audit_event").toString()
             .toLowerCase(java.util.Locale.ROOT).contains("rwsafe-viewer"), "the ledger never names a group");
@@ -256,7 +257,7 @@ class DirectorySettingsIntegrationTest {
         List<Map.Entry<String, List<String>>> without = new ArrayList<>(changed);
         without.removeIf(b -> b.getKey().equals("RWSAFE-VİEWER"));
         assertEquals(200, admin.post("/api/v1/admin/directory/group-roles",
-            groups(saved.body(), "synthetic unbinding", without).toString(), true).status());
+            groups(saved.body(), "routine unbinding", without).toString(), true).status());
         ApiClient.Response noRole = login(GROUP_USER);
         assertEquals(403, noRole.status());
         assertEquals("NO_ROLE", noRole.body().get("reason").asText());
@@ -272,9 +273,16 @@ class DirectorySettingsIntegrationTest {
             List.of(Map.entry("synthetic-auditors", List.of("replay_viewer", "viewer")))).toString(), true)
             .body().get("reason").asText());
 
+        // A reason that names a bound directory group (any case, Turkish letters folded) is refused.
+        ApiClient.Response named = admin.post("/api/v1/admin/directory/group-roles", groups(latest,
+            "moved RWSAFE-PRIVACY_OFFICER over", original).toString(), true);
+        assertEquals(400, named.status());
+        assertEquals("REASON_HOLDS_IDENTIFIER", named.body().get("reason").asText());
+        assertFalse(named.raw().body().contains("PRIVACY_OFFICER"), "the refusal never echoes the reason");
+
         // Restored as seeded.
         assertEquals(200, admin.post("/api/v1/admin/directory/group-roles",
-            groups(latest, "synthetic restore", original).toString(), true).status());
+            groups(latest, "routine restore", original).toString(), true).status());
         assertEquals("viewer", login(GROUP_USER).body().get("roles").get(0).asText());
         assertFalse(output.getAll().contains("RWSAFE-VİEWER"), "a group name reached the log");
         assertFalse(output.getAll().contains(GROUP_USER), "a login name reached the log");
