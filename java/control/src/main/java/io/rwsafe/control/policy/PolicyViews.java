@@ -54,13 +54,20 @@ public final class PolicyViews {
     public record WithdrawalView(Integer withdrawsVersion, String reason, Instant withdrawnAt, String withdrawnBy) {
     }
 
+    /**
+     * A single-approval activation (PO decision Q-47, pilot only): the {@code security_admin}'s pseudonym and the reason
+     * given. The masked role reads the reason as withheld.
+     */
+    public record SingleApprovalView(String activatedBy, String reason) {
+    }
+
     /** One rule version; {@code inSnapshot} is true when the latest issued snapshot compiled it. */
     public record VersionView(String ruleId, int version, String action, Boolean enforceFailClosed,
                               List<String> hostSuffixes, List<String> apiHosts, List<String> loginHosts, String mode,
                               String rolloutStage, ScopeView scope, String status, String source, String author,
                               String reasonCode, Instant createdAt, Instant activatedAt, Instant supersededAt,
                               RetirementView retirement, WithdrawalView withdrawal, List<ApprovalView> approvals,
-                              boolean inSnapshot)
+                              SingleApprovalView singleApproval, boolean inSnapshot)
         implements MaskedView {
 
         static VersionView of(PolicyRuleVersion v, Set<String> inSnapshot) {
@@ -73,6 +80,8 @@ public final class PolicyViews {
                 v.supersededAt(), r == null ? null : new RetirementView(r.retiredAt(), r.retiredBy(), r.reason()), w,
                 v.approvals().stream().map(a -> new ApprovalView(a.role(), a.approverFingerprint(), a.approvedAt()))
                     .toList(),
+                v.singleApproval() == null ? null
+                    : new SingleApprovalView(v.singleApproval().activatedBy(), v.singleApproval().reason()),
                 inSnapshot.contains(v.key()));
         }
 
@@ -84,7 +93,9 @@ public final class PolicyViews {
                     : new RetirementView(retirement.retiredAt(), retirement.retiredBy(), withheld(retirement.reason())),
                 withdrawal == null ? null : new WithdrawalView(withdrawal.withdrawsVersion(),
                     withheld(withdrawal.reason()), withdrawal.withdrawnAt(), withdrawal.withdrawnBy()),
-                approvals, inSnapshot);
+                approvals, singleApproval == null ? null
+                    : new SingleApprovalView(singleApproval.activatedBy(), withheld(singleApproval.reason())),
+                inSnapshot);
         }
     }
 
@@ -128,12 +139,19 @@ public final class PolicyViews {
     /**
      * {@code stages} names the retired percentage stages that old rows may still carry (history only); a new version is
      * stage {@code all} and is scoped by {@code scopeKinds} instead, with at most {@code maxScopeGroups} groups.
+     * {@code singleApproval} is true while the pilot switch of PO decision Q-47 is on: one security administrator's
+     * approval with a reason activates a version.
      */
     public record RegistryView(List<RuleView> rules, SnapshotView snapshot, List<String> failClosedClasses,
                                List<String> actions, List<String> modes, List<String> stages, List<String> scopeKinds,
-                               int maxScopeGroups) implements MaskedView {
+                               int maxScopeGroups, boolean singleApproval) implements MaskedView {
 
         static RegistryView of(List<PolicyRuleVersion> versions, IssuedSnapshot latest, String keyId) {
+            return of(versions, latest, keyId, false);
+        }
+
+        static RegistryView of(List<PolicyRuleVersion> versions, IssuedSnapshot latest, String keyId,
+                               boolean singleApproval) {
             Set<String> compiled = latest == null ? Set.of() : Set.copyOf(latest.ruleVersions());
             Map<String, List<PolicyRuleVersion>> byRule = new LinkedHashMap<>();
             for (PolicyRuleVersion v : versions) {
@@ -152,14 +170,15 @@ public final class PolicyViews {
             }
             return new RegistryView(rules, latest == null ? null : SnapshotView.of(latest, keyId),
                 RegistryVocabulary.failClosedClasses(), RegistryVocabulary.ACTIONS, RegistryVocabulary.MODES,
-                RegistryVocabulary.STAGES, RegistryVocabulary.SCOPE_KINDS, SnapshotCompiler.MAX_SCOPE_GROUPS);
+                RegistryVocabulary.STAGES, RegistryVocabulary.SCOPE_KINDS, SnapshotCompiler.MAX_SCOPE_GROUPS,
+                singleApproval);
         }
 
         @Override
         public RegistryView masked(TextMasker m) {
             return new RegistryView(rules.stream().map(r -> r.masked(m)).toList(),
                 snapshot == null ? null : snapshot.masked(m), failClosedClasses, actions, modes, stages, scopeKinds,
-                maxScopeGroups);
+                maxScopeGroups, singleApproval);
         }
     }
 

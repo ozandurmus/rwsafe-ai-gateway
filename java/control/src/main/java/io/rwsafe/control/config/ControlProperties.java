@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 /**
  * The control plane's own settings ({@code rwsafe.*}). Key and password material is never a property value: every secret
@@ -170,13 +171,25 @@ public record ControlProperties(CaptureSink captureSink, SnapshotFeed snapshotFe
      *                         {@code issuedAt} even when no rule changed, at most 6 hours (POLICY_SNAPSHOT_CONTRACT: the
      *                         data plane stops serving a snapshot older than 24 hours and activates only higher versions)
      * @param simulationWindow how far back the simulation counts stored verdict events (at most 31 days)
+     * @param singleApproval   PO decision Q-47 (PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION decision 2): the pilot-only
+     *                         switch ({@code RWSAFE_POLICY_SINGLE_APPROVAL}, default {@code false}) under which one
+     *                         {@code security_admin}'s approval with a reason activates a version alone, ledgered as a
+     *                         single-approval activation; off, a version needs the two approvals of two people.
+     *                         {@code tools/deploy/manifest_check.py} refuses it on in every render but the pilot's
      */
     public record Policy(Path seedFile, Path signingKeyFile, String signingKeyId, Duration snapshotRefresh,
-                         Duration simulationWindow) {
+                         Duration simulationWindow, boolean singleApproval) {
 
         /** The contract's re-issue bound: the active policy is re-signed at least this often. */
         public static final Duration MAX_SNAPSHOT_AGE = Duration.ofHours(6);
 
+        /** The settings without the pilot single-approval switch: off. */
+        public Policy(Path seedFile, Path signingKeyFile, String signingKeyId, Duration snapshotRefresh,
+                      Duration simulationWindow) {
+            this(seedFile, signingKeyFile, signingKeyId, snapshotRefresh, simulationWindow, false);
+        }
+
+        @ConstructorBinding
         public Policy {
             snapshotRefresh = snapshotRefresh == null ? Duration.ofHours(6) : snapshotRefresh;
             simulationWindow = simulationWindow == null ? Duration.ofDays(7) : simulationWindow;

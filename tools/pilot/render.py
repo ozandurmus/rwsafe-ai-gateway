@@ -306,7 +306,9 @@ def render_target(target: str, product: str, digests: dict[str, str] | None = No
             raise Refused("no placeholder digest matched the given images")
         objects = mc.rename_objects(objects, product)
         release = set(digests) == set(IMAGES)
-        failures, _ = mc.check(objects, contracts, release=release, product=product)
+        # PO decision Q-47: only the pilot target may carry the single-approval switch on.
+        failures, _ = mc.check(objects, contracts, release=release, product=product,
+                               pilot=TARGETS[target] == mc.PILOT_OVERLAY)
     if failures:
         raise Refused("the render fails its check:\n" + "\n".join(f"  {f}" for f in failures))
     return objects

@@ -316,4 +316,58 @@ class SnapshotCompilerTest {
         assertEquals(compiler.compile(seedActive()).rulesDigest(), compiled.rulesDigest());
         assertTrue(!compiled.ruleVersions().contains("class.TCKN@v3"));
     }
+
+    // PO decision Q-47 (pilot only): a version activated by one security administrator compiles when its stored
+    // single-approval record names that administrator's one approval; a one-approval version without it never does.
+
+    /** Version 2 of class.TCKN, BLOCK, active, with the given approvals and single-approval record. */
+    private static PolicyRuleVersion singleApproved(PolicyRuleVersion seed, String source, List<PolicyApproval> approvals,
+                                                    PolicyRuleVersion.SingleApproval single) {
+        return new PolicyRuleVersion(seed.ruleId(), 2, seed.kind(), seed.dataClass(), "BLOCK", null, null, null, null,
+            null, "enforce", "all", "active", source, "USR-00000000a1", "SYNTHETIC_CHANGE", Instant.EPOCH,
+            Instant.EPOCH, null, approvals, "ANY", List.of(), null, null, null, null, null, single);
+    }
+
+    @Test
+    void aSingleApprovalActivationCompilesWithItsOneAdministrator() throws Exception {
+        PolicyApproval admin = TWO_APPROVALS.get(0);
+        List<PolicyRuleVersion> active = replacing("class.TCKN", v -> singleApproved(v, "registry", List.of(admin),
+            new PolicyRuleVersion.SingleApproval(admin.approverFingerprint(), "Synthetic pilot change")));
+        PolicySnapshotStore.Compiled compiled = compiler.compile(active);
+        assertTrue(compiled.ruleVersions().contains("class.TCKN@v2"));
+        assertTrue(compiled.approvers().contains(admin.approverFingerprint()));
+        JsonNode doc = JSON.readTree(compiled.render(2, Instant.EPOCH).document());
+        assertEquals("BLOCK", doc.get("classActions").get("TCKN").asText());
+    }
+
+    @Test
+    void aOneApprovalVersionWithoutAMatchingSingleApprovalRecordIsNeverCompiled() {
+        PolicyApproval admin = TWO_APPROVALS.get(0);
+        PolicyApproval officer = TWO_APPROVALS.get(1);
+        PolicyRuleVersion.SingleApproval byAdmin = new PolicyRuleVersion.SingleApproval(admin.approverFingerprint(),
+            "Synthetic pilot change");
+        List<java.util.function.UnaryOperator<PolicyRuleVersion>> refused = List.of(
+            // One approval and no record: what an activation with the switch off would look like.
+            v -> singleApproved(v, "registry", List.of(admin), null),
+            // The record names another person than the one approval.
+            v -> singleApproved(v, "registry", List.of(admin), new PolicyRuleVersion.SingleApproval(
+                officer.approverFingerprint(), "Synthetic pilot change")),
+            // The one approval is the privacy officer's.
+            v -> singleApproved(v, "registry", List.of(officer), new PolicyRuleVersion.SingleApproval(
+                officer.approverFingerprint(), "Synthetic pilot change")),
+            // No reason.
+            v -> singleApproved(v, "registry", List.of(admin), new PolicyRuleVersion.SingleApproval(
+                admin.approverFingerprint(), " ")),
+            // A second approval beside the record.
+            v -> singleApproved(v, "registry", TWO_APPROVALS, byAdmin),
+            // No approval at all.
+            v -> singleApproved(v, "registry", List.of(), byAdmin),
+            // Not a registry version.
+            v -> singleApproved(v, "seed", List.of(admin), byAdmin));
+        for (java.util.function.UnaryOperator<PolicyRuleVersion> f : refused) {
+            List<PolicyRuleVersion> active = replacing("class.TCKN", f);
+            assertEquals("SNAPSHOT_APPROVAL_MISSING",
+                assertThrows(RegistryRefusal.class, () -> compiler.compile(active)).reason());
+        }
+    }
 }
