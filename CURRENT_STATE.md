@@ -694,6 +694,9 @@ PO decision Q-47 (`docs/design/PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.m
   the record's open item; go-live item (Argon's Q-2, behaviour unchanged): while break-glass sign-in is on it counts as
   the last `security_admin`, so the last local administrator can be disabled; before break-glass is turned off at
   go-live, at least one enabled local (or directory) `security_admin` must exist, or the product is left without one.
+- Applied on HOST-A 2026-11-02 together with PR 47: control image built from main `e550d6b` (data plane image unchanged,
+  from `3532f13`); V10 and V11 dry-run in BEGIN/ROLLBACK on the live database first, then applied by Flyway at start;
+  through Traefik: UI 200, health 200, `/api/v1/admin/roles` 401 without a session; the single-approval warning logged.
 
 ## Done (Access part 2: directory settings and group roles, branch `worktree-agent-a74a709eabb848635`, not yet merged)
 
