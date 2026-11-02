@@ -628,8 +628,11 @@ listed or touched.
 
 ### 14.4 PO ONLY: your computer (CA certificate, hosts file, sign-in)
 
-1. **Copy the CA certificate** (public) to your computer, for example
-   `scp <admin-user>@<node-address>:.config/<product>/admin-ca/ca.crt ~/Downloads/<product>-admin-ca.crt`
+1. **Copy the CA certificate** (public) to your computer. It is in the home of the host account that ran 14.1 (the
+   orchestrator's account, not necessarily yours: from another account `scp` answers "No such file or directory"; on
+   2026-11-02 the orchestrator sent the public file in chat instead). For example
+   `scp <account-that-ran-14.1>@<node-address>:.config/<product>/admin-ca/ca.crt ~/Downloads/<product>-admin-ca.crt`
+   (note the `:` between the address and the path; without it `scp` looks for a local file)
    (Windows: in PowerShell, `cd $HOME/Downloads` and the same `scp` into `./<product>-admin-ca.crt`). Compare its fingerprint with the one 14.1 printed:
    macOS `openssl x509 -in ~/Downloads/<product>-admin-ca.crt -noout -fingerprint -sha256`; Windows
    `certutil -dump .\<product>-admin-ca.crt | findstr /i sha256` (in that folder) (the `Cert Hash(sha256)` line, UNVERIFIED
