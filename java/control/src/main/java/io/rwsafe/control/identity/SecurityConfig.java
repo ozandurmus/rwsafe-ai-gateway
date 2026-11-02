@@ -15,7 +15,6 @@ import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
-import org.springframework.security.core.Authentication;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfException;
@@ -23,8 +22,10 @@ import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 
 /**
- * The gate chain (ARCHITECTURE.md §3.2 rbac): session, CSRF, role, then the masking funnel for the masked role. Reads
- * need one of the three roles; every other API method needs {@code security_admin}, so the masked role is read-only.
+ * The gate chain (ARCHITECTURE.md §3.2 rbac): session, CSRF, role, then the masking funnel for the masked role. The API
+ * rules are {@link AccessRules} (one list, which the Roles & permissions screen also describes): Administration needs
+ * {@code security_admin}; reads need one of the roles; every other API method needs {@code security_admin}, so the
+ * masked role is read-only.
  * The internal chain serves only the internal routes, which the connector filter confines to their ports: the
  * ingestion route and the notice acknowledgement intake (8092) and the signed policy snapshot (8091).
  */
@@ -84,34 +85,30 @@ public class SecurityConfig {
     @Order(2)
     SecurityFilterChain adminChain(HttpSecurity http, CookieCsrfTokenRepository csrfCookies, ObjectMapper json,
                                    io.rwsafe.control.capture.CaptureRefusalLedger captureRefusals) throws Exception {
-        http.authorizeHttpRequests(a -> a
-                .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll()
-                .requestMatchers("/api/v1/auth/**").authenticated()
-                .requestMatchers(HttpMethod.GET, "/api/v1/**")
-                    .hasAnyRole(Roles.SECURITY_ADMIN, Roles.PRIVACY_OFFICER, Roles.VIEWER, Roles.REPLAY_VIEWER)
-                // A policy approval: either approver role, never a masked session; the service checks that the session
-                // holds the role the approval is given in (AGENTS.md section 6).
-                .requestMatchers(HttpMethod.POST, "/api/v1/policy/rules/*/versions/*/approvals")
-                    .access((auth, context) -> new AuthorizationDecision(
-                        (hasRole(auth.get(), Roles.SECURITY_ADMIN) || hasRole(auth.get(), Roles.PRIVACY_OFFICER))
-                            && !hasRole(auth.get(), Roles.REPLAY_VIEWER)))
-                // A C3 read (ADR-009 §5): security_admin or privacy_officer, never a masked session; a refusal here is
-                // ledgered all the same (PR 25 D-02). The controller checks the roles again and binds DSAR.
-                .requestMatchers(HttpMethod.POST, "/api/v1/captures/*/read")
-                    .access((auth, context) -> {
-                        boolean reader = (hasRole(auth.get(), Roles.SECURITY_ADMIN)
-                            || hasRole(auth.get(), Roles.PRIVACY_OFFICER)) && !hasRole(auth.get(), Roles.REPLAY_VIEWER);
-                        if (!reader) {
-                            captureRefusals.refused(auth.get(), context.getRequest());
-                        }
-                        return new AuthorizationDecision(reader);
-                    })
-                // Mutations: security_admin, and never a masked session, whatever else it holds (PR 12 review D-02).
-                .requestMatchers("/api/**").access((auth, context) -> new AuthorizationDecision(
-                    hasRole(auth.get(), Roles.SECURITY_ADMIN) && !hasRole(auth.get(), Roles.REPLAY_VIEWER)))
-                .requestMatchers(HttpMethod.GET, "/**").permitAll()
-                .anyRequest().denyAll())
+        http.authorizeHttpRequests(a -> {
+                a.requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
+                    .requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll();
+                // The API rules, one list in the chain's order (AccessRules; the Roles & permissions screen reads it).
+                for (AccessRules.Rule rule : AccessRules.RULES) {
+                    var matcher = rule.method() == null ? a.requestMatchers(rule.pattern())
+                        : a.requestMatchers(rule.method(), rule.pattern());
+                    if (AccessRules.CAPTURE_READ.equals(rule.id())) {
+                        // A refused C3 read is ledgered all the same (PR 25 D-02); the controller checks the roles
+                        // again and binds DSAR.
+                        matcher.access((auth, context) -> {
+                            boolean reader = rule.allows(auth.get());
+                            if (!reader) {
+                                captureRefusals.refused(auth.get(), context.getRequest());
+                            }
+                            return new AuthorizationDecision(reader);
+                        });
+                    } else {
+                        matcher.access((auth, context) -> new AuthorizationDecision(rule.allows(auth.get())));
+                    }
+                }
+                a.requestMatchers(HttpMethod.GET, "/**").permitAll()
+                    .anyRequest().denyAll();
+            })
             .csrf(c -> c.csrfTokenRepository(csrfCookies).csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)
                 .sessionFixation(f -> f.changeSessionId()))
@@ -133,11 +130,6 @@ public class SecurityConfig {
                         ? ApiError.of("CSRF_TOKEN_INVALID", "The request lacks a valid CSRF token; reload the page.")
                         : ApiError.of("FORBIDDEN", "Your role does not allow this action."))));
         return http.build();
-    }
-
-    private static boolean hasRole(Authentication auth, String role) {
-        return auth != null && auth.isAuthenticated() && auth.getAuthorities().stream()
-            .anyMatch(a -> Roles.authority(role).equals(a.getAuthority()));
     }
 
     private static void write(HttpServletResponse response, ObjectMapper json, int status, ApiError error)

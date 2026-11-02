@@ -132,11 +132,13 @@ public final class SiemRecords {
     }
 
     /** The exact key shape of each audited table whose key may leave as written; null: never as written. */
-    enum KeyShape { ACCOUNT, NUMBER, RULE_VERSION, RULE_APPROVAL, DESTINATION, EVENT_ID }
+    enum KeyShape { ACCOUNT, NUMBER, RULE_VERSION, RULE_APPROVAL, DESTINATION, EVENT_ID, USER_PSEUDONYM }
 
     static KeyShape rowKeyShape(String table) {
         return switch (table == null ? "" : table) {
             case "local_account" -> KeyShape.ACCOUNT;
+            // V11: a local user and an ended session are keyed by the person's USR- pseudonym already.
+            case "local_user", "session_end" -> KeyShape.USER_PSEUDONYM;
             case "login_record", "policy_snapshot", "capture_read", "capture_deletion_receipt", "capture_key_event" ->
                 KeyShape.NUMBER;
             // ADR-009 §4: a deleted capture's event id leaves as written, so the SIEM can purge the same event.
@@ -166,6 +168,7 @@ public final class SiemRecords {
             case RULE_VERSION -> ruleVersion(key);
             case RULE_APPROVAL -> ruleApproval(key);
             case DESTINATION -> key.equals("syslog") || key.equals("hec");
+            case USER_PSEUDONYM -> key.startsWith("USR-") && actor(key);
             case ACCOUNT, EVENT_ID -> false;
         };
         return asWritten ? key : pseudonym(keyPseudonym, key, false);

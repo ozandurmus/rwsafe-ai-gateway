@@ -57,7 +57,7 @@ describe('notice screen', () => {
     expect(screen.getByRole('heading', { name: 'Neyi inceliyoruz' })).toBeInTheDocument();
     const paragraph = screen.getByText('Sentetik birinci paragraf <i>etiket değil</i>.');
     expect(paragraph.querySelector('i')).toBeNull();
-    expect(screen.getByRole('tab', { name: 'Aydınlatma metni' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Aydınlatma metni' })).toBeInTheDocument();
   });
 
   it('shows the masked projection as the server returns it: no sections', async () => {

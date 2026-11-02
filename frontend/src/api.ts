@@ -18,8 +18,76 @@ export interface Me {
   displayName: string;
   roles: string[];
   masked: boolean;
+  /** `ldap`, `local` (break-glass) or `local_user` (PO decision Q-47). */
   source: string | null;
+  /** A local user signed in with a generated password; nothing but the password change is reachable until it is done. */
+  passwordChangeRequired?: boolean;
 }
+
+// Administration -> Access part 1 (PO decision Q-47). Only a security administrator reaches these routes.
+export type RoleId = 'security_admin' | 'privacy_officer' | 'viewer' | 'replay_viewer';
+
+export interface LocalUserView {
+  /** The login name's USR- pseudonym: the name of the user in every route. */
+  subject: string;
+  readonly loginName: string;
+  displayName: string;
+  roles: RoleId[];
+  enabled: boolean;
+  passwordChangeRequired: boolean;
+  createdAt: string;
+  updatedAt: string;
+  passwordChangedAt: string | null;
+}
+
+export interface LocalUsersView {
+  users: LocalUserView[];
+  breakGlass: { loginName: string; roles: RoleId[]; enabled: boolean; signInEnabled: boolean }[];
+  roles: RoleId[];
+  enabledSecurityAdmins: number;
+  minPasswordLength: number;
+}
+
+/** A created user or a reset: the generated password is in this answer only, and only once. */
+export interface IssuedPassword {
+  user: LocalUserView;
+  oneTimePassword: string;
+}
+
+export interface CreateUserRequest {
+  readonly loginName: string;
+  displayName: string;
+  roles: RoleId[];
+  reason: string;
+}
+
+/** The server's enforced authorisation rules (`AccessRules`), described per role. */
+export interface RolesView {
+  roles: { role: RoleId; masked: boolean; permissions: string[] }[];
+  rules: {
+    id: string;
+    method: string;
+    pattern: string;
+    anyOf: RoleId[];
+    maskedRefused: boolean;
+    pendingAllowed: boolean;
+  }[];
+}
+
+export interface SessionView {
+  /** A random name of the server's session registry; never the session id. */
+  handle: string;
+  readonly loginName: string;
+  source: string;
+  roles: RoleId[];
+  signedInAt: string;
+  lastActivity: string | null;
+  passwordChangePending: boolean;
+  current: boolean;
+}
+
+/** The server's password rule, checked here first so the form can say so before sending. */
+export const MIN_PASSWORD_LENGTH = 14;
 
 export interface Overview {
   from: string;
@@ -353,6 +421,23 @@ export const api = {
   },
   me: () => request<Me>('GET', '/api/v1/auth/me'),
   logout: () => request<void>('POST', '/api/v1/auth/logout'),
+  /** A local user replaces their password (required after a generated one). */
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<Me>('POST', '/api/v1/auth/password', { currentPassword, newPassword }),
+  adminUsers: () => request<LocalUsersView>('GET', '/api/v1/admin/users'),
+  createUser: (body: CreateUserRequest) => request<IssuedPassword>('POST', '/api/v1/admin/users', body),
+  changeUserRoles: (subject: string, roles: RoleId[], reason: string) =>
+    request<LocalUserView>('POST', `/api/v1/admin/users/${encodeURIComponent(subject)}/roles`, { roles, reason }),
+  disableUser: (subject: string, reason: string) =>
+    request<LocalUserView>('POST', `/api/v1/admin/users/${encodeURIComponent(subject)}/disable`, { reason }),
+  enableUser: (subject: string, reason: string) =>
+    request<LocalUserView>('POST', `/api/v1/admin/users/${encodeURIComponent(subject)}/enable`, { reason }),
+  resetPassword: (subject: string, reason: string) =>
+    request<IssuedPassword>('POST', `/api/v1/admin/users/${encodeURIComponent(subject)}/password-reset`, { reason }),
+  adminRoles: () => request<RolesView>('GET', '/api/v1/admin/roles'),
+  adminSessions: () => request<{ sessions: SessionView[] }>('GET', '/api/v1/admin/sessions'),
+  endSession: (handle: string, reason: string) =>
+    request<void>('POST', `/api/v1/admin/sessions/${encodeURIComponent(handle)}/end`, { reason }),
   overview: (from: string, to: string) => request<Overview>('GET', `/api/v1/overview${query({ from, to })}`),
   traffic: (f: TrafficFilter) =>
     request<TrafficPage>(

@@ -11,7 +11,10 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Service;
 
-/** The authentication fronts in order: the local break-glass account (when enabled), then the directory (when set). */
+/**
+ * The authentication fronts in order: the local break-glass account (when enabled), the local users of the
+ * Administration screen (PO decision Q-47), then the directory (when set). One login throttle covers them all.
+ */
 @Service
 public class IdentityService implements ApplicationRunner, DisposableBean {
 
@@ -33,6 +36,7 @@ public class IdentityService implements ApplicationRunner, DisposableBean {
         if (breakGlass != null) {
             fronts.add(breakGlass);
         }
+        fronts.add(new LocalUserAuthenticator(database));
         if (ldap != null) {
             fronts.add(ldap);
         }
@@ -68,13 +72,24 @@ public class IdentityService implements ApplicationRunner, DisposableBean {
         return new Result(Outcome.INVALID, null);
     }
 
+    /** True while {@code loginName} from {@code source} is locked out (the own-password change counts as a login). */
+    public boolean throttled(String loginName, String source) {
+        return throttle.locked(loginName, source);
+    }
+
+    /** Counts a wrong current password on the own-password change as a failed login. */
+    public void failed(String loginName, String source) {
+        throttle.failure(loginName, source);
+    }
+
     /**
      * The masked role is an exclusive session mode (MASKING_AND_PRIVACY B1): a user who holds it is signed in with it
      * alone, whatever other groups the directory names (PR 12 review D-02).
      */
     static AuthenticatedUser exclusive(AuthenticatedUser user) {
         if (user.roles().contains(Roles.REPLAY_VIEWER) && user.roles().size() > 1) {
-            return new AuthenticatedUser(user.loginName(), java.util.Set.of(Roles.REPLAY_VIEWER), user.source());
+            return new AuthenticatedUser(user.loginName(), java.util.Set.of(Roles.REPLAY_VIEWER), user.source(),
+                user.passwordChangeRequired());
         }
         return user;
     }

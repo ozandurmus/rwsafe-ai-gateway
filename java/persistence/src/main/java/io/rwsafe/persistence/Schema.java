@@ -52,6 +52,28 @@ final class Schema {
     static final Field<String[]> ROLES = DSL.field(DSL.name("local_account", "roles"), SQLDataType.CLOB.array());
     static final Field<Boolean> ENABLED = DSL.field(DSL.name("local_account", "enabled"), SQLDataType.BOOLEAN);
 
+    // V11: local users created on the Administration screen, and sessions an administrator ended.
+    static final Table<Record> LOCAL_USER = DSL.table(DSL.name("local_user"));
+    static final Field<String> LU_LOGIN = DSL.field(DSL.name("local_user", "login_name"), SQLDataType.CLOB);
+    static final Field<String> LU_SUBJECT = DSL.field(DSL.name("local_user", "subject_fingerprint"), SQLDataType.CLOB);
+    static final Field<String> LU_DISPLAY = DSL.field(DSL.name("local_user", "display_name"), SQLDataType.CLOB);
+    static final Field<String> LU_HASH = DSL.field(DSL.name("local_user", "password_hash"), SQLDataType.CLOB);
+    static final Field<String[]> LU_ROLES = DSL.field(DSL.name("local_user", "roles"), SQLDataType.CLOB.array());
+    static final Field<Boolean> LU_ENABLED = DSL.field(DSL.name("local_user", "enabled"), SQLDataType.BOOLEAN);
+    static final Field<Boolean> LU_MUST_CHANGE = DSL.field(DSL.name("local_user", "must_change_password"),
+        SQLDataType.BOOLEAN);
+    static final Field<Instant> LU_CREATED_AT = DSL.field(DSL.name("local_user", "created_at"), SQLDataType.INSTANT);
+    static final Field<Instant> LU_UPDATED_AT = DSL.field(DSL.name("local_user", "updated_at"), SQLDataType.INSTANT);
+    static final Field<Instant> LU_PASSWORD_CHANGED_AT = DSL.field(DSL.name("local_user", "password_changed_at"),
+        SQLDataType.INSTANT);
+
+    static final Table<Record> SESSION_END = DSL.table(DSL.name("session_end"));
+    static final Field<Long> SE_ID = DSL.field(DSL.name("session_end", "end_id"), SQLDataType.BIGINT);
+    static final Field<Instant> SE_ENDED_AT = DSL.field(DSL.name("session_end", "ended_at"), SQLDataType.INSTANT);
+    static final Field<String> SE_SUBJECT = DSL.field(DSL.name("session_end", "subject_fingerprint"), SQLDataType.CLOB);
+    static final Field<String> SE_ENDED_BY = DSL.field(DSL.name("session_end", "ended_by"), SQLDataType.CLOB);
+    static final Field<String> SE_SOURCE = DSL.field(DSL.name("session_end", "source"), SQLDataType.CLOB);
+
     static final Table<Record> LOGIN_RECORD = DSL.table(DSL.name("login_record"));
     static final Field<String> LOGIN_ACTOR = DSL.field(DSL.name("login_record", "actor_fingerprint"), SQLDataType.CLOB);
     static final Field<String> LOGIN_SOURCE = DSL.field(DSL.name("login_record", "source"), SQLDataType.CLOB);

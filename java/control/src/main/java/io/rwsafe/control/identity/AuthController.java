@@ -9,6 +9,7 @@ import io.rwsafe.persistence.Database;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -35,6 +36,8 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * Session login for the SPA (ARCHITECTURE.md §4.4): JSON credentials, a new session id on success (no fixation), the
  * {@code __Host-} session cookie and the CSRF cookie. Failures name a reason class and never which part was wrong.
+ * A local user signed in with a generated password holds {@link Roles#PASSWORD_CHANGE_PENDING} and reaches only these
+ * routes until {@code POST /api/v1/auth/password} replaces it (PO decision Q-47).
  */
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -49,15 +52,20 @@ public class AuthController {
     private final PrivacyKeys keys;
     private final Pseudonymiser pseudonymiser;
     private final Database database;
+    private final ActiveSessions sessions;
+    private final LocalUsers localUsers;
     private final SecurityContextRepository contexts = new HttpSessionSecurityContextRepository();
 
     public AuthController(IdentityService identity, CookieCsrfTokenRepository csrfTokens, PrivacyKeys keys,
-                          Pseudonymiser pseudonymiser, Database database) {
+                          Pseudonymiser pseudonymiser, Database database, ActiveSessions sessions,
+                          LocalUsers localUsers) {
         this.identity = identity;
         this.csrfTokens = csrfTokens;
         this.keys = keys;
         this.pseudonymiser = pseudonymiser;
         this.database = database;
+        this.sessions = sessions;
+        this.localUsers = localUsers;
     }
 
     /** Never printed: the record's own toString would show the password. */
@@ -69,13 +77,30 @@ public class AuthController {
         }
     }
 
-    /** The signed-in user as the SPA shows it; the masked projection hides the login name. */
-    public record MeView(String displayName, List<String> roles, boolean masked, String source) implements MaskedView {
+    /** Never printed: the record's own toString would show both passwords. */
+    public record PasswordChangeRequest(String currentPassword, String newPassword) {
+
+        @Override
+        public String toString() {
+            return "PasswordChangeRequest[redacted]";
+        }
+    }
+
+    /**
+     * The signed-in user as the SPA shows it; the masked projection hides the login name. {@code passwordChangeRequired}:
+     * a local user signed in with a generated password and reaches nothing but the password change until it is done.
+     */
+    public record MeView(String displayName, List<String> roles, boolean masked, String source,
+                         boolean passwordChangeRequired) implements MaskedView {
 
         @Override
         public MaskedView masked(TextMasker masker) {
-            return new MeView("masked session", roles, true, source);
+            return new MeView("masked session", roles, true, source, passwordChangeRequired);
         }
+    }
+
+    /** The session's source ({@code ldap}, {@code local}, {@code local_user}), kept as the authentication's details. */
+    public record SessionDetails(String source) implements java.io.Serializable {
     }
 
     public record CsrfView(String headerName, String token) implements MaskedView {
@@ -133,27 +158,73 @@ public class AuthController {
                 "Sign-ins are recorded under a pseudonym and the privacy key is missing; use the break-glass account.");
         }
         database.loginRecords().record(actor, user.source(), masked);
-        List<GrantedAuthority> authorities = user.roles().stream()
-            .map(r -> (GrantedAuthority) new SimpleGrantedAuthority(Roles.authority(r))).toList();
-        Authentication auth = UsernamePasswordAuthenticationToken.authenticated(user.loginName(), null, authorities);
+        Authentication auth = authentication(user.loginName(), user.roles(), user.source(),
+            user.passwordChangeRequired());
         // A new session every time, never a reused one (D-09), and a new CSRF token with it.
         HttpSession existing = request.getSession(false);
         if (existing != null) {
             existing.invalidate();
         }
-        request.getSession(true);
+        HttpSession session = request.getSession(true);
         csrfTokens.saveToken(csrfTokens.generateToken(request), request, response);
         SecurityContext context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(auth);
         SecurityContextHolder.setContext(context);
         contexts.saveContext(context, request, response);
-        LOG.info("login accepted: source={} roles={} masked={}", user.source(), new TreeSet<>(user.roles()), masked);
-        return ResponseEntity.ok(me(auth, user.source()));
+        sessions.register(session, user, user.roles());
+        LOG.info("login accepted: source={} roles={} masked={} passwordChangeRequired={}", user.source(),
+            new TreeSet<>(user.roles()), masked, user.passwordChangeRequired());
+        return ResponseEntity.ok(me(auth));
     }
 
     @GetMapping("/me")
     public MeView me(Authentication auth) {
-        return me(auth, null);
+        Set<String> roles = roles(auth);
+        boolean pending = auth.getAuthorities().stream()
+            .anyMatch(a -> Roles.PASSWORD_CHANGE_PENDING.equals(a.getAuthority()));
+        String source = auth.getDetails() instanceof SessionDetails d ? d.source() : null;
+        return new MeView(auth.getName(), List.copyOf(roles), roles.contains(Roles.REPLAY_VIEWER), source, pending);
+    }
+
+    /**
+     * A local user replaces their password (PO decision Q-47): required after a generated one, allowed at any time. The
+     * current password is checked under the login throttle; on success the session keeps its roles without the pending
+     * mark, under a new session id and a new CSRF token. Neither password is logged or echoed.
+     */
+    @PostMapping("/password")
+    public ResponseEntity<MaskedView> changePassword(@RequestBody PasswordChangeRequest body, Authentication auth,
+                                                     HttpServletRequest request, HttpServletResponse response) {
+        if (!(auth.getDetails() instanceof SessionDetails details)
+            || !LocalUserAuthenticator.SOURCE.equals(details.source())) {
+            return error(HttpStatus.CONFLICT, "NOT_A_LOCAL_USER",
+                "Only a local user changes the password here; directory passwords are changed in the directory.");
+        }
+        String current = body == null || body.currentPassword() == null ? "" : body.currentPassword();
+        String next = body == null || body.newPassword() == null ? "" : body.newPassword();
+        if (current.isEmpty() || current.length() > MAX_PASSWORD || next.isEmpty() || next.length() > MAX_PASSWORD) {
+            return error(HttpStatus.BAD_REQUEST, "INVALID_PASSWORD_REQUEST",
+                "The current and the new password are required.");
+        }
+        String name = auth.getName();
+        if (identity.throttled(name, request.getRemoteAddr())) {
+            return error(HttpStatus.TOO_MANY_REQUESTS, "LOGIN_THROTTLED",
+                "Too many failed logins for this name; try again in 15 minutes.");
+        }
+        if (!localUsers.changeOwnPassword(name, current.toCharArray(), next.toCharArray())) {
+            identity.failed(name, request.getRemoteAddr());
+            LOG.info("password change refused: the current password is wrong");
+            return error(HttpStatus.FORBIDDEN, "CURRENT_PASSWORD_WRONG", "The current password is wrong.");
+        }
+        Authentication changed = authentication(name, roles(auth), details.source(), false);
+        request.changeSessionId();
+        csrfTokens.saveToken(csrfTokens.generateToken(request), request, response);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(changed);
+        SecurityContextHolder.setContext(context);
+        contexts.saveContext(context, request, response);
+        sessions.passwordChanged(request.getSession(false));
+        LOG.info("password changed by a local user");
+        return ResponseEntity.ok(me(changed));
     }
 
     @PostMapping("/logout")
@@ -167,12 +238,27 @@ public class AuthController {
         return ResponseEntity.noContent().build();
     }
 
-    private static MeView me(Authentication auth, String source) {
+    /** The session's authentication: the roles, the source as details and, until the password change, the mark. */
+    private static Authentication authentication(String loginName, Set<String> roles, String source, boolean pending) {
+        List<GrantedAuthority> authorities = new ArrayList<>();
+        new TreeSet<>(roles).forEach(r -> authorities.add(new SimpleGrantedAuthority(Roles.authority(r))));
+        if (pending) {
+            authorities.add(new SimpleGrantedAuthority(Roles.PASSWORD_CHANGE_PENDING));
+        }
+        UsernamePasswordAuthenticationToken auth = UsernamePasswordAuthenticationToken.authenticated(loginName, null,
+            authorities);
+        auth.setDetails(new SessionDetails(source));
+        return auth;
+    }
+
+    private static Set<String> roles(Authentication auth) {
         Set<String> roles = new TreeSet<>();
         for (GrantedAuthority a : auth.getAuthorities()) {
-            roles.add(a.getAuthority().substring("ROLE_".length()));
+            if (a.getAuthority().startsWith("ROLE_")) {
+                roles.add(a.getAuthority().substring("ROLE_".length()));
+            }
         }
-        return new MeView(auth.getName(), List.copyOf(roles), roles.contains(Roles.REPLAY_VIEWER), source);
+        return roles;
     }
 
     private static ResponseEntity<MaskedView> error(HttpStatus status, String reason, String message) {

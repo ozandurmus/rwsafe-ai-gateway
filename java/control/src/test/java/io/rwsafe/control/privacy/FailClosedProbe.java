@@ -32,7 +32,8 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  * MASKING_AND_PRIVACY part C "503 fail-closed" (AGENTS.md 4.10, SR-PRIV-7) over the leak probe's whole inventory: with the
  * estate dictionary or the privacy key missing, a masked session cannot be opened, and a request that already carries
  * the masked role (here injected, as a session opened before the mount disappeared would) gets 503
- * {@code MASKING_UNAVAILABLE} on every read the UI or the server has, and 403 on every mutation; never an unmasked page.
+ * {@code MASKING_UNAVAILABLE} on every read the UI or the server has, and 403 on every mutation and every Administration
+ * read (refused before any data); never an unmasked page.
  * Each subclass is one context with one part missing.
  */
 abstract class FailClosedProbe {
@@ -67,7 +68,15 @@ abstract class FailClosedProbe {
             String method = endpoint.substring(0, endpoint.indexOf(' '));
             String path = endpoint.substring(endpoint.indexOf(' ') + 1).replace("{}", "class.TCKN")
                 .replace("/traffic/class.TCKN", "/traffic/" + UUID.randomUUID());
-            if (method.equals("GET")) {
+            if (method.equals("GET") && path.startsWith("/api/v1/admin/")) {
+                // Administration (PO decision Q-47) is refused to the masked role before any data, key or no key.
+                reads++;
+                MvcResult r = mvc.perform(get(path).with(user("synthetic-masked-probe").roles(Roles.REPLAY_VIEWER)))
+                    .andReturn();
+                if (r.getResponse().getStatus() != 403) {
+                    wrong.add(endpoint + " answered " + r.getResponse().getStatus());
+                }
+            } else if (method.equals("GET")) {
                 reads++;
                 MvcResult r = mvc.perform(get(path + "?ruleId=class.TCKN&action=BLOCK")
                     .with(user("synthetic-masked-probe").roles(Roles.REPLAY_VIEWER))).andReturn();

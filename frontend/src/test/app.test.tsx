@@ -123,7 +123,7 @@ describe('app', () => {
     });
     renderApp('/');
     expect(await screen.findByText('İncelenen işlem')).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Genel bakış' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Genel bakış' })).toBeInTheDocument();
     expect(screen.getAllByText('3.000').length).toBeGreaterThan(0);
     expect(screen.getByText('toplamın %33,3')).toBeInTheDocument();
     expect(screen.getByText('GitHub Copilot')).toBeInTheDocument();

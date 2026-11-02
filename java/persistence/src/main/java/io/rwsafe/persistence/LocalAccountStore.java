@@ -23,6 +23,13 @@ public final class LocalAccountStore {
                 r.get(ENABLED)));
     }
 
+    /** Every local (break-glass) account, by name; the hash stays in the record and is never shown. */
+    public List<LocalAccount> list() {
+        return dsl.select(ACCOUNT_NAME, PASSWORD_HASH, ROLES, ENABLED).from(LOCAL_ACCOUNT).orderBy(ACCOUNT_NAME)
+            .fetch(r -> new LocalAccount(r.get(ACCOUNT_NAME), r.get(PASSWORD_HASH), List.of(r.get(ROLES)),
+                r.get(ENABLED)));
+    }
+
     /** Creates the account unless one with that name exists; true when it was created. */
     public boolean createIfAbsent(LocalAccount account, AuditContext audit) {
         return dsl.transactionResult(cfg -> {

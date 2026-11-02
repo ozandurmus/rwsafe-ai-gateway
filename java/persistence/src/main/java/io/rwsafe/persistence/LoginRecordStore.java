@@ -18,10 +18,18 @@ public final class LoginRecordStore {
         this.dsl = dsl;
     }
 
-    /** @param actorFingerprint {@code USR-<10 hex>} of the login name; {@code source} is {@code ldap} or {@code local} */
+    /**
+     * @param actorFingerprint {@code USR-<10 hex>} of the login name; {@code source} is {@code ldap}, {@code local}
+     *                         (break-glass) or {@code local_user} (V11)
+     */
     public void record(String actorFingerprint, String source, boolean masked) {
+        String reason = switch (source) {
+            case "local" -> "BREAK_GLASS_LOGIN";
+            case "local_user" -> "LOCAL_USER_LOGIN";
+            default -> "DIRECTORY_LOGIN";
+        };
         AuditContext audit = new AuditContext(actorFingerprint, masked ? "session.activate_masked" : "session.activate",
-            source.equals("local") ? "BREAK_GLASS_LOGIN" : "DIRECTORY_LOGIN", UUID.randomUUID().toString());
+            reason, UUID.randomUUID().toString());
         dsl.transaction(cfg -> {
             DSLContext tx = DSL.using(cfg);
             audit.apply(tx);

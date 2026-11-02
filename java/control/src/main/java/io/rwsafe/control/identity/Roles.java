@@ -1,5 +1,6 @@
 package io.rwsafe.control.identity;
 
+import java.util.List;
 import java.util.Set;
 
 /** The MVP roles (MASKING_AND_PRIVACY B1); the rest of B1 arrives with the screens that need them. */
@@ -12,6 +13,13 @@ public final class Roles {
     /** The masked role: every response passes the masking funnel. */
     public static final String REPLAY_VIEWER = "replay_viewer";
     public static final Set<String> ALL = Set.of(SECURITY_ADMIN, PRIVACY_OFFICER, VIEWER, REPLAY_VIEWER);
+    /** {@link #ALL} in display order. */
+    public static final List<String> ORDERED = List.of(SECURITY_ADMIN, PRIVACY_OFFICER, VIEWER, REPLAY_VIEWER);
+    /**
+     * Not a role: the authority of a local user's session until the generated password is replaced (PO decision Q-47).
+     * Such a session reaches only its own sign-in routes ({@link AccessRules}).
+     */
+    public static final String PASSWORD_CHANGE_PENDING = "PASSWORD_CHANGE_PENDING";
 
     private Roles() {
     }
