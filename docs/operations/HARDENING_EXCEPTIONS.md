@@ -46,6 +46,16 @@ production (PRIV-10).
   new connections to the NodePort range on the outside interface. The kube/CNI nat tables are managed by k3s and carry
   the hostPort DNAT for 80/443. So: the ICAP ports and SNMP are closed today and need exactly the rows H-1 (and H-3, H-9
   if chosen); nothing else changes.
+- Correction (2026-11-03, a second masked root pass): the `inet nexus_host` input chain does not see a ServiceLB port.
+  A client's connection to the node's 1344 is rewritten by the hostPort DNAT (the CNI `CNI-HOSTPORT-DNAT` chain) in
+  prerouting and then forwarded to a pod, so it never traverses the input hook; the table has no forward chain. The host
+  therefore did not close 1344 by itself once the ServiceLB Service existed (PO decision Q-46). What closed it from the
+  PO's workstation is the network between the office segment and the host: a connection to 1344 is reset before it
+  reaches the host (the hostPort DNAT counters stayed at zero). Whether the ProxySG appliances' segment may reach 1344 is a
+  network question, answered by the ICAP service's own health check on the proxy (PILOT_RUNBOOK step 15).
+- Since 2026-11-03 the product's own table `inet rwsafe_pilot` (PILOT_RUNBOOK step 11) admits new connections to the
+  node's 1344 only from the three ProxySG addresses (counts verified: 3 addresses, 2 rules); `inet nexus_host` is
+  unchanged.
 - sshd (effective, global): port 22 on all addresses, `PermitRootLogin no`, pubkey yes, password **no**, keyboard-interactive
   **no**, X11/TCP/agent forwarding **no**, `MaxAuthTries 3`, idle timeout 300 s × 2, banner, `AllowUsers` with 3 entries
   (per-user `Match` blocks are not shown by the global view). No rwsafe exception is needed on sshd.
