@@ -7,8 +7,8 @@ The Turkish copy-paste checklist of the Product Owner's remaining steps (10 if n
 
 **Scope.** The corporate web proxy (Broadcom ProxySG, SGOS 7.4.15.x, three appliances, PHASE0_PROXYSG_RECORD F-1)
 sends the AI-category requests of **one test user** to the ICAP engine over **plain ICAP on 1344** (decision Q-28,
-exception H-2: at most 30 days, REQMOD fail-closed). The pilot uses `deploy/rwsafe/overlays/pilot`: no directory
-(break-glass sign-in only), no SIEM, no capture, no group claims, the admin UI through the host's Traefik by the
+exception H-2: at most 30 days, REQMOD fail-closed). The pilot uses `deploy/rwsafe/overlays/pilot`: break-glass sign-in
+first (the directory is set later on the LDAP settings screen; its egress waits for the ranges of step 14.5), no SIEM, no capture, no group claims, the admin UI through the host's Traefik by the
 synthetic name `ui.<product>.local` (one Ingress with one host rule and the pilot's own certificate, step 14), the
 committed policy seed (TCKN redact, secrets block, enforce). neXus is not touched: no neXus object, namespace,
 Ingress, certificate, registry repository or firewall table is read or changed.
@@ -67,6 +67,7 @@ that the root filesystem is below 85 % used (`df -h /`; 69 % on 2026-10-31, HOST
 | H9 | 12 | the ServiceLB Service that opens **1344 on the node** (no node-port range port: `allocateLoadBalancerNodePorts: false`, externalTrafficPolicy Cluster) | step 18 |
 | H10 | 14.1 | the pilot's admin CA in `~/.config/<product>/admin-ca/` on the host (key 0600, never in the cluster) and the TLS Secret `${PRODUCT}-admin-tls` (a leaf for `ui.<product>.local` only) | deleted with the namespace; the CA directory: step 18 |
 | H11 | 14.3 | the Ingress `${PRODUCT}-admin` (one host rule `ui.<product>.local` to `${PRODUCT}-control:8080`, class traefik) and the NetworkPolicy `${PRODUCT}-control-from-traefik` (Traefik's pods to 8080 only) | step 18 |
+| H12 | 14.5 | the NetworkPolicy `${PRODUCT}-control-to-directory` filled with the directory's ranges from `~/.config/<product>/pilot/directory.env` (typed on the host by the PO): the control plane may open TCP 389, 636, 3268 and 3269 to those ranges only | delete the file, render and apply again (the placeholder returns); step 18 |
 | P1 | 15 | **proxy**: a new ICAP service pointing at `<node-address>:1344` | delete the service |
 | P2 | 16 | **proxy**: one policy rule sending only the test user's AI-category requests to it, fail-closed | step 17.6, one step |
 
@@ -92,8 +93,8 @@ python3 -B tools/pilot/test_render.py 2>&1 | tail -1
 python3 -B tools/deploy/manifest_check.py --overlay deploy/rwsafe/overlays/pilot --product "${PRODUCT}" | tail -1
 ```
 
-Expected: `product rwsafe` (or the chosen name); `3`, `3`, `0`; OpenSSL 3.x; `OK`, `OK`; `manifest check PASS ...` (two
-notes about the placeholder digests, which steps 5-6 replace). `kubectl` is the host user's own (the masked inventory
+Expected: `product rwsafe` (or the chosen name); `3`, `3`, `0`; OpenSSL 3.x; `OK`, `OK`; `manifest check PASS ...` (notes
+about the placeholder digests, which steps 5-6 replace, and the directory egress placeholder, which step 14.5 fills). `kubectl` is the host user's own (the masked inventory
 showed the user lists nodes and reads the cluster without root); never prefix it with `sudo`.
 
 ## 2. HOST CHANGE H1: namespaces and isolation objects
@@ -265,14 +266,17 @@ passwords only at its first initialisation.
 python3 -B tools/pilot/render.py --product "${PRODUCT}" \
   --dataplane-digest "$(cat ~/pilot/dataplane.digest)" --control-digest "$(cat ~/pilot/control.digest)" \
   --output ~/pilot/app.json
-python3 -B tools/deploy/manifest_check.py --rendered ~/pilot/app.json --release --product "${PRODUCT}" | tail -1
+python3 -B tools/deploy/manifest_check.py --rendered ~/pilot/app.json --release --pilot --product "${PRODUCT}" | tail -1
 kubectl diff --server-side -f ~/pilot/app.json | grep -c '^+++ '
 ```
 
-Expected: `render: target pilot, product ..., 43 objects (...)`; `manifest check PASS: 43 objects, 4 workloads, 0
-failure(s); product ...` (the fourth workload is the synthetic probe's CronJob, inside the quota); the diff shows the new objects (the 12 isolation objects are unchanged). The rendered file
-holds no Secret, no estate value and no address (the pilot has no directory or SIEM CIDR to patch in), so it may stay on
-disk in `~/pilot/`.
+Expected: `render: target pilot, product ..., 44 objects (...)` and `render: directory egress: no range file; the
+policy keeps its placeholder ...` (or `directory egress: N range(s)` once step 14.5 is done); `manifest check PASS: 44
+objects, 4 workloads, 0 failure(s); product ...` (the fourth workload is the synthetic probe's CronJob, inside the quota;
+a note says the directory egress keeps its placeholder, which reaches nothing); the diff shows the new objects (the 12
+isolation objects are unchanged). The rendered file holds no Secret and no estate value; after step 14.5 it holds the
+directory's ranges, so it stays only in `~/pilot/` (mode 0700, the file 0600; `render.py` refuses an `--output` inside the
+repository and a terminal as the destination of such a render) and step 18 shreds it.
 
 ## 9. HOST CHANGE H7: database and control plane
 
@@ -715,6 +719,53 @@ name from the same value instead of `ui.<product>.local`, and the corporate CA's
 `${PRODUCT}-admin-tls` (`kubectl create secret tls` from files, as `admin_tls.sh` does). The PO then removes the hosts
 line and the pilot CA from his trust store, and `~/.config/<product>/admin-ca/` is shredded (step 18).
 
+### 14.5 Directory reachability (PO on the host, then HOST CHANGE H12)
+
+The LDAP settings screen (Administration > ACCESS > LDAP settings) reaches the directory only through the NetworkPolicy
+`${PRODUCT}-control-to-directory`: TCP 389, 636, 3268 and 3269, to address ranges only. The committed policy holds a
+documentation-range placeholder that reaches nothing, so until this step the screen's Test answers UNREACHABLE. The
+ranges are a real network identifier: they come from the directory or network team, are typed on the host only, and
+never go into the repository, a chat, a ticket or a command argument (AGENTS.md 4.2).
+
+1. **PO, in a terminal on the host, as the account the orchestrator renders from** (the file is read from that
+   account's home; from another account the render does not see it and keeps the placeholder):
+
+   ```bash
+   cd ~/rwsafe && tools/pilot/directory_range.sh
+   ```
+
+   Type each range (an IPv4 CIDR such as a /24, or one address) and Enter; nothing is shown; an empty line ends (at most
+   8). Only RFC 1918 private ranges are accepted (PR 54 review Q-1): a directory in public address space is refused, so
+   a mistyped range can never open the directory ports towards the internet. Expected: `directory ranges: N range(s) written (mode 0600); no value was printed` and `written:
+   ~/.config/<product>/pilot/directory.env`. A refused range is named by its number and rule only (broader than /16,
+   not private, loopback, link-local, multicast, the cluster's own pod or Service range, an overlap) and can be typed
+   again. A symbolic link anywhere in `~/.config/<product>/pilot/` is refused. Running
+   it again replaces the whole list. Tell the orchestrator "ranges written, N".
+
+2. **Orchestrator (HOST CHANGE H12, confirmed on its own)**: the control phase's NetworkPolicies only; the control plane
+   is not restarted (a NetworkPolicy applies to running pods), and no file holding the ranges is written:
+
+   ```bash
+   python3 -B tools/pilot/directory_range.py --check --product "${PRODUCT}"
+   python3 -B tools/pilot/render.py --product "${PRODUCT}" --phase control --kinds NetworkPolicy \
+     | kubectl apply --server-side -f -
+   kubectl -n "${PRODUCT}" get networkpolicy "${PRODUCT}-control-to-directory" \
+     -o jsonpath='{range .spec.egress[*].to[*]}{.ipBlock.cidr}{"\n"}{end}' | grep -vc '^192\.0\.2\.0/24$' || true
+   ```
+
+   Expected: `directory ranges: N range(s) valid`; on stderr `render: directory egress: N range(s)` and the policies
+   `serverside-applied` (only `${PRODUCT}-control-to-directory` changes; the others are unchanged); the last line prints
+   `N` (a count, never an address). `0` means the placeholder is still there: the file was not found in this account's
+   home.
+
+3. **PO, in the admin UI**: Administration > ACCESS > LDAP settings > Test (the saved settings, or the entered ones).
+   Expected: OK, or a class that is no longer about the network (TLS_FAILED with its reason, BIND_REFUSED,
+   USER_NOT_FOUND). UNREACHABLE still: the range or port is not the directory's, or the host's own firewall or the
+   network between blocks it; report the class only.
+
+Undo: shred the file (`shred -u ~/.config/<product>/pilot/directory.env`) and run step 2 again; the render prints `no
+range file` and the placeholder returns.
+
 ## 15. PROXY CHANGE P1 (the PO, proxy console): the ICAP service
 
 Menu paths and option names are **UNVERIFIED (2026-10-31)** for SGOS 7.4.15.x and Management Center 4.1.x; where a
@@ -820,7 +871,8 @@ neXus is touched; they go with the registry GC of SHIP_PIPELINE_PLAN §4, or sta
 
 ## 19. What the pilot does not cover
 
-Secure ICAP (H-2 closes within 30 days: the TLS Secret and 11344 return with the k3s overlay), the directory sign-in,
+Secure ICAP (H-2 closes within 30 days: the TLS Secret and 11344 return with the k3s overlay), directory sign-in
+beyond the LDAP settings screen's test (step 14.5 opens the route),
 SIEM export, redacted capture, group claims, RESPMOD, the in-cluster ICAP e2e and masked-role e2e Jobs of runbook §4
 step 5 (not yet built; the synthetic probe of step 9b covers six REQMOD scenarios and OPTIONS, not the e2e suite), a
 real DNS name and corporate certificate for the admin UI (step 14, "Later"), and more than one user. Each is a later, separate change.

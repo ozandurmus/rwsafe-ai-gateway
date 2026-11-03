@@ -802,6 +802,31 @@ PLATFORM (Notifications, System logs, System). TR/EN catalogues extended.
   applied by Flyway; through Traefik: UI 200, health 200, `/api/v1/admin/directory` and `/api/v1/admin/audit` 401 without a
   session; no ERROR line and no `DIRECTORY_KEY_MISSING` after start. The pilot overlay still has no route to the directory,
   so a connection test answers UNREACHABLE until the PO supplies the directory's address range on the host.
+## Done (pilot directory egress, branch `feature/pilot-directory-egress`)
+
+- The pilot overlay keeps `rwsafe-control-to-directory` (`55-pilot-directory-egress.yaml`): TCP 389, 636, 3268, 3269
+  only, to the documentation-range placeholder, which reaches nothing; only the SIEM egress is still removed.
+- `tools/pilot/render.py` fills it in memory from the host's uncommitted, owner-only `~/.config/<product>/pilot/directory.env`
+  (`DIRECTORY_CIDR=` lines, at most 8; rules in `tools/pilot/directory_range.py` and
+  `manifest_check.directory_block_problem`: IPv4, no prefix shorter than /16, nothing touching loopback, link-local,
+  multicast, reserved or the k3s pod and Service ranges, no overlap) and prints counts only; without the file the
+  placeholder stays (a release note in the pilot, still a failure elsewhere). A filled render is refused for a terminal
+  and for an `--output` inside the repository; `--output` files are written 0600.
+- `tools/pilot/directory_range.sh` (the PO, on the host): `read -rs` per range, checked as typed, writes the 0600 file,
+  prints the count. `manifest_check.py` holds the directory policy to the four ports, TCP, ipBlock peers only (no
+  selector, no `except`), at most 8 blocks. PILOT_RUNBOOK step 14.5 (H12); step 8 now passes `--pilot` to the release
+  check (its single-approval switch and directory note need it).
+- Second review: Argon (`docs/reviews/PR54_2026_11_03_ARGON_PILOT_DIRECTORY_EGRESS.md`), MERGE WITH CORRECTIONS, no
+  P0; fixed with tests: D-01 the directory policy's namespace and control-plane selector, a CIDR with its /prefix, no
+  overlapping blocks, and in the pilot the policy must be rendered and is the only one with an ipBlock; D-02 the range
+  file is written outside the repository only, never through a symbolic link, its temporary file never outlives a
+  failure (and is git-ignored), and it is read once without following a link, owner and mode checked before reading,
+  no path in any message; D-03 `--output` is a regular file only (no link, terminal or device); D-04 the helper drops a
+  trailing CR, refuses a symlinked config directory and never passes the file's path as an argument; the runbook's
+  check takes `--product`. Q-1: RFC 1918 private ranges only (and the documentation placeholder).
+- Open: the PO types the ranges on the host and the orchestrator applies step 14.5; the k3s cluster ranges in the rules
+  are the k3s defaults (HOST-A's withheld cluster-cidr is UNVERIFIED; step 14.2 shows the pod range in use).
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape

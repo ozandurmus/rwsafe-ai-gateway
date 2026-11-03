@@ -15,25 +15,36 @@ For `pilot` and `k3s` the whole render passes the manifest check first (with --r
 given) and nothing is printed otherwise; `build` passes its own build check. The output is one JSON `List` that
 `kubectl apply --server-side -f` reads; `--kinds` keeps only the named kinds (the isolation step applies Namespaces,
 PriorityClasses, ResourceQuotas and LimitRanges before anything else). Nothing here contacts a cluster: kubectl runs
-offline (KUBECONFIG=/dev/null). No value of an estate, Secret or address is ever part of a render.
+offline (KUBECONFIG=/dev/null). No value of an estate or Secret is ever part of a render.
+
+The one exception is the pilot's directory egress (PILOT_RUNBOOK.md step 14.5): the NetworkPolicy
+`<product>-control-to-directory` keeps its documentation-range placeholder (which reaches nothing) unless the host holds
+the uncommitted, owner-only range file (default ~/.config/<product>/pilot/directory.env, tools/pilot/directory_range.py;
+`--directory-env` names another), whose ranges then replace it in memory before the check. Only counts are printed
+("directory egress: 2 range(s)"); a render that holds ranges is never written into the repository or to a terminal.
 
 Standard library only; needs kubectl (or kustomize) on PATH.
 
 Usage: python3 -B tools/pilot/render.py [--target pilot|k3s|build] [--product NAME]
            [--dataplane-digest sha256:<64 hex>] [--control-digest sha256:<64 hex>] [--kinds Kind,Kind]
-           [--phase all|control|icap|servicelb|ingress] [--output FILE]
+           [--phase all|control|icap|servicelb|ingress] [--output FILE] [--directory-env FILE]
        exit 0 rendered, 1 refused (the reason is printed on stderr), 2 usage
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy"))
 import manifest_check as mc  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import directory_range  # noqa: E402
 
 TARGETS = {
     "pilot": mc.REPO_ROOT / "deploy/rwsafe/overlays/pilot",
@@ -285,9 +296,26 @@ def check_build(objects: list[dict], product: str, contracts: dict) -> list[str]
     return failures
 
 
+def directory_policy(objects: list[dict], product: str) -> dict | None:
+    return next((o for o in objects if o.get("kind") == "NetworkPolicy"
+                 and (o.get("metadata") or {}).get("name") == f"{product}{mc.DIRECTORY_POLICY_SUFFIX}"), None)
+
+
+def fill_directory(objects: list[dict], product: str, ranges: list[str]) -> None:
+    """Replaces the placeholder peers of the pilot's directory egress (one rule, the directory ports) with one ipBlock
+    per range, in memory (PILOT_RUNBOOK.md step 14.5); the manifest check then holds them to its directory rules."""
+    policy = directory_policy(objects, product)
+    rules = ((policy or {}).get("spec") or {}).get("egress") or []
+    if policy is None or len(rules) != 1:
+        raise Refused(f"the render holds no {product}{mc.DIRECTORY_POLICY_SUFFIX} NetworkPolicy with one egress rule "
+                      f"to fill")
+    rules[0]["to"] = [{"ipBlock": {"cidr": r}} for r in ranges]
+
+
 def render_target(target: str, product: str, digests: dict[str, str] | None = None,
-                  contracts_file: Path = mc.DEFAULT_CONTRACTS) -> list[dict]:
-    """The renamed, checked objects of a target; raises Refused with the reason."""
+                  contracts_file: Path = mc.DEFAULT_CONTRACTS, directory_ranges: list[str] | None = None) -> list[dict]:
+    """The renamed, checked objects of a target; raises Refused with the reason. `directory_ranges` (pilot only, from
+    directory_range.load) fill the directory egress before the check."""
     refused = mc.validate_product(product)
     if refused:
         raise Refused(f"product name {product!r} {refused}")
@@ -305,6 +333,10 @@ def render_target(target: str, product: str, digests: dict[str, str] | None = No
         if digests and set_digests(objects, digests) == 0:
             raise Refused("no placeholder digest matched the given images")
         objects = mc.rename_objects(objects, product)
+        if directory_ranges:
+            if target != "pilot":
+                raise Refused("directory ranges fill the pilot's render only (the k3s overlay uses the estate patch)")
+            fill_directory(objects, product, directory_ranges)
         release = set(digests) == set(IMAGES)
         # PO decision Q-47: only the pilot target may carry the single-approval switch on.
         failures, _ = mc.check(objects, contracts, release=release, product=product,
@@ -312,6 +344,43 @@ def render_target(target: str, product: str, digests: dict[str, str] | None = No
     if failures:
         raise Refused("the render fails its check:\n" + "\n".join(f"  {f}" for f in failures))
     return objects
+
+
+def default_directory_env(product: str) -> Path:
+    """The host's directory range file (PILOT_RUNBOOK.md step 14.5); tools/pilot/test_render.py points it elsewhere."""
+    return directory_range.default_path(product)
+
+
+def write_output(path: Path, text: str) -> str | None:
+    """Writes the render to a regular file only (PR 54 review D-03): opened without following a symbolic link (so
+    /dev/stdout, a link to a terminal or into the repository is refused), never a terminal, a character device or
+    another kind; truncated and set to 0600 only after those checks. Returns the reason it refused, or None; the reason
+    never holds the path."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), 0o600)
+    except OSError as e:
+        return f"cannot be opened ({directory_range._os_reason(e)}; a symbolic link is refused)"
+    try:
+        if os.isatty(fd) or not stat.S_ISREG(os.fstat(fd).st_mode):
+            return "is not a regular file (a terminal, device or another kind is refused)"
+        os.ftruncate(fd, 0)
+        os.fchmod(fd, 0o600)   # an earlier render's file keeps its mode otherwise
+        data = text.encode("utf-8")
+        while data:
+            data = data[os.write(fd, data):]
+    except OSError as e:
+        return f"cannot be written ({directory_range._os_reason(e)})"
+    finally:
+        os.close(fd)
+    return None
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.expanduser().resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -325,15 +394,43 @@ def main(argv: list[str] | None = None) -> int:
                     help="pilot and k3s only: `control` leaves out the ICAP and ingress objects (PILOT_RUNBOOK.md step "
                          "9), `icap` is the ICAP objects without the LoadBalancer (step 9b), `servicelb` the "
                          "LoadBalancer only (step 12), `ingress` the admin Ingress and Traefik's NetworkPolicy (step 14)")
-    ap.add_argument("--output", type=Path, help="write here instead of stdout")
+    ap.add_argument("--output", type=Path, help="write here (mode 0600) instead of stdout")
+    ap.add_argument("--directory-env", type=Path,
+                    help="pilot only: the directory range file (default ~/.config/<product>/pilot/directory.env; "
+                         "PILOT_RUNBOOK.md step 14.5); without it the directory egress keeps its placeholder")
     args = ap.parse_args(argv)
     product = args.product or mc.default_product()
     digests = {k: v for k, v in (("dataplane", args.dataplane_digest), ("control", args.control_digest)) if v}
     if digests and args.target == "build":
         print("render: digests apply to the pilot and k3s targets only", file=sys.stderr)
         return 2
+    if args.directory_env and args.target != "pilot":
+        print("render: --directory-env applies to the pilot target only", file=sys.stderr)
+        return 2
+    ranges = None
+    if args.target == "pilot":
+        if mc.validate_product(product) is None:
+            range_file = args.directory_env or default_directory_env(product)
+            try:
+                ranges = directory_range.load(range_file)
+            except directory_range.RangeFileError as e:
+                print(f"render refused: the directory range file: {e}", file=sys.stderr)
+                return 1
+            if ranges is None and args.directory_env:
+                print("render refused: the named directory range file does not exist", file=sys.stderr)
+                return 1
+    if ranges:
+        # A render that holds ranges never reaches a terminal or the repository (AGENTS.md 4.2).
+        if args.output is None and sys.stdout.isatty():
+            print("render refused: the render holds the directory ranges; pipe it to kubectl or give --output outside "
+                  "the repository", file=sys.stderr)
+            return 1
+        if args.output is not None and _inside(args.output, mc.REPO_ROOT):
+            print("render refused: the render holds the directory ranges; --output must be outside the repository",
+                  file=sys.stderr)
+            return 1
     try:
-        objects = render_target(args.target, product, digests)
+        objects = render_target(args.target, product, digests, directory_ranges=ranges)
     except Refused as e:
         print(f"render refused: {e}", file=sys.stderr)
         return 1
@@ -357,9 +454,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     text = json.dumps({"apiVersion": "v1", "kind": "List", "items": objects}, indent=1) + "\n"
     if args.output:
-        args.output.write_text(text)
+        refused = write_output(args.output.expanduser(), text)
+        if refused:
+            print(f"render refused: --output {refused}", file=sys.stderr)
+            return 1
     else:
         sys.stdout.write(text)
+    if args.target == "pilot" and directory_policy(objects, product) is not None:
+        if ranges:
+            print(f"render: directory egress: {len(ranges)} range(s)", file=sys.stderr)
+        else:
+            print("render: directory egress: no range file; the policy keeps its placeholder, which reaches nothing "
+                  "(the LDAP settings test answers UNREACHABLE; PILOT_RUNBOOK.md step 14.5)", file=sys.stderr)
     kinds: dict[str, int] = {}
     for o in objects:
         kinds[o.get("kind")] = kinds.get(o.get("kind"), 0) + 1

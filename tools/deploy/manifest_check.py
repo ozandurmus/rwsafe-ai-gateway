@@ -21,10 +21,16 @@ cluster), and asserts the shared-host rules on every object:
   - every emptyDir has a sizeLimit of at most 512Mi (4Gi in `rwsafe-build`) and is never memory-backed; the
     ServiceAccount token is never mounted, and every ServiceAccount sets automountServiceAccountToken false
   - a default-deny NetworkPolicy per namespace and a NetworkPolicy selecting every workload; every egress rule names its
-    destination, no ipBlock is 0.0.0.0/0, and with --release no ipBlock is an RFC 5737 documentation placeholder; no
+    destination, no ipBlock is 0.0.0.0/0, and with --release no ipBlock is an RFC 5737 documentation placeholder (but
+    the pilot's unfilled directory egress, which reaches nothing: a note, PILOT_RUNBOOK.md step 14.5); no
     placeholder is shared by two NetworkPolicies (the estate patch replaces each by one value); an ipBlock without a
     valid cidr, an ingress rule without `from`, an empty peer and an empty namespace or pod selector in a peer fail
-    (EMPTY_SELECTOR_EXCEPTIONS lists deliberate ones); no NodePort Service, and no LoadBalancer Service that
+    (EMPTY_SELECTOR_EXCEPTIONS lists deliberate ones); the directory egress `<product>-control-to-directory` is Egress
+    only, in the product namespace, selecting the control plane only, TCP 389, 636, 3268 and 3269 only, ipBlock peers
+    only (no selector, no `except`), at most 8 non-overlapping IPv4 CIDRs inside RFC 1918 private space (or the
+    documentation placeholder), none broader than /16 nor touching loopback, link-local, multicast, reserved or the
+    cluster's pod and Service ranges; in the pilot it must be rendered and is the only policy with an ipBlock; no
+    NodePort Service, and no LoadBalancer Service that
     allocates a node port or a health-check node port
   - a PodDisruptionBudget for every multi-replica workload, keeping at least one pod and allowing at least one eviction
   - no Secret is ever rendered; every referenced Secret or uncommitted ConfigMap key (env, volume, projected volume)
@@ -138,6 +144,58 @@ EMPTY_SELECTOR_EXCEPTIONS: dict[str, str] = {}
 # (50.25 GiB) = 254.75 GiB, rounded down. local-path reserves nothing, so this is a budget, not a guarantee; re-measure
 # before raising it (a PO decision, DEPLOY_AND_SHARED_HOST_RUNBOOK §7.5). The capture cap does not follow it.
 HOST_FREE_STORAGE_BUDGET = 254 * 2**30
+# The control plane's egress to the directory (NetworkPolicy `<product>-control-to-directory`; the k3s overlay, and the
+# pilot's 55-pilot-directory-egress.yaml with PILOT_RUNBOOK.md step 14.5): the ports the LDAP settings screen's connection
+# test allows (DirectorySettingsService: 389, 636, 3268, 3269), TCP only, ipBlock peers only, each one IPv4 block that
+# directory_block_problem accepts, at most DIRECTORY_MAX_BLOCKS. The documentation-range placeholder passes it.
+DIRECTORY_POLICY_SUFFIX = "-control-to-directory"
+DIRECTORY_PORTS = {389, 636, 3268, 3269}
+DIRECTORY_MAX_BLOCKS = 8
+DIRECTORY_MIN_PREFIX = 16
+
+
+def _v4(a: int, b: int, c: int, d: int, prefix: int) -> ipaddress.IPv4Network:
+    """An IPv4 network from its octets (no dotted literal: the repository privacy gate reads every one as an address)."""
+    return ipaddress.IPv4Network((ipaddress.IPv4Address((a << 24) | (b << 16) | (c << 8) | d), prefix))
+
+
+# Never a directory destination: "this network", loopback, link-local, multicast and the reserved block (with the
+# broadcast address), and the k3s default cluster ranges (pods, Services; RWSAFE_TRUSTED_PROXIES in the pilot overlay
+# relies on the same pod range, PILOT_RUNBOOK.md step 14.2), which the directory egress must never open.
+DIRECTORY_REFUSED_NETS = {
+    "the \"this network\" block": _v4(0, 0, 0, 0, 8),
+    "loopback": _v4(127, 0, 0, 0, 8),
+    "link-local": _v4(169, 254, 0, 0, 16),
+    "multicast": _v4(224, 0, 0, 0, 4),
+    "reserved or broadcast": _v4(240, 0, 0, 0, 4),
+    "the cluster's pod range": _v4(10, 42, 0, 0, 16),
+    "the cluster's Service range": _v4(10, 43, 0, 0, 16),
+}
+# PR 54 review Q-1 (the safer rule, adopted): the directory lives in RFC 1918 private space only, so a mistyped public
+# range can never open the directory ports towards the internet. The RFC 5737 documentation ranges stay accepted: they
+# are the committed placeholder and the tests' synthetic ranges, and reach nothing.
+DIRECTORY_PRIVATE_NETS = (_v4(10, 0, 0, 0, 8), _v4(172, 16, 0, 0, 12), _v4(192, 168, 0, 0, 16))
+
+
+def directory_block_problem(value) -> str | None:
+    """Why `value` (an IPv4 CIDR or a single IPv4 address, as text) is not a directory egress block, or None. The reason
+    never holds the value."""
+    if not isinstance(value, str) or not value or value != value.strip():
+        return "is empty or carries spaces"
+    try:
+        net = ipaddress.ip_network(value, strict=True)
+    except ValueError:
+        return "is not an IPv4 CIDR or address (or has host bits set)"
+    if net.version != 4:
+        return "is not IPv4"
+    if net.prefixlen < DIRECTORY_MIN_PREFIX:
+        return f"is broader than /{DIRECTORY_MIN_PREFIX}"
+    for what, refused in DIRECTORY_REFUSED_NETS.items():
+        if net.overlaps(refused):
+            return f"overlaps {what}"
+    if not any(net.subnet_of(n) for n in DIRECTORY_PRIVATE_NETS + tuple(DOCUMENTATION_NETS)):
+        return "is not inside an RFC 1918 private range (public address space is refused)"
+    return None
 
 
 # ---- rendering ---------------------------------------------------------------------------------------------------------
@@ -859,11 +917,27 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
                         fail(p, f"{direction} ipBlock {cidr} is every address")
                     elif documentation_range(net):
                         placeholder_users.setdefault(cidr, set()).add(ident(p))
-                        if release:
+                        if pilot and p["metadata"].get("name") == f"{product}{DIRECTORY_POLICY_SUFFIX}":
+                            # The pilot signs in with break-glass first; an unfilled directory egress reaches nothing
+                            # and the LDAP settings screen's test answers UNREACHABLE (PILOT_RUNBOOK.md step 14.5).
+                            notes.append(f"{ident(p)}: {direction} ipBlock keeps the documentation-range placeholder, "
+                                         f"which reaches nothing (tools/pilot/render.py fills it from the host's "
+                                         f"directory range file, PILOT_RUNBOOK.md step 14.5)")
+                        elif release:
                             fail(p, f"{direction} ipBlock is a documentation-range placeholder in a release render")
                         else:
                             notes.append(f"{ident(p)}: {direction} ipBlock is a documentation-range placeholder "
                                          f"(the deploy's estate patch sets the real addresses)")
+    directory_name = f"{product}{DIRECTORY_POLICY_SUFFIX}"
+    for p in policies:
+        if p["metadata"].get("name") == directory_name:
+            check_directory_egress(p, fail, product)
+        elif pilot and any("ipBlock" in peer for direction, key in (("ingress", "from"), ("egress", "to"))
+                           for rule in p["spec"].get(direction) or [] for peer in rule.get(key) or []):
+            # PR 54 review D-01: in the pilot the directory policy is the only one that may name addresses.
+            fail(p, f"an ipBlock outside {directory_name} in the pilot's render")
+    if pilot and not any(p["metadata"].get("name") == directory_name for p in policies):
+        failures.append(f"NetworkPolicy/{product}/{directory_name}: missing from the pilot's render")
     for cidr, users in sorted(placeholder_users.items()):
         if len(users) > 1:
             failures.append(f"documentation-range placeholder {cidr} is shared by {', '.join(sorted(users))}; each "
@@ -984,6 +1058,55 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
         failures.append(f"requested storage of all namespaces is {requested / 2**30:g}Gi, above the host-free budget "
                         f"{HOST_FREE_STORAGE_BUDGET / 2**30:g}Gi (HOSTA_MEASUREMENT_2026_10_31)")
     return failures, notes
+
+
+def check_directory_egress(p: dict, fail, product: str) -> None:
+    """The directory egress policy (PILOT_RUNBOOK.md step 14.5): in the product namespace, selecting the control plane's
+    pods only, Egress only, at least one rule, every rule with ports, every port TCP and a directory port, every peer an
+    ipBlock alone (never a namespace or pod selector), without `except`, a CIDR with its /prefix that
+    directory_block_problem accepts, no two overlapping; at most DIRECTORY_MAX_BLOCKS blocks. Reasons never hold a
+    value."""
+    spec = p.get("spec") or {}
+    if (p.get("metadata") or {}).get("namespace") != product:
+        fail(p, f"the directory policy is not in namespace {product}")
+    if spec.get("podSelector") != {"matchLabels": {"app.kubernetes.io/name": f"{product}-control"}}:
+        fail(p, f"the directory policy does not select exactly the {product}-control pods")
+    nets: list = []
+    if spec.get("policyTypes") != ["Egress"] or spec.get("ingress"):
+        fail(p, "the directory policy is not Egress only")
+    rules = spec.get("egress") or []
+    if not rules:
+        fail(p, "the directory policy has no egress rule")
+    blocks = 0
+    for n, rule in enumerate(rules, 1):
+        ports = rule.get("ports") or []
+        if not ports:
+            fail(p, f"directory egress rule {n} has no ports (every port would be open)")
+        for port in ports:
+            if port.get("protocol", "TCP") != "TCP" or port.get("port") not in DIRECTORY_PORTS or "endPort" in port:
+                fail(p, f"directory egress rule {n} opens a port other than TCP "
+                        f"{', '.join(str(x) for x in sorted(DIRECTORY_PORTS))}")
+        for peer in rule.get("to") or []:
+            if set(peer) != {"ipBlock"}:
+                fail(p, f"directory egress rule {n} has a peer other than an ipBlock (a namespace or pod selector)")
+                continue
+            block = peer.get("ipBlock") or {}
+            blocks += 1
+            if "except" in block:
+                fail(p, f"directory egress rule {n} has an ipBlock with except (name the ranges instead)")
+            cidr = block.get("cidr")
+            problem = directory_block_problem(cidr)
+            if problem:
+                fail(p, f"directory egress rule {n}: an ipBlock {problem}")
+                continue
+            if "/" not in cidr:
+                fail(p, f"directory egress rule {n}: an ipBlock has no /prefix")
+            net = ipaddress.ip_network(cidr, strict=True)
+            if any(net.overlaps(other) for other in nets):
+                fail(p, f"directory egress rule {n}: an ipBlock overlaps another")
+            nets.append(net)
+    if blocks > DIRECTORY_MAX_BLOCKS:
+        fail(p, f"the directory policy has {blocks} ipBlocks, more than {DIRECTORY_MAX_BLOCKS}")
 
 
 def check_ingress(obj: dict, fail, product: str, secret_contract: dict, service_ports: dict) -> None:

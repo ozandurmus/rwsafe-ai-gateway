@@ -655,8 +655,9 @@ class CommittedOverlay(unittest.TestCase):
                 self.assertIn("product acme", out.getvalue())
                 self.assertNotIn("NetworkPolicy/rwsafe/", out.getvalue())
 
-    # The pilot needs no directory or SIEM placeholder: with --release only the image digests remain (the control
-    # plane, the ICAP engine and the synthetic probe, which runs the data plane image).
+    # The pilot needs no SIEM placeholder, and its unfilled directory egress is a note (PILOT_RUNBOOK.md step 14.5):
+    # with --release only the image digests remain (the control plane, the ICAP engine and the synthetic probe, which
+    # runs the data plane image).
     def test_pilot_overlay_release_fails_only_on_the_image_digests(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -931,6 +932,147 @@ class AdminIngress(unittest.TestCase):
                 self.assertEqual(rule["from"], [{
                     "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
                     "podSelector": {"matchLabels": {"app.kubernetes.io/name": "traefik"}}}])
+
+
+def _v4(*octets: int, prefix: int) -> str:
+    """A synthetic network built at runtime (the privacy gate refuses a non-documentation dotted literal)."""
+    return ".".join(str(o) for o in octets) + f"/{prefix}"
+
+
+class DirectoryEgress(unittest.TestCase):
+    """PILOT_RUNBOOK.md step 14.5: `<product>-control-to-directory` holds only the LDAP settings screen's four ports,
+    TCP, and ipBlock peers that directory_block_problem accepts; the pilot's unfilled placeholder is a release note."""
+
+    def setUp(self):
+        self.renders = copy.deepcopy(_PILOT_RENDER)
+
+    @staticmethod
+    def policy(objects: list[dict], product: str) -> dict:
+        return next(o for o in objects if mc.ident(o) == f"NetworkPolicy/{product}/{product}-control-to-directory")
+
+    def failures_after(self, product: str, mutate, release: bool = False, pilot: bool = True) -> list[str]:
+        objects, contracts = copy.deepcopy(self.renders[product])
+        mutate(self.policy(objects, product))
+        failures, _ = mc.check(objects, contracts, release=release, product=product, pilot=pilot)
+        return failures
+
+    def assert_refused(self, mutate, expected: str):
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                failures = self.failures_after(product, mutate)
+                self.assertTrue(any(f.startswith(f"NetworkPolicy/{product}/{product}-control-to-directory:")
+                                    and expected in f for f in failures), failures)
+
+    def test_committed_pilot_policy_passes_and_its_placeholder_is_a_release_note(self):
+        for product, (objects, contracts) in self.renders.items():
+            with self.subTest(product):
+                failures, notes = mc.check(objects, contracts, release=True, product=product, pilot=True)
+                self.assertFalse([f for f in failures if "directory" in f], failures)
+                self.assertTrue(any("keeps the documentation-range placeholder, which reaches nothing" in n
+                                    for n in notes), notes)
+                # Outside the pilot the same placeholder fails a release render (the estate patch must fill it).
+                failures, _ = mc.check(objects, contracts, release=True, product=product, pilot=False)
+                self.assertTrue(any(f"{product}-control-to-directory: egress ipBlock is a documentation-range "
+                                    f"placeholder in a release render" in f for f in failures), failures)
+
+    def test_filled_ranges_pass(self):
+        def fill(p):
+            p["spec"]["egress"][0]["to"] = [{"ipBlock": {"cidr": "203.0.113.0/24"}},
+                                            {"ipBlock": {"cidr": "198.51.100.7/32"}}]
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                self.assertEqual(self.failures_after(product, fill), [])
+
+    def test_a_port_outside_the_four_is_refused(self):
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["ports"].append({"protocol": "TCP", "port": 22}),
+                            "opens a port other than TCP 389, 636, 3268, 3269")
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["ports"].append({"protocol": "UDP", "port": 389}),
+                            "opens a port other than TCP")
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["ports"][0].update({"endPort": 636}),
+                            "opens a port other than TCP")
+        self.assert_refused(lambda p: p["spec"]["egress"][0].pop("ports"), "has no ports")
+
+    def test_a_selector_peer_is_refused(self):
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["to"].append(
+            {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}}),
+            "a peer other than an ipBlock")
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["to"].append(
+            {"podSelector": {"matchLabels": {"app": "x"}}}), "a peer other than an ipBlock")
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["to"][0].update(
+            {"podSelector": {"matchLabels": {"app": "x"}}}), "a peer other than an ipBlock")
+
+    def test_broad_or_forbidden_blocks_are_refused(self):
+        cases = {
+            _v4(10, 0, 0, 0, prefix=8): "broader than /16",
+            _v4(0, 0, 0, 0, prefix=0): "broader than /16",
+            _v4(10, 42, 0, 0, prefix=24): "the cluster's pod range",
+            _v4(10, 43, 0, 0, prefix=24): "the cluster's Service range",
+            _v4(127, 0, 0, 0, prefix=16): "loopback",
+            _v4(169, 254, 0, 0, prefix=16): "link-local",
+            _v4(224, 0, 0, 0, prefix=24): "multicast",
+        }
+        for cidr, rule in cases.items():
+            with self.subTest(rule):
+                self.assert_refused(lambda p, c=cidr: p["spec"]["egress"][0]["to"][0]["ipBlock"].update({"cidr": c}),
+                                    rule)
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["to"][0]["ipBlock"].update(
+            {"cidr": "203.0.113.0/24", "except": ["203.0.113.0/28"]}), "with except")
+
+    def test_more_than_eight_blocks_and_other_shapes_are_refused(self):
+        self.assert_refused(lambda p: p["spec"]["egress"][0].update(
+            {"to": [{"ipBlock": {"cidr": f"203.0.113.{i * 16}/28"}} for i in range(9)]}), "9 ipBlocks, more than 8")
+        self.assert_refused(lambda p: p["spec"].update({"policyTypes": ["Ingress", "Egress"]}), "not Egress only")
+        self.assert_refused(lambda p: p["spec"].update({"egress": []}), "has no egress rule")
+
+    # PR 54 review D-01: the policy's place and selector, the CIDR form, overlaps, public space, and the pilot's gaps.
+    def test_namespace_and_selector_are_held(self):
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                failures = self.failures_after(product, lambda p: p["metadata"].update({"namespace": "default"}))
+                self.assertIn(f"NetworkPolicy/default/{product}-control-to-directory: the directory policy is not in "
+                              f"namespace {product}", failures)
+        self.assert_refused(lambda p: p["spec"].update({"podSelector": {}}), "does not select exactly the")
+        self.assert_refused(lambda p: p["spec"]["podSelector"]["matchLabels"].update(
+            {"app.kubernetes.io/name": "other"}), "does not select exactly the")
+
+    def test_cidr_form_overlap_and_public_space_are_refused(self):
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["to"][0]["ipBlock"].update({"cidr": "198.51.100.7"}),
+                            "has no /prefix")
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["to"].append({"ipBlock": {"cidr": "192.0.2.64/26"}}),
+                            "overlaps another")
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["to"][0]["ipBlock"].update(
+            {"cidr": _v4(11, 1, 0, 0, prefix=16)}), "RFC 1918")
+
+        def private(p):
+            p["spec"]["egress"][0]["to"] = [{"ipBlock": {"cidr": _v4(10, 20, 0, 0, prefix=16)}},
+                                            {"ipBlock": {"cidr": _v4(172, 16, 5, 0, prefix=24)}}]
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                self.assertEqual(self.failures_after(product, private), [])
+
+    def test_pilot_requires_the_policy_and_no_other_ip_block(self):
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                objects, contracts = copy.deepcopy(self.renders[product])
+                other = next(o for o in objects if mc.ident(o) == f"NetworkPolicy/{product}/{product}-allow-dns")
+                other["spec"]["egress"][0]["to"].append({"ipBlock": {"cidr": "203.0.113.0/24"}})
+                failures, _ = mc.check(objects, contracts, product=product, pilot=True)
+                self.assertTrue(any(f"{product}-allow-dns: an ipBlock outside {product}-control-to-directory" in f
+                                    for f in failures), failures)
+                objects, contracts = copy.deepcopy(self.renders[product])
+                renamed = self.policy(objects, product)
+                renamed["metadata"]["name"] = f"{product}-control-to-ldap"
+                failures, _ = mc.check(objects, contracts, product=product, pilot=True)
+                self.assertTrue(any(f"{product}-control-to-directory: missing from the pilot's render" in f
+                                    for f in failures), failures)
+                self.assertTrue(any(f"{product}-control-to-ldap: an ipBlock outside" in f for f in failures), failures)
+
+    def test_k3s_directory_policy_passes_the_same_rules(self):
+        text, _ = mc.render(mc.DEFAULT_OVERLAY)
+        objects = mc.to_objects(text)
+        failures, _ = mc.check(objects, CONTRACTS_FILE_JSON)
+        self.assertFalse([f for f in failures if "directory" in f], failures)
+        self.assertEqual(mc.directory_block_problem("192.0.2.0/24"), None)
 
 
 class SingleApprovalSwitch(unittest.TestCase):

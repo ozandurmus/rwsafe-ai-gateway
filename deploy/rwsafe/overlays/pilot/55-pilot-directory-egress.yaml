@@ -1,0 +1,22 @@
+# The directory (Administration > LDAP settings, PO decision Q-47; PILOT_RUNBOOK.md step 14.5) by address only: the
+# four ports the screen's connection test allows (DirectorySettingsService: 389 LDAP, 636 LDAPS, 3268 and 3269 the global
+# catalogue), TCP only. The committed CIDR is the k3s overlay's RFC 5737 documentation placeholder, which reaches nothing.
+# tools/pilot/render.py replaces it in memory with the ranges of the uncommitted, owner-only file
+# ~/.config/<product>/pilot/directory.env on the host (written by tools/pilot/directory_range.sh, the PO only); without
+# that file the placeholder stays, the screen's test answers UNREACHABLE and nothing is opened. A range is never
+# committed (AGENTS.md 4.2, 8). tools/deploy/manifest_check.py holds this policy to the four ports and ipBlock peers.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-control-to-directory
+  namespace: rwsafe
+spec:
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.0/24
+      ports:
+        - { protocol: TCP, port: 389 }
+        - { protocol: TCP, port: 636 }
+        - { protocol: TCP, port: 3268 }
+        - { protocol: TCP, port: 3269 }
