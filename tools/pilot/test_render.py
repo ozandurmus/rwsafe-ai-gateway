@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import directory_range  # noqa: E402
+import icap_clients  # noqa: E402
 import proxy_settings  # noqa: E402
 import render  # noqa: E402
 
@@ -26,7 +27,9 @@ mc = render.mc
 # Hermetic: never the host's own directory range file (PILOT_RUNBOOK.md step 14.5), which may exist where this runs.
 _NO_RANGE_DIR = tempfile.TemporaryDirectory()
 render.default_directory_env = lambda product: Path(_NO_RANGE_DIR.name) / "absent" / "directory.env"
+render.default_icap_clients_env = lambda product: Path(_NO_RANGE_DIR.name) / "absent" / "icap-clients.env"
 HELPER = Path(__file__).resolve().parent / "directory_range.sh"
+ICAP_HELPER = Path(__file__).resolve().parent / "icap_clients.sh"
 DIGESTS = {"dataplane": "sha256:" + "a" * 64, "control": "sha256:" + "b" * 64}
 _BUILD = {p: render.render_target("build", p) for p in ("rwsafe", "acme")}
 _CONTRACTS = {p: mc.rename_contracts(json.loads(mc.DEFAULT_CONTRACTS.read_text()), p) for p in ("rwsafe", "acme")}
@@ -160,7 +163,7 @@ class Phases(unittest.TestCase):
                 self.assertEqual([mc.ident(o) for o in servicelb], [f"Service/{product}/{product}-icap-lb"])
                 self.assertFalse(any(o["metadata"]["name"].startswith(f"{product}-icap") for o in control))
                 self.assertEqual({o["metadata"]["name"] for o in icap if o["kind"] != "ConfigMap"} | {"cm"}, {
-                    f"{product}-icap", f"{product}-icap-from-servicelb", f"{product}-icap-metrics-from-scraper",
+                    f"{product}-icap", f"{product}-icap-from-proxies", f"{product}-icap-metrics-from-scraper",
                     f"{product}-icap-probe", "cm"})
                 self.assertEqual({o["kind"] for o in icap if o["metadata"]["name"] == f"{product}-icap-probe"},
                                  {"ServiceAccount", "CronJob", "NetworkPolicy"})
@@ -506,6 +509,282 @@ class DirectoryRangeHelper(unittest.TestCase):
         res = subprocess.run(["bash", str(HELPER), "192.0.2.0/24"], capture_output=True, text=True, timeout=60)
         self.assertEqual(res.returncode, 2)
         self.assertNotIn("192.0.2", res.stderr)
+
+
+# Synthetic private addresses, built at runtime (the privacy gate refuses a non-documentation dotted literal).
+PROXIES = [v4(10, 20, 30, 41), v4(10, 20, 30, 42), v4(172, 16, 5, 9)]
+# What the ICAP client rules refuse, with the rule each one breaks.
+BAD_PROXIES = {
+    "192.0.2.10": "not a private (RFC 1918)",
+    "198.51.100.7": "not a private (RFC 1918)",
+    v4(8, 8, 4, 4): "not a private (RFC 1918)",
+    v4(10, 20, 30, 0, prefix=24): "not a single IPv4 address",
+    v4(10, 20, 30, 41, prefix=32): "not a single IPv4 address",
+    v4(10, 42, 0, 7): "the cluster's pod range",
+    v4(10, 43, 0, 10): "the cluster's Service range",
+    v4(127, 0, 0, 1): "loopback",
+    v4(169, 254, 1, 1): "link-local",
+    v4(224, 0, 0, 1): "multicast",
+    v4(255, 255, 255, 255): "reserved or broadcast",
+    v4(0, 0, 0, 0): "\"this network\"",
+    "fd00::1": "not IPv4",
+    "proxy-one.example.invalid": "not a single IPv4 address",
+    " " + v4(10, 20, 30, 41): "spaces",
+}
+
+
+def clients_file(directory: str, text: str, mode: int = 0o600) -> Path:
+    path = Path(directory) / "icap-clients.env"
+    path.write_text(text)
+    os.chmod(path, mode)
+    return path
+
+
+def clients_rule(objects: list[dict], product: str) -> dict:
+    return render.icap_clients_policy(objects, product)["spec"]["ingress"][0]
+
+
+ICAP_POLICIES = ["--product", "acme", "--phase", "icap", "--kinds", "NetworkPolicy"]
+
+
+class IcapClients(unittest.TestCase):
+    """PILOT_RUNBOOK.md step 11.5: the ICAP pods admit TCP 1344 from the ProxySG addresses only; the committed policy
+    holds a documentation /32 placeholder that admits no proxy; the render fills it from the host's owner-only file and
+    prints counts only."""
+
+    def test_committed_pilot_policy_is_the_placeholder_on_1344(self):
+        for product, objects in _PILOT.items():
+            with self.subTest(product):
+                policy = render.icap_clients_policy(objects, product)
+                self.assertEqual(policy["metadata"]["namespace"], product)
+                self.assertEqual(policy["spec"]["policyTypes"], ["Ingress"])
+                self.assertEqual(policy["spec"]["podSelector"],
+                                 {"matchLabels": {"app.kubernetes.io/name": f"{product}-icap"}})
+                rule = clients_rule(objects, product)
+                self.assertEqual(rule["from"], [{"ipBlock": {"cidr": mc.ICAP_CLIENTS_PLACEHOLDER}}])
+                self.assertEqual(rule["ports"], [{"protocol": "TCP", "port": 1344}])
+                # the ICAP phase applies it (steps 9b and 11.5), and the ServiceLB-pod policy is gone
+                self.assertIn(policy, render.select_phase(objects, product, "icap"))
+                names = {o["metadata"]["name"] for o in objects if o["kind"] == "NetworkPolicy"}
+                self.assertNotIn(f"{product}-icap-from-servicelb", names)
+                self.assertIn(f"{product}-icap", names)
+
+    def test_render_target_fills_the_addresses(self):
+        objects = render.render_target("pilot", "acme", DIGESTS, icap_addresses=PROXIES)
+        self.assertEqual(clients_rule(objects, "acme")["from"], [{"ipBlock": {"cidr": f"{a}/32"}} for a in PROXIES])
+
+    def test_render_target_refuses_bad_addresses_through_the_check(self):
+        for bad in (v4(10, 42, 0, 7), "192.0.2.10"):
+            with self.subTest(bad), self.assertRaises(render.Refused) as ctx:
+                render.render_target("pilot", "rwsafe", DIGESTS, icap_addresses=[bad])
+            self.assertNotIn(bad, str(ctx.exception))
+        with self.assertRaises(render.Refused):
+            render.render_target("k3s", "rwsafe", icap_addresses=PROXIES[:1])
+
+    def test_main_with_a_file_prints_only_the_count(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out_dir:
+            path = clients_file(d, "# synthetic\r\n" + "".join(f"PROXY_ADDR={a}\n" for a in PROXIES) + "\n")
+            target = Path(out_dir) / "app.json"
+            rc, out, err = run(["--product", "acme", "--dataplane-digest", DIGESTS["dataplane"],
+                                "--control-digest", DIGESTS["control"],
+                                "--icap-clients-env", str(path), "--output", str(target)])
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(out, "")
+            self.assertIn("render: icap clients: 3 address(es)", err)
+            for a in PROXIES:
+                self.assertNotIn(a, err)
+            self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+            items = json.loads(target.read_text())["items"]
+            self.assertEqual(clients_rule(items, "acme")["from"], [{"ipBlock": {"cidr": f"{a}/32"}} for a in PROXIES])
+            check_out = io.StringIO()
+            with contextlib.redirect_stdout(check_out):
+                rc = mc.main(["--rendered", str(target), "--release", "--product", "acme", "--pilot"])
+            self.assertEqual(rc, 0, check_out.getvalue())
+            # The ICAP phase's NetworkPolicies alone need no digests (step 11.5).
+            rc, out, err = run(ICAP_POLICIES + ["--icap-clients-env", str(path)])
+            self.assertEqual(rc, 0, err)
+            self.assertIn("icap clients: 3 address(es)", err)
+            items = json.loads(out)["items"]
+            self.assertTrue(items and all(o["kind"] == "NetworkPolicy" for o in items))
+            self.assertIn("NetworkPolicy/acme/acme-icap-from-proxies", [mc.ident(o) for o in items])
+
+    def test_main_without_the_file_keeps_the_placeholder_with_a_note(self):
+        rc, out, err = run(ICAP_POLICIES)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("icap clients: no ICAP clients file; the policy keeps its placeholder, which admits no proxy", err)
+        self.assertEqual(clients_rule(json.loads(out)["items"], "acme")["from"],
+                         [{"ipBlock": {"cidr": mc.ICAP_CLIENTS_PLACEHOLDER}}])
+        rc, _, err = run(["--product", "acme", "--phase", "ingress"])
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("icap clients", err)
+
+    def test_main_refuses_an_unusable_file_without_printing_a_value(self):
+        a, b = PROXIES[0], PROXIES[1]
+        cases = {
+            "loose mode": (f"PROXY_ADDR={a}\n", 0o640, "group or others"),
+            "unknown key": (f"PROXY={a}\n", 0o600, "line 1 is not PROXY_ADDR"),
+            "empty": ("# nothing\n", 0o600, "no PROXY_ADDR value"),
+            "repeat": (f"PROXY_ADDR={a}\nPROXY_ADDR={b}\nPROXY_ADDR={a}\n", 0o600, "value 3 repeats value 1"),
+            "too many": ("".join(f"PROXY_ADDR={v4(10, 20, 31, i)}\n" for i in range(1, 10)), 0o600, "more than 8"),
+        }
+        for bad, rule in BAD_PROXIES.items():
+            cases[rule + bad] = (f"PROXY_ADDR={bad}\n", 0o600, rule)
+        for name, (text, mode, rule) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                path = clients_file(d, text, mode)
+                rc, out, err = run(ICAP_POLICIES + ["--icap-clients-env", str(path)])
+                self.assertEqual(rc, 1, err)
+                self.assertEqual(out, "")
+                self.assertIn(rule, err)
+                for line in text.splitlines():
+                    value = line.partition("=")[2].strip()
+                    if value:
+                        self.assertNotIn(value, err)
+
+    def test_main_refuses_a_symlink_a_missing_named_file_and_another_target(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = clients_file(d, f"PROXY_ADDR={PROXIES[0]}\n")
+            link = Path(d) / "link.env"
+            link.symlink_to(real)
+            rc, _, err = run(ICAP_POLICIES + ["--icap-clients-env", str(link)])
+            self.assertEqual(rc, 1)
+            self.assertIn("not a regular file", err)
+            rc, _, err = run(ICAP_POLICIES + ["--icap-clients-env", str(Path(d) / "missing.env")])
+            self.assertEqual(rc, 1)
+            self.assertIn("does not exist", err)
+            rc, _, _ = run(["--target", "k3s", "--icap-clients-env", str(real)])
+            self.assertEqual(rc, 2)
+
+    def test_a_filled_render_is_never_written_into_the_repository_or_a_device(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = clients_file(d, f"PROXY_ADDR={PROXIES[0]}\n")
+            target = mc.REPO_ROOT / "build" / "never-written.json"
+            rc, out, err = run(ICAP_POLICIES + ["--icap-clients-env", str(path), "--output", str(target)])
+            self.assertEqual(rc, 1)
+            self.assertIn("the ICAP client addresses; --output must be outside the repository", err)
+            self.assertFalse(target.exists())
+            # A symbolic link, a device and /dev/stdout are refused as --output before anything is written.
+            victim = Path(d) / "victim.json"
+            victim.write_text("kept\n")
+            link = Path(d) / "out.json"
+            link.symlink_to(victim)
+            for output in (str(link), os.devnull, "/dev/stdout"):
+                with self.subTest(output):
+                    rc, out, err = run(ICAP_POLICIES + ["--icap-clients-env", str(path), "--output", output])
+                    self.assertEqual(rc, 1, err)
+                    self.assertIn("not a regular file", err)
+                    self.assertEqual(out, "")
+            self.assertEqual(victim.read_text(), "kept\n")
+
+    def test_the_committed_tree_holds_no_clients_file(self):
+        tracked = subprocess.run(["git", "-C", str(mc.REPO_ROOT), "ls-files"], capture_output=True, text=True)
+        if tracked.returncode != 0:
+            self.skipTest("not a git checkout")
+        self.assertFalse([f for f in tracked.stdout.splitlines() if f.endswith("icap-clients.env")])
+
+
+class IcapClientsHelper(unittest.TestCase):
+    """tools/pilot/icap_clients.sh (the PO, on the host): reads addresses without echo, checks each, writes the 0600
+    file, prints only the count; tools/pilot/icap_clients.py and host_value_file.py hold the rules."""
+
+    def helper(self, typed: str, dest: Path | None = None, home: str | None = None) -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items() if k not in ("PRODUCT", "ICAP_CLIENTS_ENV")}
+        if dest is not None:
+            env["ICAP_CLIENTS_ENV"] = str(dest)
+        if home is not None:
+            env["HOME"] = home
+        return subprocess.run(["bash", str(ICAP_HELPER)], input=typed, capture_output=True, text=True, env=env,
+                              timeout=60)
+
+    def test_rules(self):
+        self.assertEqual(icap_clients.entry_problems(PROXIES), [])
+        for bad, rule in BAD_PROXIES.items():
+            with self.subTest(rule):
+                problems = icap_clients.entry_problems([bad])
+                self.assertTrue(problems and rule in problems[0], problems)
+                self.assertNotIn(bad.strip(), " ".join(problems))
+        self.assertEqual(icap_clients.next_problems(PROXIES[:1], PROXIES[0]), ["repeats an address typed earlier"])
+
+    def test_helper_writes_the_accepted_addresses_and_prints_the_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / "icap-clients.env"
+            refused = v4(10, 42, 1, 1)
+            typed = "\n".join([PROXIES[0] + "\r", refused, PROXIES[1], PROXIES[0], "192.0.2.10", ""]) + "\n"
+            res = self.helper(typed, dest)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("2 address(es) written", res.stdout)
+            for n in (2, 4, 5):
+                self.assertIn(f"address {n} not taken", res.stderr)
+            for value in PROXIES + [refused, "192.0.2.10"]:
+                self.assertNotIn(value, res.stdout + res.stderr)
+            self.assertEqual(os.stat(dest).st_mode & 0o777, 0o600)
+            self.assertEqual(icap_clients.load(dest), PROXIES[:2])
+            self.assertEqual(sorted(os.listdir(d)), ["icap-clients.env"])   # no temporary file left behind
+            res = self.helper(PROXIES[2] + "\n", dest)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(icap_clients.load(dest), PROXIES[2:])
+
+    def test_helper_writes_nothing_without_an_accepted_address(self):
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / "icap-clients.env"
+            res = self.helper(v4(127, 0, 0, 1) + "\n\n", dest)
+            self.assertEqual(res.returncode, 1)
+            self.assertIn("no address accepted", res.stderr)
+            self.assertFalse(dest.exists())
+
+    def test_helper_takes_at_most_eight(self):
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / "icap-clients.env"
+            res = self.helper("".join(f"{v4(192, 168, 7, i)}\n" for i in range(1, 11)), dest)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("8 address(es) written", res.stdout)
+            self.assertEqual(len(icap_clients.load(dest)), 8)
+
+    def test_helper_default_path_and_a_symlinked_config_directory(self):
+        with tempfile.TemporaryDirectory() as home:
+            res = self.helper(PROXIES[0] + "\n", home=home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            product = mc.default_product()
+            dest = Path(home) / ".config" / product / "pilot" / "icap-clients.env"
+            self.assertEqual(icap_clients.load(dest), PROXIES[:1])
+            self.assertEqual(os.stat(dest.parent).st_mode & 0o777, 0o700)
+            self.assertIn(f"~/.config/{product}/pilot/icap-clients.env", res.stdout)
+            self.assertNotIn(home, res.stdout + res.stderr)
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as elsewhere:
+            (Path(home) / ".config").symlink_to(elsewhere)
+            res = self.helper(PROXIES[0] + "\n", home=home)
+            self.assertEqual(res.returncode, 1)
+            self.assertIn("symbolic link", res.stderr)
+            self.assertEqual(os.listdir(elsewhere), [])
+
+    def test_writer_refuses_the_repository_a_symlinked_target_or_directory(self):
+        with self.assertRaises(icap_clients.Error) as ctx:
+            icap_clients.write(mc.REPO_ROOT / "build" / "icap-clients.env", PROXIES[:1])
+        self.assertIn("inside the repository", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as real:
+            victim = Path(real) / "victim"
+            victim.write_text("kept\n")
+            link = Path(d) / "icap-clients.env"
+            link.symlink_to(victim)
+            with self.assertRaises(icap_clients.Error):
+                icap_clients.write(link, PROXIES[:1])
+            self.assertEqual(victim.read_text(), "kept\n")
+            linked_dir = Path(d) / "pilot"
+            linked_dir.symlink_to(real)
+            with self.assertRaises(icap_clients.Error):
+                icap_clients.write(linked_dir / "icap-clients.env", PROXIES[:1])
+            self.assertEqual(sorted(os.listdir(real)), ["victim"])
+            # A stale temporary file (or a link in its place) is removed, never followed.
+            target = Path(d) / "fresh.env"
+            (Path(d) / ".fresh.env.incoming").symlink_to(victim)
+            self.assertEqual(icap_clients.write(target, PROXIES[:2]), 2)
+            self.assertEqual(victim.read_text(), "kept\n")
+            self.assertFalse((Path(d) / ".fresh.env.incoming").exists())
+
+    def test_helper_refuses_arguments(self):
+        res = subprocess.run(["bash", str(ICAP_HELPER), PROXIES[0]], capture_output=True, text=True, timeout=60)
+        self.assertEqual(res.returncode, 2)
+        self.assertNotIn(PROXIES[0], res.stderr)
 
 
 class ProxySettings(unittest.TestCase):

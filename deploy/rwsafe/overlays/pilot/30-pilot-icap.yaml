@@ -30,7 +30,8 @@ spec:
   ports:
     - { port: 11344, protocol: TCP, $patch: delete }
 ---
-# The node's 1344 only (ServiceLB). The ProxySG allowlist is the host firewall's (H-1; PILOT_RUNBOOK.md step 11).
+# The node's 1344 only (the LoadBalancer Service). The ProxySG allowlist is the host firewall's (H-1; PILOT_RUNBOOK.md
+# step 11) and the ICAP pods' NetworkPolicy rwsafe-icap-from-proxies (35-pilot-icap-clients.yaml, step 11.5).
 apiVersion: v1
 kind: Service
 metadata:
@@ -55,23 +56,5 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: rwsafe-icap-probe
-      ports:
-        - { protocol: TCP, port: 1344 }
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: rwsafe-icap-from-servicelb
-  namespace: rwsafe
-spec:
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              svccontroller.k3s.cattle.io/svcname: rwsafe-icap-lb
-              svccontroller.k3s.cattle.io/svcnamespace: rwsafe
       ports:
         - { protocol: TCP, port: 1344 }

@@ -21,6 +21,11 @@ kind: Kustomization
 #   - SIEM export off and its egress NetworkPolicy removed; redacted capture off; group claims off (both already the
 #     committed defaults, restated in 10-pilot-config.yaml)
 #   - the committed policy registry seed mounted (policy/kustomization.yaml): TCKN REDACT, SECRET BLOCK, enforce
+#   - the ProxySG by address (35-pilot-icap-clients.yaml, PILOT_RUNBOOK.md step 11.5): the NetworkPolicy
+#     rwsafe-icap-from-proxies admits TCP 1344 to the ICAP pods from the proxies' /32 addresses only, a documentation
+#     placeholder until tools/pilot/render.py fills it from the host's uncommitted icap-clients.env; the k3s overlay's
+#     rwsafe-icap-from-servicelb is removed (measured 2026-11-03: kube-proxy DNATs the proxy's connection straight to
+#     an ICAP pod with the proxy's own address, so ServiceLB's pod carries nothing)
 #   - the synthetic probe (60-icap-probe.yaml): a CronJob every 15 minutes, from the data plane image, against the
 #     ClusterIP Service on 1344; its NetworkPolicy and the ICAP pods' ingress admit only it (and the e2e Job)
 #
@@ -28,6 +33,7 @@ kind: Kustomization
 resources:
   - ../k3s
   - ../../../../policy
+  - 35-pilot-icap-clients.yaml
   - 40-control-identity-pvc.yaml
   - 60-icap-probe.yaml
   - 70-admin-ingress.yaml

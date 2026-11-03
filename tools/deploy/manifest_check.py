@@ -27,7 +27,11 @@ cluster), and asserts the shared-host rules on every object:
     valid cidr, an ingress rule without `from`, an empty peer and an empty namespace or pod selector in a peer fail
     (EMPTY_SELECTOR_EXCEPTIONS lists deliberate ones); the directory egress `<product>-control-to-directory` is Egress
     only, TCP 389, 636, 3268 and 3269 only, ipBlock peers only (no selector, no `except`), at most 8 IPv4 blocks, none
-    broader than /16 nor touching loopback, link-local, multicast, reserved or the cluster's pod and Service ranges; no
+    broader than /16 nor touching loopback, link-local, multicast, reserved or the cluster's pod and Service ranges; the
+    pilot's ICAP clients policy `<product>-icap-from-proxies` selects exactly the ICAP pods in the product's namespace,
+    is Ingress only, TCP 1344 only, ipBlock /32 peers only (no selector, no `except`, no duplicate), at most 8 private
+    (RFC 1918) addresses or the documentation /32 placeholder (a note in a pilot release check, PILOT_RUNBOOK.md step
+    11.5); no
     NodePort Service, and no LoadBalancer Service that
     allocates a node port or a health-check node port
   - a PodDisruptionBudget for every multi-replica workload, keeping at least one pod and allowing at least one eviction
@@ -189,6 +193,50 @@ def directory_block_problem(value) -> str | None:
             return f"overlaps {what}"
     return None
 
+
+
+# The pilot's ICAP clients (NetworkPolicy `<product>-icap-from-proxies`, 35-pilot-icap-clients.yaml, PILOT_RUNBOOK.md
+# step 11.5): measured on HOST-A (2026-11-03), kube-proxy's LoadBalancer rule DNATs the ProxySG's connection to the
+# node's 1344 straight to an ICAP pod with the proxy's own source address (ServiceLB's pod is bypassed; PLAT-F2's
+# masquerade does not happen before the network-policy check), so the ICAP pods admit TCP 1344 from the proxies' single
+# addresses only: ipBlock /32 peers, each a private (RFC 1918) IPv4 address icap_client_problem accepts, at most
+# ICAP_CLIENTS_MAX, no duplicate. The committed peer is ICAP_CLIENTS_PLACEHOLDER (a documentation /32), which matches
+# nothing; tools/pilot/render.py fills it from the host's uncommitted ~/.config/<product>/pilot/icap-clients.env.
+ICAP_CLIENTS_POLICY_SUFFIX = "-icap-from-proxies"
+ICAP_CLIENTS_PORT = 1344
+ICAP_CLIENTS_MAX = 8
+ICAP_CLIENTS_PLACEHOLDER = "203.0.113.10/32"
+PRIVATE_NETS = [_v4(10, 0, 0, 0, 8), _v4(172, 16, 0, 0, 12), _v4(192, 168, 0, 0, 16)]
+
+
+def icap_client_problem(value) -> str | None:
+    """Why `value` (one IPv4 address as text, no prefix) is not a ProxySG address for the ICAP clients policy, or None.
+    The reason never holds the value."""
+    if not isinstance(value, str) or not value or value != value.strip():
+        return "is empty or carries spaces"
+    try:
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        return "is not a single IPv4 address (no prefix, no name)"
+    if addr.version != 4:
+        return "is not IPv4"
+    net = ipaddress.IPv4Network((addr, 32))
+    for what, refused in DIRECTORY_REFUSED_NETS.items():
+        if net.overlaps(refused):
+            return f"is in {what}"
+    if not any(net.subnet_of(p) for p in PRIVATE_NETS):
+        return "is not a private (RFC 1918) address"
+    return None
+
+
+def icap_client_block_problem(cidr) -> str | None:
+    """Why an ipBlock cidr of the ICAP clients policy is neither a /32 that icap_client_problem accepts nor the
+    committed placeholder, or None. The reason never holds the value."""
+    if cidr == ICAP_CLIENTS_PLACEHOLDER:
+        return None
+    if not isinstance(cidr, str) or not cidr.endswith("/32"):
+        return "is not a single address (/32)"
+    return icap_client_problem(cidr[:-3])
 
 # ---- rendering ---------------------------------------------------------------------------------------------------------
 
@@ -909,7 +957,13 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
                         fail(p, f"{direction} ipBlock {cidr} is every address")
                     elif documentation_range(net):
                         placeholder_users.setdefault(cidr, set()).add(ident(p))
-                        if pilot and p["metadata"].get("name") == f"{product}{DIRECTORY_POLICY_SUFFIX}":
+                        if pilot and p["metadata"].get("name") == f"{product}{ICAP_CLIENTS_POLICY_SUFFIX}":
+                            # Without the host's file the proxy cannot connect: fail closed, never a broad allow
+                            # (PILOT_RUNBOOK.md step 11.5).
+                            notes.append(f"{ident(p)}: {direction} ipBlock keeps the documentation-range placeholder, "
+                                         f"which admits no proxy (tools/pilot/render.py fills it from the host's ICAP "
+                                         f"clients file, PILOT_RUNBOOK.md step 11.5)")
+                        elif pilot and p["metadata"].get("name") == f"{product}{DIRECTORY_POLICY_SUFFIX}":
                             # The pilot signs in with break-glass first; an unfilled directory egress reaches nothing
                             # and the LDAP settings screen's test answers UNREACHABLE (PILOT_RUNBOOK.md step 14.5).
                             notes.append(f"{ident(p)}: {direction} ipBlock keeps the documentation-range placeholder, "
@@ -923,6 +977,8 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
     for p in policies:
         if p["metadata"].get("name") == f"{product}{DIRECTORY_POLICY_SUFFIX}":
             check_directory_egress(p, fail)
+        if p["metadata"].get("name") == f"{product}{ICAP_CLIENTS_POLICY_SUFFIX}":
+            check_icap_clients(p, fail, product)
     for cidr, users in sorted(placeholder_users.items()):
         if len(users) > 1:
             failures.append(f"documentation-range placeholder {cidr} is shared by {', '.join(sorted(users))}; each "
@@ -1077,6 +1133,48 @@ def check_directory_egress(p: dict, fail) -> None:
                 fail(p, f"directory egress rule {n}: an ipBlock {problem}")
     if blocks > DIRECTORY_MAX_BLOCKS:
         fail(p, f"the directory policy has {blocks} ipBlocks, more than {DIRECTORY_MAX_BLOCKS}")
+
+
+
+def check_icap_clients(p: dict, fail, product: str) -> None:
+    """The ICAP clients policy (PILOT_RUNBOOK.md step 11.5): in the product's namespace, selecting exactly the ICAP pods
+    (`app.kubernetes.io/name: <product>-icap`), Ingress only, at least one rule, every rule TCP 1344 only, every peer an
+    ipBlock alone without `except`, a /32 icap_client_block_problem accepts, no duplicate, at most ICAP_CLIENTS_MAX.
+    Reasons never hold a value."""
+    spec = p.get("spec") or {}
+    if p["metadata"].get("namespace") != product:
+        fail(p, f"the ICAP clients policy is not in namespace {product}")
+    if spec.get("podSelector") != {"matchLabels": {"app.kubernetes.io/name": f"{product}-icap"}}:
+        fail(p, "the ICAP clients policy does not select exactly the ICAP pods")
+    if spec.get("policyTypes") != ["Ingress"] or spec.get("egress"):
+        fail(p, "the ICAP clients policy is not Ingress only")
+    rules = spec.get("ingress") or []
+    if not rules:
+        fail(p, "the ICAP clients policy has no ingress rule")
+    seen: list = []
+    for n, rule in enumerate(rules, 1):
+        ports = rule.get("ports") or []
+        if not ports:
+            fail(p, f"ICAP clients rule {n} has no ports (every port would be open)")
+        for port in ports:
+            if port.get("protocol", "TCP") != "TCP" or port.get("port") != ICAP_CLIENTS_PORT or "endPort" in port:
+                fail(p, f"ICAP clients rule {n} opens a port other than TCP {ICAP_CLIENTS_PORT}")
+        for peer in rule.get("from") or []:
+            if set(peer) != {"ipBlock"}:
+                fail(p, f"ICAP clients rule {n} has a peer other than an ipBlock (a namespace or pod selector)")
+                continue
+            block = peer.get("ipBlock") or {}
+            if "except" in block:
+                fail(p, f"ICAP clients rule {n} has an ipBlock with except")
+            cidr = block.get("cidr")
+            problem = icap_client_block_problem(cidr)
+            if problem:
+                fail(p, f"ICAP clients rule {n}: an ipBlock {problem}")
+            if cidr in seen:
+                fail(p, f"ICAP clients rule {n}: an ipBlock is a duplicate")
+            seen.append(cidr)
+    if len(seen) > ICAP_CLIENTS_MAX:
+        fail(p, f"the ICAP clients policy has {len(seen)} addresses, more than {ICAP_CLIENTS_MAX}")
 
 
 def check_ingress(obj: dict, fail, product: str, secret_contract: dict, service_ports: dict) -> None:

@@ -1032,6 +1032,104 @@ class DirectoryEgress(unittest.TestCase):
         self.assertEqual(mc.directory_block_problem("192.0.2.0/24"), None)
 
 
+class IcapClientsPolicy(unittest.TestCase):
+    """PILOT_RUNBOOK.md step 11.5: `<product>-icap-from-proxies` selects exactly the ICAP pods, is Ingress only, TCP 1344
+    only, private /32 ipBlock peers only, at most 8; the pilot's unfilled placeholder is a release note."""
+
+    PROXIES = [_v4(10, 20, 30, 41, prefix=32), _v4(172, 16, 5, 9, prefix=32), _v4(192, 168, 1, 2, prefix=32)]
+
+    def setUp(self):
+        self.renders = copy.deepcopy(_PILOT_RENDER)
+
+    @staticmethod
+    def policy(objects: list[dict], product: str) -> dict:
+        return next(o for o in objects if mc.ident(o) == f"NetworkPolicy/{product}/{product}-icap-from-proxies")
+
+    def failures_after(self, product: str, mutate, release: bool = False, pilot: bool = True) -> list[str]:
+        objects, contracts = copy.deepcopy(self.renders[product])
+        mutate(self.policy(objects, product))
+        failures, _ = mc.check(objects, contracts, release=release, product=product, pilot=pilot)
+        return failures
+
+    def assert_refused(self, mutate, expected: str):
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                failures = self.failures_after(product, mutate)
+                self.assertTrue(any(f.startswith(f"NetworkPolicy/{product}/{product}-icap-from-proxies")
+                                    and expected in f for f in failures), failures)
+
+    def fill(self, cidrs):
+        return lambda p: p["spec"]["ingress"][0].update({"from": [{"ipBlock": {"cidr": c}} for c in cidrs]})
+
+    def test_committed_pilot_policy_passes_and_its_placeholder_is_a_release_note(self):
+        for product, (objects, contracts) in self.renders.items():
+            with self.subTest(product):
+                failures, notes = mc.check(objects, contracts, release=True, product=product, pilot=True)
+                self.assertFalse([f for f in failures if "icap-from-proxies" in f], failures)
+                self.assertTrue(any("icap-from-proxies: ingress ipBlock keeps the documentation-range placeholder, "
+                                    "which admits no proxy" in n for n in notes), notes)
+                failures, _ = mc.check(objects, contracts, release=True, product=product, pilot=False)
+                self.assertTrue(any(f"{product}-icap-from-proxies: ingress ipBlock is a documentation-range "
+                                    f"placeholder in a release render" in f for f in failures), failures)
+
+    def test_filled_addresses_pass_in_a_release_render(self):
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                self.assertEqual(self.failures_after(product, self.fill(self.PROXIES)), [])
+                self.assertEqual(self.failures_after(product, self.fill(self.PROXIES), release=True), [])
+
+    def test_selector_namespace_and_types_are_bound(self):
+        self.assert_refused(lambda p: p["spec"].update({"podSelector": {}}), "does not select exactly the ICAP pods")
+        self.assert_refused(lambda p: p["spec"]["podSelector"]["matchLabels"].update({"app.kubernetes.io/name": "x"}),
+                            "does not select exactly the ICAP pods")
+        self.assert_refused(lambda p: p["spec"]["podSelector"].update(
+            {"matchExpressions": [{"key": "a", "operator": "Exists"}]}), "does not select exactly the ICAP pods")
+        self.assert_refused(lambda p: p["metadata"].update({"namespace": "other"}), "is not in namespace")
+        self.assert_refused(lambda p: p["spec"].update({"policyTypes": ["Ingress", "Egress"]}), "not Ingress only")
+        self.assert_refused(lambda p: p["spec"].update({"egress": [{"to": [{"ipBlock": {"cidr": self.PROXIES[0]}}]}]}),
+                            "not Ingress only")
+        self.assert_refused(lambda p: p["spec"].update({"ingress": []}), "has no ingress rule")
+
+    def test_ports_other_than_tcp_1344_are_refused(self):
+        self.assert_refused(lambda p: p["spec"]["ingress"][0]["ports"].append({"protocol": "TCP", "port": 8080}),
+                            "opens a port other than TCP 1344")
+        self.assert_refused(lambda p: p["spec"]["ingress"][0]["ports"][0].update({"protocol": "UDP"}),
+                            "opens a port other than TCP 1344")
+        self.assert_refused(lambda p: p["spec"]["ingress"][0]["ports"][0].update({"endPort": 1400}),
+                            "opens a port other than TCP 1344")
+        self.assert_refused(lambda p: p["spec"]["ingress"][0].pop("ports"), "has no ports")
+
+    def test_peers_other_than_private_single_addresses_are_refused(self):
+        self.assert_refused(lambda p: p["spec"]["ingress"][0]["from"].append(
+            {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}}),
+            "a peer other than an ipBlock")
+        self.assert_refused(lambda p: p["spec"]["ingress"][0]["from"][0].update(
+            {"podSelector": {"matchLabels": {"app": "x"}}}), "a peer other than an ipBlock")
+        cases = {
+            _v4(10, 20, 30, 0, prefix=24): "not a single address (/32)",
+            _v4(0, 0, 0, 0, prefix=0): "not a single address (/32)",
+            "198.51.100.7/32": "not a private (RFC 1918)",
+            _v4(8, 8, 8, 8, prefix=32): "not a private (RFC 1918)",
+            _v4(10, 42, 0, 9, prefix=32): "the cluster's pod range",
+            _v4(10, 43, 0, 1, prefix=32): "the cluster's Service range",
+            _v4(127, 0, 0, 1, prefix=32): "loopback",
+            _v4(169, 254, 0, 1, prefix=32): "link-local",
+        }
+        for cidr, rule in cases.items():
+            with self.subTest(rule):
+                self.assert_refused(self.fill([cidr]), rule)
+        self.assert_refused(lambda p: p["spec"]["ingress"][0]["from"][0]["ipBlock"].update(
+            {"cidr": self.PROXIES[0], "except": [self.PROXIES[0]]}), "with except")
+        self.assert_refused(self.fill([self.PROXIES[0], self.PROXIES[0]]), "is a duplicate")
+        self.assert_refused(self.fill([_v4(10, 20, 31, i, prefix=32) for i in range(1, 10)]),
+                            "9 addresses, more than 8")
+
+    def test_k3s_holds_no_icap_clients_policy(self):
+        objects = mc.to_objects(mc.render(mc.DEFAULT_OVERLAY)[0])
+        self.assertFalse([o for o in objects if o["metadata"]["name"].endswith("-icap-from-proxies")])
+        self.assertIsNone(mc.icap_client_block_problem(mc.ICAP_CLIENTS_PLACEHOLDER))
+
+
 class SingleApprovalSwitch(unittest.TestCase):
     """PO decision Q-47 and PR 47 review D-01: the single-approval switch is named only as RWSAFE_POLICY_SINGLE_APPROVAL
     in the control ConfigMap, "true" in the committed pilot overlay only; any other spelling or place is refused."""
