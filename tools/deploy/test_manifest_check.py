@@ -1024,6 +1024,49 @@ class DirectoryEgress(unittest.TestCase):
         self.assert_refused(lambda p: p["spec"].update({"policyTypes": ["Ingress", "Egress"]}), "not Egress only")
         self.assert_refused(lambda p: p["spec"].update({"egress": []}), "has no egress rule")
 
+    # PR 54 review D-01: the policy's place and selector, the CIDR form, overlaps, public space, and the pilot's gaps.
+    def test_namespace_and_selector_are_held(self):
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                failures = self.failures_after(product, lambda p: p["metadata"].update({"namespace": "default"}))
+                self.assertIn(f"NetworkPolicy/default/{product}-control-to-directory: the directory policy is not in "
+                              f"namespace {product}", failures)
+        self.assert_refused(lambda p: p["spec"].update({"podSelector": {}}), "does not select exactly the")
+        self.assert_refused(lambda p: p["spec"]["podSelector"]["matchLabels"].update(
+            {"app.kubernetes.io/name": "other"}), "does not select exactly the")
+
+    def test_cidr_form_overlap_and_public_space_are_refused(self):
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["to"][0]["ipBlock"].update({"cidr": "198.51.100.7"}),
+                            "has no /prefix")
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["to"].append({"ipBlock": {"cidr": "192.0.2.64/26"}}),
+                            "overlaps another")
+        self.assert_refused(lambda p: p["spec"]["egress"][0]["to"][0]["ipBlock"].update(
+            {"cidr": _v4(11, 1, 0, 0, prefix=16)}), "RFC 1918")
+
+        def private(p):
+            p["spec"]["egress"][0]["to"] = [{"ipBlock": {"cidr": _v4(10, 20, 0, 0, prefix=16)}},
+                                            {"ipBlock": {"cidr": _v4(172, 16, 5, 0, prefix=24)}}]
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                self.assertEqual(self.failures_after(product, private), [])
+
+    def test_pilot_requires_the_policy_and_no_other_ip_block(self):
+        for product in ("rwsafe", "acme"):
+            with self.subTest(product):
+                objects, contracts = copy.deepcopy(self.renders[product])
+                other = next(o for o in objects if mc.ident(o) == f"NetworkPolicy/{product}/{product}-allow-dns")
+                other["spec"]["egress"][0]["to"].append({"ipBlock": {"cidr": "203.0.113.0/24"}})
+                failures, _ = mc.check(objects, contracts, product=product, pilot=True)
+                self.assertTrue(any(f"{product}-allow-dns: an ipBlock outside {product}-control-to-directory" in f
+                                    for f in failures), failures)
+                objects, contracts = copy.deepcopy(self.renders[product])
+                renamed = self.policy(objects, product)
+                renamed["metadata"]["name"] = f"{product}-control-to-ldap"
+                failures, _ = mc.check(objects, contracts, product=product, pilot=True)
+                self.assertTrue(any(f"{product}-control-to-directory: missing from the pilot's render" in f
+                                    for f in failures), failures)
+                self.assertTrue(any(f"{product}-control-to-ldap: an ipBlock outside" in f for f in failures), failures)
+
     def test_k3s_directory_policy_passes_the_same_rules(self):
         text, _ = mc.render(mc.DEFAULT_OVERLAY)
         objects = mc.to_objects(text)

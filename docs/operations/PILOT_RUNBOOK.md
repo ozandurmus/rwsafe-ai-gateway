@@ -735,20 +735,22 @@ never go into the repository, a chat, a ticket or a command argument (AGENTS.md 
    ```
 
    Type each range (an IPv4 CIDR such as a /24, or one address) and Enter; nothing is shown; an empty line ends (at most
-   8). Expected: `directory ranges: N range(s) written (mode 0600); no value was printed` and `written:
+   8). Only RFC 1918 private ranges are accepted (PR 54 review Q-1): a directory in public address space is refused, so
+   a mistyped range can never open the directory ports towards the internet. Expected: `directory ranges: N range(s) written (mode 0600); no value was printed` and `written:
    ~/.config/<product>/pilot/directory.env`. A refused range is named by its number and rule only (broader than /16,
-   loopback, link-local, multicast, the cluster's own pod or Service range, an overlap) and can be typed again. Running
+   not private, loopback, link-local, multicast, the cluster's own pod or Service range, an overlap) and can be typed
+   again. A symbolic link anywhere in `~/.config/<product>/pilot/` is refused. Running
    it again replaces the whole list. Tell the orchestrator "ranges written, N".
 
 2. **Orchestrator (HOST CHANGE H12, confirmed on its own)**: the control phase's NetworkPolicies only; the control plane
    is not restarted (a NetworkPolicy applies to running pods), and no file holding the ranges is written:
 
    ```bash
-   python3 -B tools/pilot/directory_range.py --check ~/.config/"${PRODUCT}"/pilot/directory.env
+   python3 -B tools/pilot/directory_range.py --check --product "${PRODUCT}"
    python3 -B tools/pilot/render.py --product "${PRODUCT}" --phase control --kinds NetworkPolicy \
      | kubectl apply --server-side -f -
    kubectl -n "${PRODUCT}" get networkpolicy "${PRODUCT}-control-to-directory" \
-     -o jsonpath='{range .spec.egress[*].to[*]}{.ipBlock.cidr}{"\n"}{end}' | grep -vc '^192\.0\.2\.0/24$'
+     -o jsonpath='{range .spec.egress[*].to[*]}{.ipBlock.cidr}{"\n"}{end}' | grep -vc '^192\.0\.2\.0/24$' || true
    ```
 
    Expected: `directory ranges: N range(s) valid`; on stderr `render: directory egress: N range(s)` and the policies

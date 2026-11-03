@@ -36,6 +36,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -350,6 +351,30 @@ def default_directory_env(product: str) -> Path:
     return directory_range.default_path(product)
 
 
+def write_output(path: Path, text: str) -> str | None:
+    """Writes the render to a regular file only (PR 54 review D-03): opened without following a symbolic link (so
+    /dev/stdout, a link to a terminal or into the repository is refused), never a terminal, a character device or
+    another kind; truncated and set to 0600 only after those checks. Returns the reason it refused, or None; the reason
+    never holds the path."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), 0o600)
+    except OSError as e:
+        return f"cannot be opened ({directory_range._os_reason(e)}; a symbolic link is refused)"
+    try:
+        if os.isatty(fd) or not stat.S_ISREG(os.fstat(fd).st_mode):
+            return "is not a regular file (a terminal, device or another kind is refused)"
+        os.ftruncate(fd, 0)
+        os.fchmod(fd, 0o600)   # an earlier render's file keeps its mode otherwise
+        data = text.encode("utf-8")
+        while data:
+            data = data[os.write(fd, data):]
+    except OSError as e:
+        return f"cannot be written ({directory_range._os_reason(e)})"
+    finally:
+        os.close(fd)
+    return None
+
+
 def _inside(path: Path, root: Path) -> bool:
     try:
         path.expanduser().resolve().relative_to(root.resolve())
@@ -388,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
             range_file = args.directory_env or default_directory_env(product)
             try:
                 ranges = directory_range.load(range_file)
-            except (directory_range.RangeFileError, OSError) as e:
+            except directory_range.RangeFileError as e:
                 print(f"render refused: the directory range file: {e}", file=sys.stderr)
                 return 1
             if ranges is None and args.directory_env:
@@ -429,10 +454,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     text = json.dumps({"apiVersion": "v1", "kind": "List", "items": objects}, indent=1) + "\n"
     if args.output:
-        fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(fd, 0o600)   # an earlier render's file keeps its mode otherwise
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
+        refused = write_output(args.output.expanduser(), text)
+        if refused:
+            print(f"render refused: --output {refused}", file=sys.stderr)
+            return 1
     else:
         sys.stdout.write(text)
     if args.target == "pilot" and directory_policy(objects, product) is not None:

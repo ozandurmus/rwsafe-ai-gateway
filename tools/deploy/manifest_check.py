@@ -26,8 +26,10 @@ cluster), and asserts the shared-host rules on every object:
     placeholder is shared by two NetworkPolicies (the estate patch replaces each by one value); an ipBlock without a
     valid cidr, an ingress rule without `from`, an empty peer and an empty namespace or pod selector in a peer fail
     (EMPTY_SELECTOR_EXCEPTIONS lists deliberate ones); the directory egress `<product>-control-to-directory` is Egress
-    only, TCP 389, 636, 3268 and 3269 only, ipBlock peers only (no selector, no `except`), at most 8 IPv4 blocks, none
-    broader than /16 nor touching loopback, link-local, multicast, reserved or the cluster's pod and Service ranges; no
+    only, in the product namespace, selecting the control plane only, TCP 389, 636, 3268 and 3269 only, ipBlock peers
+    only (no selector, no `except`), at most 8 non-overlapping IPv4 CIDRs inside RFC 1918 private space (or the
+    documentation placeholder), none broader than /16 nor touching loopback, link-local, multicast, reserved or the
+    cluster's pod and Service ranges; in the pilot it must be rendered and is the only policy with an ipBlock; no
     NodePort Service, and no LoadBalancer Service that
     allocates a node port or a health-check node port
   - a PodDisruptionBudget for every multi-replica workload, keeping at least one pod and allowing at least one eviction
@@ -169,6 +171,10 @@ DIRECTORY_REFUSED_NETS = {
     "the cluster's pod range": _v4(10, 42, 0, 0, 16),
     "the cluster's Service range": _v4(10, 43, 0, 0, 16),
 }
+# PR 54 review Q-1 (the safer rule, adopted): the directory lives in RFC 1918 private space only, so a mistyped public
+# range can never open the directory ports towards the internet. The RFC 5737 documentation ranges stay accepted: they
+# are the committed placeholder and the tests' synthetic ranges, and reach nothing.
+DIRECTORY_PRIVATE_NETS = (_v4(10, 0, 0, 0, 8), _v4(172, 16, 0, 0, 12), _v4(192, 168, 0, 0, 16))
 
 
 def directory_block_problem(value) -> str | None:
@@ -187,6 +193,8 @@ def directory_block_problem(value) -> str | None:
     for what, refused in DIRECTORY_REFUSED_NETS.items():
         if net.overlaps(refused):
             return f"overlaps {what}"
+    if not any(net.subnet_of(n) for n in DIRECTORY_PRIVATE_NETS + tuple(DOCUMENTATION_NETS)):
+        return "is not inside an RFC 1918 private range (public address space is refused)"
     return None
 
 
@@ -920,9 +928,16 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
                         else:
                             notes.append(f"{ident(p)}: {direction} ipBlock is a documentation-range placeholder "
                                          f"(the deploy's estate patch sets the real addresses)")
+    directory_name = f"{product}{DIRECTORY_POLICY_SUFFIX}"
     for p in policies:
-        if p["metadata"].get("name") == f"{product}{DIRECTORY_POLICY_SUFFIX}":
-            check_directory_egress(p, fail)
+        if p["metadata"].get("name") == directory_name:
+            check_directory_egress(p, fail, product)
+        elif pilot and any("ipBlock" in peer for direction, key in (("ingress", "from"), ("egress", "to"))
+                           for rule in p["spec"].get(direction) or [] for peer in rule.get(key) or []):
+            # PR 54 review D-01: in the pilot the directory policy is the only one that may name addresses.
+            fail(p, f"an ipBlock outside {directory_name} in the pilot's render")
+    if pilot and not any(p["metadata"].get("name") == directory_name for p in policies):
+        failures.append(f"NetworkPolicy/{product}/{directory_name}: missing from the pilot's render")
     for cidr, users in sorted(placeholder_users.items()):
         if len(users) > 1:
             failures.append(f"documentation-range placeholder {cidr} is shared by {', '.join(sorted(users))}; each "
@@ -1045,11 +1060,18 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
     return failures, notes
 
 
-def check_directory_egress(p: dict, fail) -> None:
-    """The directory egress policy (PILOT_RUNBOOK.md step 14.5): Egress only, at least one rule, every rule with ports,
-    every port TCP and a directory port, every peer an ipBlock alone (never a namespace or pod selector), without
-    `except`, a block directory_block_problem accepts; at most DIRECTORY_MAX_BLOCKS blocks. Reasons never hold a value."""
+def check_directory_egress(p: dict, fail, product: str) -> None:
+    """The directory egress policy (PILOT_RUNBOOK.md step 14.5): in the product namespace, selecting the control plane's
+    pods only, Egress only, at least one rule, every rule with ports, every port TCP and a directory port, every peer an
+    ipBlock alone (never a namespace or pod selector), without `except`, a CIDR with its /prefix that
+    directory_block_problem accepts, no two overlapping; at most DIRECTORY_MAX_BLOCKS blocks. Reasons never hold a
+    value."""
     spec = p.get("spec") or {}
+    if (p.get("metadata") or {}).get("namespace") != product:
+        fail(p, f"the directory policy is not in namespace {product}")
+    if spec.get("podSelector") != {"matchLabels": {"app.kubernetes.io/name": f"{product}-control"}}:
+        fail(p, f"the directory policy does not select exactly the {product}-control pods")
+    nets: list = []
     if spec.get("policyTypes") != ["Egress"] or spec.get("ingress"):
         fail(p, "the directory policy is not Egress only")
     rules = spec.get("egress") or []
@@ -1072,9 +1094,17 @@ def check_directory_egress(p: dict, fail) -> None:
             blocks += 1
             if "except" in block:
                 fail(p, f"directory egress rule {n} has an ipBlock with except (name the ranges instead)")
-            problem = directory_block_problem(block.get("cidr"))
+            cidr = block.get("cidr")
+            problem = directory_block_problem(cidr)
             if problem:
                 fail(p, f"directory egress rule {n}: an ipBlock {problem}")
+                continue
+            if "/" not in cidr:
+                fail(p, f"directory egress rule {n}: an ipBlock has no /prefix")
+            net = ipaddress.ip_network(cidr, strict=True)
+            if any(net.overlaps(other) for other in nets):
+                fail(p, f"directory egress rule {n}: an ipBlock overlaps another")
+            nets.append(net)
     if blocks > DIRECTORY_MAX_BLOCKS:
         fail(p, f"the directory policy has {blocks} ipBlocks, more than {DIRECTORY_MAX_BLOCKS}")
 
