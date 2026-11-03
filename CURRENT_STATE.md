@@ -842,7 +842,13 @@ PLATFORM (Notifications, System logs, System). TR/EN catalogues extended.
 - Step 11's firewall block asks 1 to 8 addresses the same way and replaces the table atomically (`table`, `delete
   table`, definition in one `nft -f`; the former `flush table` kept old set elements, measured 2026-11-03);
   `verify_firewall.sh --table` accepts 1 to 8 single addresses.
-- Open: the PO runs step 11.5 on the host and the orchestrator applies it. Open (production design): the k3s overlay's
+- Applied on the pilot 2026-11-03: the test proxy's ICAP health check is healthy with the service's Modification Method
+  Request (Response gives "Error response from server"; PILOT_RUNBOOK step 15).
+- PR 56 review (Argon, MERGE WITH CORRECTIONS) D-01..D-05 fixed: the pilot check requires the ICAP clients policy and
+  refuses the ServiceLB policy and any other ICAP ingress; a filled render goes only to a pipe or a regular `--output`
+  outside the repository; step 11 and `verify_firewall --table` take RFC 1918 addresses outside the cluster ranges only;
+  symbolic links refused up to ~/.config for reading and writing; runbook re-render and undo wording.
+- Open (production design): the k3s overlay's
   `rwsafe-icap-from-servicelb` has the same flaw (PLAT-F2 measured wrong); the k3s ICAP ingress needs an address-based
   design before production (not redesigned here).
 

@@ -1168,6 +1168,62 @@ class IcapClientsPolicy(unittest.TestCase):
         self.assert_refused(self.fill([_v4(10, 20, 31, i, prefix=32) for i in range(1, 10)]),
                             "9 addresses, more than 8")
 
+    def check_pilot(self, product: str, mutate_objects) -> list[str]:
+        objects, contracts = copy.deepcopy(self.renders[product])
+        mutate_objects(objects, product)
+        failures, _ = mc.check(objects, contracts, product=product, pilot=True)
+        return failures
+
+    def test_pilot_requires_the_policy_and_refuses_other_icap_ingress(self):
+        """PR 56 review D-01."""
+        def named(objects, name):
+            return next(o for o in objects if o["kind"] == "NetworkPolicy" and o["metadata"]["name"] == name)
+
+        def drop(objects, product):
+            objects.remove(named(objects, f"{product}-icap-from-proxies"))
+
+        def add_servicelb(objects, product):
+            p = copy.deepcopy(named(objects, f"{product}-icap-from-proxies"))
+            p["metadata"]["name"] = f"{product}-icap-from-servicelb"
+            p["spec"]["ingress"][0]["from"] = [{
+                "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+                "podSelector": {"matchLabels": {"svccontroller.k3s.cattle.io/svcname": f"{product}-icap-lb"}}}]
+            objects.append(p)
+
+        def add_selector_policy(objects, product):
+            p = copy.deepcopy(named(objects, f"{product}-icap-from-proxies"))
+            p["metadata"]["name"] = f"{product}-icap-extra"
+            p["spec"]["ingress"][0]["from"] = [{"podSelector": {"matchLabels": {"app": "x"}}}]
+            objects.append(p)
+
+        def widen_in_cluster(objects, product):
+            named(objects, f"{product}-icap")["spec"]["ingress"][0]["from"].append(
+                {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}})
+
+        def other_port_in_cluster(objects, product):
+            named(objects, f"{product}-icap")["spec"]["ingress"][0]["ports"].append({"protocol": "TCP", "port": 8080})
+
+        def metrics_on_1344(objects, product):
+            named(objects, f"{product}-icap-metrics-from-scraper")["spec"]["ingress"][0]["ports"].append(
+                {"protocol": "TCP", "port": 1344})
+
+        cases = {
+            drop: "icap-from-proxies: missing from the pilot's render",
+            add_servicelb: "the ServiceLB-pod ICAP policy is rendered in the pilot",
+            add_selector_policy: "admits ingress to the ICAP pods in the pilot",
+            widen_in_cluster: "is not TCP 1344 from the ICAP e2e Job's and the synthetic probe's pods only",
+            other_port_in_cluster: "is not TCP 1344 from the ICAP e2e Job's and the synthetic probe's pods only",
+            metrics_on_1344: "the ICAP metrics policy is not one rule to TCP 9401 only",
+        }
+        for product in ("rwsafe", "acme"):
+            objects, contracts = self.renders[product]
+            failures, _ = mc.check(copy.deepcopy(objects), contracts, product=product, pilot=True)
+            self.assertEqual(failures, [], product)
+            for mutate, expected in cases.items():
+                with self.subTest(product=product, case=mutate.__name__):
+                    failures = self.check_pilot(product, mutate)
+                    self.assertTrue(any(expected in f for f in failures), failures)
+
     def test_k3s_holds_no_icap_clients_policy(self):
         objects = mc.to_objects(mc.render(mc.DEFAULT_OVERLAY)[0])
         self.assertFalse([o for o in objects if o["metadata"]["name"].endswith("-icap-from-proxies")])

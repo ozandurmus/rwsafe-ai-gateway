@@ -44,7 +44,9 @@ try:
     a = ipaddress.ip_address(sys.stdin.readline().rstrip("\r\n"))
 except ValueError:
     sys.exit(1)
-sys.exit(0 if a.version == 4 and not (a.is_loopback or a.is_multicast or a.is_unspecified or a.is_link_local or a.is_reserved) else 1)'; }
+p = [ipaddress.IPv4Network((x << 24 | y << 16, n)) for x, y, n in ((10, 0, 8), (172, 16, 12), (192, 168, 16))]
+k = [ipaddress.IPv4Network((10 << 24 | y << 16, 16)) for y in (42, 43)]
+sys.exit(0 if a.version == 4 and any(a in n for n in p) and not any(a in n for n in k) else 1)'; }
 addrs=()
 while [ "${#addrs[@]}" -lt 8 ]; do
   a=""
@@ -53,7 +55,7 @@ while [ "${#addrs[@]}" -lt 8 ]; do
   a="${a%$'\r'}"
   dup=0
   for b in ${addrs[@]+"${addrs[@]}"}; do if [ "${b}" = "${a}" ]; then dup=1; fi; done
-  if [ "${dup}" = 1 ] || ! ok_addr "${a}"; then echo "adres alinmadi (tek IPv4 adresi, tekrar yok); yeniden yazin" >&2; continue; fi
+  if [ "${dup}" = 1 ] || ! ok_addr "${a}"; then echo "adres alinmadi (tek ozel IPv4 adresi, tekrar yok); yeniden yazin" >&2; continue; fi
   addrs+=("${a}")
   [ "${#addrs[@]}" -lt 8 ] || break
   yn=""

@@ -59,6 +59,8 @@ def entry_problems(values: list[str], what: str = "entry") -> list[str]:
 
 def next_problems(accepted: list[str], candidate: str) -> list[str]:
     """Rules a newly typed address breaks beside the ones already accepted (never a value)."""
+    if any(mc.icap_client_problem(a) for a in accepted) or len(set(accepted)) != len(accepted):
+        return ["cannot be checked: an earlier address is not valid"]
     problem = mc.icap_client_problem(candidate)
     if problem:
         return [problem]

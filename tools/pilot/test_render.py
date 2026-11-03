@@ -362,9 +362,10 @@ class DirectoryEgress(unittest.TestCase):
     def test_main_with_a_range_file_prints_only_the_count(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out_dir:
             path = range_file(d, "# synthetic\nDIRECTORY_CIDR=203.0.113.0/26\n\nDIRECTORY_CIDR=198.51.100.7\n")
-            target = Path(out_dir) / "app-control.json"
+            # the whole render: the pilot release check needs every policy (PR 56 review D-01)
+            target = Path(out_dir) / "app.json"
             rc, out, err = run(["--product", "acme", "--dataplane-digest", DIGESTS["dataplane"],
-                                "--control-digest", DIGESTS["control"], "--phase", "control",
+                                "--control-digest", DIGESTS["control"],
                                 "--directory-env", str(path), "--output", str(target)])
             self.assertEqual(rc, 0, err)
             self.assertEqual(out, "")
@@ -430,7 +431,7 @@ class DirectoryEgress(unittest.TestCase):
             rc, _, err = run(["--product", "acme", "--phase", "control", "--kinds", "NetworkPolicy",
                               "--directory-env", str(link)])
             self.assertEqual(rc, 1)
-            self.assertIn("not a regular file", err)
+            self.assertIn("symbolic link", err)
             rc, _, err = run(["--product", "acme", "--phase", "control", "--kinds", "NetworkPolicy",
                               "--directory-env", str(Path(d) / "missing.env")])
             self.assertEqual(rc, 1)
@@ -774,7 +775,7 @@ class IcapClients(unittest.TestCase):
             link.symlink_to(real)
             rc, _, err = run(ICAP_POLICIES + ["--icap-clients-env", str(link)])
             self.assertEqual(rc, 1)
-            self.assertIn("not a regular file", err)
+            self.assertIn("symbolic link", err)
             rc, _, err = run(ICAP_POLICIES + ["--icap-clients-env", str(Path(d) / "missing.env")])
             self.assertEqual(rc, 1)
             self.assertIn("does not exist", err)
@@ -802,6 +803,33 @@ class IcapClients(unittest.TestCase):
                     self.assertEqual(out, "")
                     self.assertNotIn(PROXIES[0], err)
             self.assertEqual(victim.read_text(), "kept\n")
+
+    def test_a_filled_render_goes_to_a_pipe_only(self):
+        """PR 56 review D-02: without --output a filled render is written only to a pipe; a redirected file is refused
+        before anything is written."""
+        with tempfile.TemporaryDirectory() as d:
+            path = clients_file(d, f"PROXY_ADDR={PROXIES[0]}\n")
+            env = {k: v for k, v in os.environ.items() if k != "PRODUCT"}
+            env["HOME"] = d
+            argv = [sys.executable, "-B", str(Path(render.__file__)), *ICAP_POLICIES, "--icap-clients-env", str(path)]
+            res = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=120)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn(f"{PROXIES[0]}/32", res.stdout)
+            redirected = Path(d) / "redirected.json"
+            with open(redirected, "w") as out:
+                res = subprocess.run(argv, stdout=out, stderr=subprocess.PIPE, text=True, env=env, timeout=120)
+            self.assertEqual(res.returncode, 1, res.stderr)
+            self.assertIn("standard output is not a pipe", res.stderr)
+            self.assertEqual(redirected.read_text(), "")
+            # an --output in a symlinked directory is refused too (PR 56 review D-04)
+            real = Path(d) / "real"
+            real.mkdir()
+            (Path(d) / "linked").symlink_to(real)
+            rc, out, err = run(ICAP_POLICIES + ["--icap-clients-env", str(path),
+                                                "--output", str(Path(d) / "linked" / "x.json")])
+            self.assertEqual(rc, 1, err)
+            self.assertIn("is in a directory that is a symbolic link", err)
+            self.assertEqual(os.listdir(real), [])
 
     def test_the_committed_tree_holds_no_clients_file(self):
         tracked = subprocess.run(["git", "-C", str(mc.REPO_ROOT), "ls-files"], capture_output=True, text=True)
@@ -831,6 +859,25 @@ class IcapClientsHelper(unittest.TestCase):
                 self.assertTrue(problems and rule in problems[0], problems)
                 self.assertNotIn(bad.strip(), " ".join(problems))
         self.assertEqual(icap_clients.next_problems(PROXIES[:1], PROXIES[0]), ["repeats an address typed earlier"])
+        # PR 56 review D-04: the earlier addresses are checked too
+        for accepted in (["192.0.2.10"], [PROXIES[0], PROXIES[0]]):
+            self.assertEqual(icap_clients.next_problems(accepted, PROXIES[1]),
+                             ["cannot be checked: an earlier address is not valid"])
+
+    def test_load_and_write_refuse_a_symlinked_config_directory(self):
+        """PR 56 review D-04: ~/.config/<product>/pilot/<file> is checked up to ~/.config, for reading and writing."""
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as elsewhere:
+            (Path(elsewhere) / "acme" / "pilot").mkdir(parents=True)
+            target = Path(elsewhere) / "acme" / "pilot" / "icap-clients.env"
+            target.write_text(f"PROXY_ADDR={PROXIES[0]}\n")
+            target.chmod(0o600)
+            (Path(home) / ".config").symlink_to(elsewhere)
+            via_link = Path(home) / ".config" / "acme" / "pilot" / "icap-clients.env"
+            for action in (lambda: icap_clients.load(via_link), lambda: icap_clients.write(via_link, PROXIES[:1])):
+                with self.assertRaises(icap_clients.Error) as ctx:
+                    action()
+                self.assertIn("symbolic link", str(ctx.exception))
+            self.assertEqual(target.read_text(), f"PROXY_ADDR={PROXIES[0]}\n")
 
     def test_helper_asks_one_address_at_a_time_and_prints_the_count(self):
         with tempfile.TemporaryDirectory() as d:

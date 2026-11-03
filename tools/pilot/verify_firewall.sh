@@ -7,7 +7,8 @@
 #
 #   --table        the PO's one-line check (root): reads `nft -j list table inet <product>_pilot` on stdin and passes
 #                  only the exact table of step 11 (PR 40 review D-02): one table, one set icap_clients of type
-#                  ipv4_addr with flags interval and 1 to 8 single IPv4 addresses (counted, never printed; no
+#                  ipv4_addr with flags interval and 1 to 8 single private (RFC 1918) IPv4 addresses outside the k3s pod and
+#                  Service ranges, no repeat (counted, never printed; no
 #                  prefix or range), one chain prerouting (filter hook, priority -150, policy accept) and exactly two
 #                  rules whose every field and expression equals step 11's, operators included: every match is `==`
 #                  (`ct state new` is nft's `in`), the one negation is the designed `ip saddr != @icap_clients`. Any
@@ -90,19 +91,25 @@ say("table", len(tables) == 1 and fields(tables[0], {"family": "inet", "name": t
 
 sets = of["set"]
 elem = sets[0].get("elem") if len(sets) == 1 else None
+# PR 56 review D-03: the rule of tools/deploy/manifest_check.icap_client_problem (step 11.5): one private (RFC 1918)
+# IPv4 address, outside the k3s pod and Service ranges; no repeat.
+# built from octets: the repository privacy gate reads every dotted literal as an address
+PRIVATE = [ipaddress.IPv4Network((a << 24 | b << 16, n)) for a, b, n in ((10, 0, 8), (172, 16, 12), (192, 168, 16))]
+CLUSTER = [ipaddress.IPv4Network((10 << 24 | b << 16, 16)) for b in (42, 43)]
 def host_v4(e):
     try:
-        return isinstance(e, str) and ipaddress.ip_address(e).version == 4
+        a = ipaddress.ip_address(e) if isinstance(e, str) else None
     except ValueError:
         return False
-plain = isinstance(elem, list) and all(host_v4(e) for e in elem)
+    return a is not None and a.version == 4 and any(a in n for n in PRIVATE) and not any(a in n for n in CLUSTER)
+plain = isinstance(elem, list) and all(host_v4(e) for e in elem) and len(set(elem)) == len(elem)
 set_ok = len(sets) == 1 and set(sets[0]) - {"handle"} == {"family", "table", "name", "type", "flags", "elem"} \
     and fields({k: v for k, v in sets[0].items() if k != "elem"},
                {"family": "inet", "table": table, "name": "icap_clients", "type": "ipv4_addr", "flags": ["interval"]}) \
     and plain and 1 <= len(elem) <= 8
-say("set", set_ok, "icap_clients: %d set(s), %d element(s), %s (values not shown; 1 to 8 single IPv4 addresses "
-    "expected)" % (len(sets), len(elem) if isinstance(elem, list) else 0,
-                   "all single addresses" if plain else "not all single addresses"))
+say("set", set_ok, "icap_clients: %d set(s), %d element(s), %s (values not shown; 1 to 8 single private (RFC 1918) "
+    "IPv4 addresses outside the cluster ranges expected)" % (len(sets), len(elem) if isinstance(elem, list) else 0,
+                   "all single private addresses" if plain else "not all single private addresses, or repeated"))
 
 chains = of["chain"]
 say("chain", len(chains) == 1 and fields(chains[0], {"family": "inet", "table": table, "name": "prerouting",

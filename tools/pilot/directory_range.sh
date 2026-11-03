@@ -42,7 +42,7 @@ if [ -n "${DIRECTORY_ENV:-}" ]; then
 else
   BASE="${HOME}/.config/${PRODUCT}"
   # PR 54 review D-04: never through a symbolic link
-  for d in "${BASE}" "${BASE}/pilot" "${BASE}/pilot/directory.env"; do
+  for d in "${HOME}/.config" "${BASE}" "${BASE}/pilot" "${BASE}/pilot/directory.env"; do
     if [ -L "${d}" ]; then
       echo "refused: ~/.config/${PRODUCT}/... holds a symbolic link; nothing written" >&2
       exit 1

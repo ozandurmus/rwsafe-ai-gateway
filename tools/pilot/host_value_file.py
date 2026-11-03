@@ -5,7 +5,8 @@ printing, logging or leaving a copy of a value.
 
 A file is read once, opened without following a symbolic link, and used only when it is a regular file of at most
 64 KiB, owned by the user who runs, and not readable or writable by group or others (checked on the open file). It is
-written only outside the repository, never when the file or one of its two nearest directories is a symbolic link,
+written only outside the repository; neither is used when the file or one of its directories up to ~/.config is a
+symbolic link. A write goes
 atomically through a temporary file in the same directory (`.<name>.incoming`, gitignored) that is created
 exclusively with mode 0600 and never outlives a failure. Every message names a line number and a rule, never a value
 or a path (PR 54 review D-02: a path carries the account name in $HOME; AGENTS.md 4.2).
@@ -53,9 +54,21 @@ def parse(text: str, key: str, entry_problems: Callable[[list[str], str], list[s
     return (values, []) if not problems else ([], problems)
 
 
+def linked_part(path: Path) -> bool:
+    """True when the file, its directory, the directory above, or (when it is named `.config`) the one above that is a
+    symbolic link: ~/.config/<product>/pilot/<file> is checked up to ~/.config (PR 56 review D-04)."""
+    parts = [path, path.parent, path.parent.parent]
+    if path.parent.parent.parent.name == ".config":
+        parts.append(path.parent.parent.parent)
+    return any(p.is_symlink() for p in parts)
+
+
 def load(path: Path, key: str, entry_problems: Callable[[list[str], str], list[str]],
          shape: str = "<value>") -> list[str] | None:
     """The values of `path`, None when it does not exist; HostFileError when it is unusable."""
+    path = path.expanduser()
+    if linked_part(path):
+        raise HostFileError("the file or one of its directories is a symbolic link")
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
@@ -108,9 +121,8 @@ def write(path: Path, header: str, key: str, values: list[str]) -> int:
     path = path.expanduser()
     if inside_repository(path):
         raise HostFileError("the file would be inside the repository")
-    for p in (path, path.parent, path.parent.parent):
-        if p.is_symlink():
-            raise HostFileError("the file or one of its directories is a symbolic link")
+    if linked_part(path):
+        raise HostFileError("the file or one of its directories is a symbolic link")
     text = header + "".join(f"{key}={v}\n" for v in values)
     tmp = path.with_name(f".{path.name}.incoming")
     done = False
@@ -120,7 +132,9 @@ def write(path: Path, header: str, key: str, values: list[str]) -> int:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
             os.fchmod(fd, 0o600)
-            os.write(fd, text.encode("utf-8"))
+            data = text.encode("utf-8")
+            while data:
+                data = data[os.write(fd, data):]
             os.fsync(fd)
         finally:
             os.close(fd)

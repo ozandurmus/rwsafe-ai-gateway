@@ -391,6 +391,8 @@ def write_output(path: Path, text: str) -> str | None:
     /dev/stdout, a link to a terminal or into the repository is refused), never a terminal, a character device or
     another kind; truncated and set to 0600 only after those checks. Returns the reason it refused, or None; the reason
     never holds the path."""
+    if path.parent.is_symlink():   # PR 56 review D-04
+        return "is in a directory that is a symbolic link"
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), 0o600)
     except OSError as e:
@@ -408,6 +410,20 @@ def write_output(path: Path, text: str) -> str | None:
     finally:
         os.close(fd)
     return None
+
+
+def stdout_is_pipe() -> bool:
+    """True when standard output is a pipe (`render.py ... | kubectl apply -f -`), or an in-memory stream without a
+    file descriptor (the self-test). PR 56 review D-02: a filled render never goes to a terminal, a redirected file
+    (which would skip --output's checks), a device or a socket."""
+    try:
+        fd = sys.stdout.fileno()
+    except (OSError, ValueError):
+        return True
+    try:
+        return stat.S_ISFIFO(os.fstat(fd).st_mode)
+    except OSError:
+        return False
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -478,9 +494,10 @@ def main(argv: list[str] | None = None) -> int:
         # A render that holds host addresses never reaches a terminal or the repository (AGENTS.md 4.2).
         held = " and ".join(w for w, v in (("the directory ranges", ranges), ("the ICAP client addresses", addresses))
                             if v)
-        if args.output is None and sys.stdout.isatty():
-            print(f"render refused: the render holds {held}; pipe it to kubectl or give --output outside "
-                  "the repository", file=sys.stderr)
+        if args.output is None and not stdout_is_pipe():
+            print(f"render refused: the render holds {held}; standard output is not a pipe (a terminal, a "
+                  "redirected file or a device): pipe it to kubectl or give --output outside the repository",
+                  file=sys.stderr)
             return 1
         if args.output is not None and _inside(args.output, mc.REPO_ROOT):
             print(f"render refused: the render holds {held}; --output must be outside the repository",

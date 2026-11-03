@@ -272,12 +272,17 @@ kubectl diff --server-side -f ~/pilot/app.json | grep -c '^+++ '
 ```
 
 Expected: `render: target pilot, product ..., 44 objects (...)` and `render: directory egress: no range file; the
-policy keeps its placeholder ...` (or `directory egress: N range(s)` once step 14.5 is done); `manifest check PASS: 44
+policy keeps its placeholder ...` (or `directory egress: N range(s)` once step 14.5 is done) and `render: icap clients:
+no ICAP clients file; the policy keeps its placeholder ...` (or `icap clients: N address(es)` once step 11.5 is done);
+`manifest check PASS: 44
 objects, 4 workloads, 0 failure(s); product ...` (the fourth workload is the synthetic probe's CronJob, inside the quota;
-a note says the directory egress keeps its placeholder, which reaches nothing); the diff shows the new objects (the 12
-isolation objects are unchanged). The rendered file holds no Secret and no estate value; after step 14.5 it holds the
-directory's ranges, so it stays only in `~/pilot/` (mode 0700, the file 0600; `render.py` refuses an `--output` inside the
-repository and a terminal as the destination of such a render) and step 18 shreds it.
+notes say the directory egress and the ICAP clients policy keep their placeholders); the diff shows the new objects (the 12
+isolation objects are unchanged). The rendered file holds no Secret and no estate value; after steps 11.5 and 14.5 it
+holds the proxies' addresses and the directory's ranges, so it stays only in `~/pilot/` (mode 0700, the file 0600;
+`render.py` writes such a render only to a pipe or to an `--output` regular file outside the repository) and step 18
+shreds it. **Re-render `~/pilot/app.json` with this command after step 11.5 or 14.5 before applying it again**: a file
+rendered earlier still holds the placeholders, and applying it would put them back (no proxy connects, the directory
+is unreachable).
 
 ## 9. HOST CHANGE H7: database and control plane
 
@@ -374,7 +379,7 @@ ServiceLB answers on the node's 1344 for every source, and plain ICAP has no pee
 allowlist (H-1) must be in place before step 12. The rule lives in its **own** nftables table; neXus's table
 `inet nexus_host` is neither read nor changed. Nothing in the block is edited: it asks for the proxy addresses (today
 the one test proxy, PO 2026-11-03) one at a time with `read -rs` (never echoed, stored or passed as an argument), each
-checked to be one IPv4 address with no repeat, then "Baska adres eklensin mi? (y/n)": y asks the next, n writes (1 to 8
+checked to be one private (RFC 1918) IPv4 address outside the cluster's pod and Service ranges, with no repeat, then "Baska adres eklensin mi? (y/n)": y asks the next, n writes (1 to 8
 addresses). The block derives the product name itself from `~/rwsafe/deploy/rwsafe/product.env` and runs in a subshell
 with `set -euo pipefail` (PR 40 review D-04): it refuses to run when `~/rwsafe` or the name is missing or the name is not
 a product name (an empty name would otherwise create a table `inet _pilot`), and stops at the first failing command
@@ -395,7 +400,9 @@ try:
     a = ipaddress.ip_address(sys.stdin.readline().rstrip("\r\n"))
 except ValueError:
     sys.exit(1)
-sys.exit(0 if a.version == 4 and not (a.is_loopback or a.is_multicast or a.is_unspecified or a.is_link_local or a.is_reserved) else 1)'; }
+p = [ipaddress.IPv4Network((x << 24 | y << 16, n)) for x, y, n in ((10, 0, 8), (172, 16, 12), (192, 168, 16))]
+k = [ipaddress.IPv4Network((10 << 24 | y << 16, 16)) for y in (42, 43)]
+sys.exit(0 if a.version == 4 and any(a in n for n in p) and not any(a in n for n in k) else 1)'; }
 addrs=()
 while [ "${#addrs[@]}" -lt 8 ]; do
   a=""
@@ -404,7 +411,7 @@ while [ "${#addrs[@]}" -lt 8 ]; do
   a="${a%$'\r'}"
   dup=0
   for b in ${addrs[@]+"${addrs[@]}"}; do if [ "${b}" = "${a}" ]; then dup=1; fi; done
-  if [ "${dup}" = 1 ] || ! ok_addr "${a}"; then echo "adres alinmadi (tek IPv4 adresi, tekrar yok); yeniden yazin" >&2; continue; fi
+  if [ "${dup}" = 1 ] || ! ok_addr "${a}"; then echo "adres alinmadi (tek ozel IPv4 adresi, tekrar yok); yeniden yazin" >&2; continue; fi
   addrs+=("${a}")
   [ "${#addrs[@]}" -lt 8 ] || break
   yn=""
@@ -455,7 +462,7 @@ Expected: `table rwsafe_pilot written (1 address(es))` from the block; then from
 firewall table check, product rwsafe
 objects        ok   0 object(s) of another kind than table, set, chain, rule
 table          ok   inet rwsafe_pilot: 1 table(s) in the input, exactly 1 expected
-set            ok   icap_clients: 1 set(s), 1 element(s), all single addresses (values not shown; 1 to 8 single IPv4 addresses expected)
+set            ok   icap_clients: 1 set(s), 1 element(s), all single private addresses (values not shown; 1 to 8 single private (RFC 1918) IPv4 addresses outside the cluster ranges expected)
 chain          ok   1 chain(s); exactly 1 expected: prerouting, type filter, hook prerouting, priority -150, policy accept
 rules          ok   2 rule(s); exactly 2 expected, each equal to step 11 in every field and operator: IPv4 1, IPv6 1, other 0
 result: PASS
@@ -464,7 +471,8 @@ result: PASS
 Running the block again replaces the whole table in one `nft -f` transaction: the empty `table` line makes sure it
 exists, `delete table` removes it with its set elements, and the definition writes it anew (measured on HOST-A
 2026-11-03: the former `flush table` kept the old set elements, so a second run added the new addresses to the old
-ones). The check passes only the exact table above (PR 40 review D-02): 1 to 8 single IPv4 addresses
+ones). The check passes only the exact table above (PR 40 review D-02): 1 to 8 single private (RFC 1918) IPv4
+addresses outside the cluster's pod and Service ranges, no repeat
 (no prefix or range), the one chain, and exactly the two rules with every field, expression and operator as written
 (every match `==`, `ct state new` printed by nft as `in`; the only negation is the designed `ip saddr != @icap_clients`);
 an extra object, chain, rule, expression or field fails, and so does a shape it does not recognise (UNVERIFIED
@@ -564,8 +572,9 @@ The pilot no longer renders `${PRODUCT}-icap-from-servicelb` (it admitted nothin
 3. **PO, on the proxy console**: repeat the ICAP service's health check. Expected: healthy. Still failing: report the
    health check's text class only; the orchestrator re-runs step 13.
 
-Undo: shred the file (`shred -u ~/.config/<product>/pilot/icap-clients.env`) and run step 2 again (the placeholder
-returns and no proxy can connect: fail closed).
+Undo: shred the file (`shred -u ~/.config/<product>/pilot/icap-clients.env`) and run step 2's `render.py ... | kubectl
+apply --server-side -f -` command (not its `--check`, which fails without the file): the render prints `no ICAP
+clients file`, the placeholder returns and no proxy can connect (fail closed).
 
 ## 12. HOST CHANGE H9: the ServiceLB Service (opens 1344 on the node)
 
@@ -580,7 +589,8 @@ kubectl -n kube-system get pods -l "svccontroller.k3s.cattle.io/svcname=${PRODUC
 ```
 
 Expected: `render: ... 1 objects (1 Service)`; `service/${PRODUCT}-icap-lb serverside-applied`; `1` (the ServiceLB
-pod). `kubectl apply --server-side -f ~/pilot/app.json` (step 8) is the same end state: every earlier object unchanged.
+pod). `kubectl apply --server-side -f ~/pilot/app.json` (step 8) is the same end state only when `~/pilot/app.json` was
+rendered after steps 11.5 and 14.5 (otherwise re-render it first, step 8): an older file puts the placeholders back.
 
 ## 13. Pilot check (READ)
 
@@ -714,7 +724,8 @@ kubectl -n "${PRODUCT}" get ingress --no-headers | wc -l
 
 Expected: `render: ... 2 objects (1 Ingress, 1 NetworkPolicy)`; `ingress.networking.k8s.io/${PRODUCT}-admin
 serverside-applied` and `networkpolicy.networking.k8s.io/${PRODUCT}-control-from-traefik serverside-applied`; `1`.
-`kubectl apply --server-side -f ~/pilot/app.json` (step 8) is the same end state. The other product's Ingress is not
+`kubectl apply --server-side -f ~/pilot/app.json` (step 8) is the same end state only when the file was rendered after
+steps 11.5 and 14.5 (otherwise re-render it first, step 8). The other product's Ingress is not
 listed or touched.
 
 ### 14.4 PO ONLY: your computer (CA certificate, hosts file, sign-in)
@@ -840,8 +851,9 @@ never go into the repository, a chat, a ticket or a command argument (AGENTS.md 
    USER_NOT_FOUND). UNREACHABLE still: the range or port is not the directory's, or the host's own firewall or the
    network between blocks it; report the class only.
 
-Undo: shred the file (`shred -u ~/.config/<product>/pilot/directory.env`) and run step 2 again; the render prints `no
-range file` and the placeholder returns.
+Undo: shred the file (`shred -u ~/.config/<product>/pilot/directory.env`) and run step 2's `render.py ... | kubectl apply
+--server-side -f -` command (not its `--check`, which fails without the file); the render prints `no range file` and the
+placeholder returns.
 
 ## 15. PROXY CHANGE P1 (the PO, proxy console): the ICAP service
 
@@ -853,7 +865,7 @@ create a new service:
 |---|---|
 | Name | `<product>-pilot-reqmod` (for example `rwsafe-pilot-reqmod`) |
 | Service URL | `icap://<node-address>:1344/reqmod-ai` |
-| Method | request modification (REQMOD) only |
+| Method | request modification (REQMOD) only: the service's **Modification Method must be Request** for `/reqmod-ai` (measured 2026-11-03 on the test proxy: with Response the health check shows "Error response from server"; with Request it is healthy) |
 | Secure ICAP | off (plain ICAP, H-2; the 30-day clock starts with the first proxied request: record the date) |
 | Preview | enabled, **4096** bytes: what the engine's OPTIONS advertises (`Preview: 4096`, step 13); "Sense settings" reads it from the engine |
 | Send | client address (X-Client-IP) and authenticated user (X-Authenticated-User, shape `DOMAIN\user`, F-3); not groups (group claims are off in the pilot) |

@@ -996,6 +996,8 @@ def check(objects: list[dict], contracts: dict, release: bool = False,
             fail(p, f"an ipBlock outside {directory_name} and {icap_clients_name} in the pilot's render")
     if pilot and not any(p["metadata"].get("name") == directory_name for p in policies):
         failures.append(f"NetworkPolicy/{product}/{directory_name}: missing from the pilot's render")
+    if pilot:
+        check_pilot_icap_ingress(policies, workloads, product, fail, failures)
     for cidr, users in sorted(placeholder_users.items()):
         if len(users) > 1:
             failures.append(f"documentation-range placeholder {cidr} is shared by {', '.join(sorted(users))}; each "
@@ -1207,6 +1209,53 @@ def check_icap_clients(p: dict, fail, product: str) -> None:
             seen.append(cidr)
     if len(seen) > ICAP_CLIENTS_MAX:
         fail(p, f"the ICAP clients policy has {len(seen)} addresses, more than {ICAP_CLIENTS_MAX}")
+
+
+def check_pilot_icap_ingress(policies: list[dict], workloads: list, product: str, fail, failures: list[str]) -> None:
+    """PR 56 review D-01: in the pilot the ICAP pods' ingress is exactly three policies. `<product>-icap-from-proxies`
+    must be rendered (check_icap_clients bounds it); `<product>-icap` admits TCP 1344 only from the ICAP e2e Job's and
+    the synthetic probe's pods (podSelector peers in the namespace, nothing else); `<product>-icap-metrics-from-scraper`
+    has one rule to TCP 9401 only. `<product>-icap-from-servicelb` (the k3s overlay's, PLAT-F2 measured wrong) and any
+    other policy with ingress rules that selects the ICAP pods fail."""
+    clients = f"{product}{ICAP_CLIENTS_POLICY_SUFFIX}"
+    in_cluster = f"{product}-icap"
+    metrics = f"{product}-icap-metrics-from-scraper"
+    servicelb = f"{product}-icap-from-servicelb"
+    if not any(p["metadata"].get("name") == clients for p in policies):
+        failures.append(f"NetworkPolicy/{product}/{clients}: missing from the pilot's render")
+    icap_labels = [labels for obj, labels, _ in workloads
+                   if obj.get("kind") == "Deployment" and obj["metadata"].get("name") == in_cluster]
+    peers_allowed = [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": f"{product}-icap-e2e"}}},
+                     {"podSelector": {"matchLabels": {"app.kubernetes.io/name": f"{product}-icap-probe"}}}]
+
+    def only_port(rule: dict, port: int) -> bool:
+        ports = rule.get("ports") or []
+        return bool(ports) and all(set(x) <= {"protocol", "port"} and x.get("protocol", "TCP") == "TCP"
+                                   and x.get("port") == port for x in ports)
+
+    for p in policies:
+        name = p["metadata"].get("name")
+        if name == servicelb:
+            fail(p, "the ServiceLB-pod ICAP policy is rendered in the pilot (measured 2026-11-03: the proxy reaches "
+                    "the ICAP pods with its own address; PILOT_RUNBOOK.md step 11.5)")
+            continue
+        rules = (p.get("spec") or {}).get("ingress") or []
+        selector = (p.get("spec") or {}).get("podSelector") or {}
+        if not rules or name == clients:
+            continue
+        if not any(selects(selector, labels) for labels in icap_labels):
+            continue
+        if name == in_cluster:
+            for n, rule in enumerate(rules, 1):
+                if not only_port(rule, ICAP_CLIENTS_PORT) or any(peer not in peers_allowed
+                                                                  for peer in rule.get("from") or []):
+                    fail(p, f"ICAP ingress rule {n} is not TCP {ICAP_CLIENTS_PORT} from the ICAP e2e Job's and the "
+                            f"synthetic probe's pods only")
+        elif name == metrics:
+            if len(rules) != 1 or not only_port(rules[0], 9401):
+                fail(p, "the ICAP metrics policy is not one rule to TCP 9401 only")
+        else:
+            fail(p, f"admits ingress to the ICAP pods in the pilot (only {clients}, {in_cluster} and {metrics} may)")
 
 
 def check_ingress(obj: dict, fail, product: str, secret_contract: dict, service_ports: dict) -> None:
