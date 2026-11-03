@@ -1,9 +1,18 @@
-# NetworkPolicies the pilot does not need: no SIEM export. Removing it leaves the SIEM's documentation-range placeholder
+# NetworkPolicies the pilot does not need: no SIEM export, and no ICAP ingress from the ServiceLB pods (measured on
+# HOST-A 2026-11-03: kube-proxy DNATs the proxy's connection straight to an ICAP pod with the proxy's own address, so
+# the ServiceLB pod carries nothing; 35-pilot-icap-clients.yaml admits the proxies' addresses instead). Removing it leaves the SIEM's documentation-range placeholder
 # CIDR out of the render. The k3s overlay's `rwsafe-control-from-traefik` stays: Traefik reaches the admin UI
 # (70-admin-ingress.yaml). The directory's egress stays too, with the pilot's ports (55-pilot-directory-egress.yaml).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: rwsafe-control-to-siem
+  namespace: rwsafe
+$patch: delete
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-icap-from-servicelb
   namespace: rwsafe
 $patch: delete

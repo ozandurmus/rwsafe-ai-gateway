@@ -22,12 +22,18 @@ The one exception is the pilot's directory egress (PILOT_RUNBOOK.md step 14.5): 
 the uncommitted, owner-only range file (default ~/.config/<product>/pilot/directory.env, tools/pilot/directory_range.py;
 `--directory-env` names another), whose ranges then replace it in memory before the check. Only counts are printed
 ("directory egress: 2 range(s)"); a render that holds ranges is never written into the repository or to a terminal.
+The pilot's ICAP clients are the same (PILOT_RUNBOOK.md step 11.5): the NetworkPolicy `<product>-icap-from-proxies`
+keeps its documentation /32 placeholder (which admits no proxy) unless the host holds the uncommitted, owner-only file
+~/.config/<product>/pilot/icap-clients.env (tools/pilot/icap_clients.py; `--icap-clients-env` names another), whose
+addresses then replace it in memory, one /32 each ("icap clients: 3 address(es)"). `--output` is opened without
+following a symbolic link and must be a regular file (never a terminal or another device).
 
 Standard library only; needs kubectl (or kustomize) on PATH.
 
 Usage: python3 -B tools/pilot/render.py [--target pilot|k3s|build] [--product NAME]
            [--dataplane-digest sha256:<64 hex>] [--control-digest sha256:<64 hex>] [--kinds Kind,Kind]
            [--phase all|control|icap|servicelb|ingress] [--output FILE] [--directory-env FILE]
+           [--icap-clients-env FILE]
        exit 0 rendered, 1 refused (the reason is printed on stderr), 2 usage
 """
 from __future__ import annotations
@@ -45,6 +51,7 @@ import manifest_check as mc  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import directory_range  # noqa: E402
+import icap_clients  # noqa: E402
 
 TARGETS = {
     "pilot": mc.REPO_ROOT / "deploy/rwsafe/overlays/pilot",
@@ -312,10 +319,28 @@ def fill_directory(objects: list[dict], product: str, ranges: list[str]) -> None
     rules[0]["to"] = [{"ipBlock": {"cidr": r}} for r in ranges]
 
 
+def icap_clients_policy(objects: list[dict], product: str) -> dict | None:
+    return next((o for o in objects if o.get("kind") == "NetworkPolicy"
+                 and (o.get("metadata") or {}).get("name") == f"{product}{mc.ICAP_CLIENTS_POLICY_SUFFIX}"), None)
+
+
+def fill_icap_clients(objects: list[dict], product: str, addresses: list[str]) -> None:
+    """Replaces the placeholder peer of the pilot's ICAP clients policy (one rule, TCP 1344) with one /32 ipBlock per
+    address, in memory (PILOT_RUNBOOK.md step 11.5); the manifest check then holds them to its ICAP clients rules."""
+    policy = icap_clients_policy(objects, product)
+    rules = ((policy or {}).get("spec") or {}).get("ingress") or []
+    if policy is None or len(rules) != 1:
+        raise Refused(f"the render holds no {product}{mc.ICAP_CLIENTS_POLICY_SUFFIX} NetworkPolicy with one ingress "
+                      f"rule to fill")
+    rules[0]["from"] = [{"ipBlock": {"cidr": f"{a}/32"}} for a in addresses]
+
+
 def render_target(target: str, product: str, digests: dict[str, str] | None = None,
-                  contracts_file: Path = mc.DEFAULT_CONTRACTS, directory_ranges: list[str] | None = None) -> list[dict]:
+                  contracts_file: Path = mc.DEFAULT_CONTRACTS, directory_ranges: list[str] | None = None,
+                  icap_addresses: list[str] | None = None) -> list[dict]:
     """The renamed, checked objects of a target; raises Refused with the reason. `directory_ranges` (pilot only, from
-    directory_range.load) fill the directory egress before the check."""
+    directory_range.load) fill the directory egress and `icap_addresses` (pilot only, from icap_clients.load) the ICAP
+    clients policy before the check."""
     refused = mc.validate_product(product)
     if refused:
         raise Refused(f"product name {product!r} {refused}")
@@ -337,6 +362,10 @@ def render_target(target: str, product: str, digests: dict[str, str] | None = No
             if target != "pilot":
                 raise Refused("directory ranges fill the pilot's render only (the k3s overlay uses the estate patch)")
             fill_directory(objects, product, directory_ranges)
+        if icap_addresses:
+            if target != "pilot":
+                raise Refused("ICAP client addresses fill the pilot's render only")
+            fill_icap_clients(objects, product, icap_addresses)
         release = set(digests) == set(IMAGES)
         # PO decision Q-47: only the pilot target may carry the single-approval switch on.
         failures, _ = mc.check(objects, contracts, release=release, product=product,
@@ -351,15 +380,23 @@ def default_directory_env(product: str) -> Path:
     return directory_range.default_path(product)
 
 
+def default_icap_clients_env(product: str) -> Path:
+    """The host's ICAP clients file (PILOT_RUNBOOK.md step 11.5); tools/pilot/test_render.py points it elsewhere."""
+    return icap_clients.default_path(product)
+
+
+
 def write_output(path: Path, text: str) -> str | None:
     """Writes the render to a regular file only (PR 54 review D-03): opened without following a symbolic link (so
     /dev/stdout, a link to a terminal or into the repository is refused), never a terminal, a character device or
     another kind; truncated and set to 0600 only after those checks. Returns the reason it refused, or None; the reason
     never holds the path."""
+    if path.parent.is_symlink():   # PR 56 review D-04
+        return "is in a directory that is a symbolic link"
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), 0o600)
     except OSError as e:
-        return f"cannot be opened ({directory_range._os_reason(e)}; a symbolic link is refused)"
+        return f"cannot be opened ({icap_clients.hvf.os_reason(e)}; a symbolic link is refused)"
     try:
         if os.isatty(fd) or not stat.S_ISREG(os.fstat(fd).st_mode):
             return "is not a regular file (a terminal, device or another kind is refused)"
@@ -369,10 +406,24 @@ def write_output(path: Path, text: str) -> str | None:
         while data:
             data = data[os.write(fd, data):]
     except OSError as e:
-        return f"cannot be written ({directory_range._os_reason(e)})"
+        return f"cannot be written ({icap_clients.hvf.os_reason(e)})"
     finally:
         os.close(fd)
     return None
+
+
+def stdout_is_pipe() -> bool:
+    """True when standard output is a pipe (`render.py ... | kubectl apply -f -`), or an in-memory stream without a
+    file descriptor (the self-test). PR 56 review D-02: a filled render never goes to a terminal, a redirected file
+    (which would skip --output's checks), a device or a socket."""
+    try:
+        fd = sys.stdout.fileno()
+    except (OSError, ValueError):
+        return True
+    try:
+        return stat.S_ISFIFO(os.fstat(fd).st_mode)
+    except OSError:
+        return False
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -398,6 +449,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--directory-env", type=Path,
                     help="pilot only: the directory range file (default ~/.config/<product>/pilot/directory.env; "
                          "PILOT_RUNBOOK.md step 14.5); without it the directory egress keeps its placeholder")
+    ap.add_argument("--icap-clients-env", type=Path,
+                    help="pilot only: the ICAP clients file (default ~/.config/<product>/pilot/icap-clients.env; "
+                         "PILOT_RUNBOOK.md step 11.5); without it the ICAP clients policy keeps its placeholder, which "
+                         "admits no proxy")
     args = ap.parse_args(argv)
     product = args.product or mc.default_product()
     digests = {k: v for k, v in (("dataplane", args.dataplane_digest), ("control", args.control_digest)) if v}
@@ -407,7 +462,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.directory_env and args.target != "pilot":
         print("render: --directory-env applies to the pilot target only", file=sys.stderr)
         return 2
+    if args.icap_clients_env and args.target != "pilot":
+        print("render: --icap-clients-env applies to the pilot target only", file=sys.stderr)
+        return 2
     ranges = None
+    addresses = None
     if args.target == "pilot":
         if mc.validate_product(product) is None:
             range_file = args.directory_env or default_directory_env(product)
@@ -419,18 +478,33 @@ def main(argv: list[str] | None = None) -> int:
             if ranges is None and args.directory_env:
                 print("render refused: the named directory range file does not exist", file=sys.stderr)
                 return 1
-    if ranges:
-        # A render that holds ranges never reaches a terminal or the repository (AGENTS.md 4.2).
-        if args.output is None and sys.stdout.isatty():
-            print("render refused: the render holds the directory ranges; pipe it to kubectl or give --output outside "
-                  "the repository", file=sys.stderr)
+            clients_file = args.icap_clients_env or default_icap_clients_env(product)
+            try:
+                addresses = icap_clients.load(clients_file)
+            except icap_clients.Error as e:
+                print(f"render refused: the ICAP clients file: {e}", file=sys.stderr)
+                return 1
+            except OSError as e:
+                print(f"render refused: the ICAP clients file: {type(e).__name__}", file=sys.stderr)
+                return 1
+            if addresses is None and args.icap_clients_env:
+                print("render refused: the named ICAP clients file does not exist", file=sys.stderr)
+                return 1
+    if ranges or addresses:
+        # A render that holds host addresses never reaches a terminal or the repository (AGENTS.md 4.2).
+        held = " and ".join(w for w, v in (("the directory ranges", ranges), ("the ICAP client addresses", addresses))
+                            if v)
+        if args.output is None and not stdout_is_pipe():
+            print(f"render refused: the render holds {held}; standard output is not a pipe (a terminal, a "
+                  "redirected file or a device): pipe it to kubectl or give --output outside the repository",
+                  file=sys.stderr)
             return 1
         if args.output is not None and _inside(args.output, mc.REPO_ROOT):
-            print("render refused: the render holds the directory ranges; --output must be outside the repository",
+            print(f"render refused: the render holds {held}; --output must be outside the repository",
                   file=sys.stderr)
             return 1
     try:
-        objects = render_target(args.target, product, digests, directory_ranges=ranges)
+        objects = render_target(args.target, product, digests, directory_ranges=ranges, icap_addresses=addresses)
     except Refused as e:
         print(f"render refused: {e}", file=sys.stderr)
         return 1
@@ -466,6 +540,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("render: directory egress: no range file; the policy keeps its placeholder, which reaches nothing "
                   "(the LDAP settings test answers UNREACHABLE; PILOT_RUNBOOK.md step 14.5)", file=sys.stderr)
+    if args.target == "pilot" and icap_clients_policy(objects, product) is not None:
+        if addresses:
+            print(f"render: icap clients: {len(addresses)} address(es)", file=sys.stderr)
+        else:
+            print("render: icap clients: no ICAP clients file; the policy keeps its placeholder, which admits no proxy "
+                  "(the ProxySG cannot connect; PILOT_RUNBOOK.md step 11.5)", file=sys.stderr)
     kinds: dict[str, int] = {}
     for o in objects:
         kinds[o.get("kind")] = kinds.get(o.get("kind"), 0) + 1

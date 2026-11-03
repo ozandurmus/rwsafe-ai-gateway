@@ -1,0 +1,32 @@
+# The ProxySG's ICAP connections (PILOT_RUNBOOK.md step 11.5; PO decision 2026-11-03, "Proxy adresleriyle"): the ICAP
+# pods admit TCP 1344 from the proxies' own addresses only.
+#
+# Measured on HOST-A (2026-11-03): the proxy's SYN to the node's 1344 is DNATed by kube-proxy's LoadBalancer rule for
+# the node address straight to an ICAP pod endpoint, bypassing the ServiceLB pod, and keeps the proxy's own source
+# address until the POSTROUTING masquerade; k3s's network-policy controller checks the ICAP pods' ingress before that,
+# with the proxy's address. PLAT-F2's assumption (ServiceLB masquerades the source to its pod address) does not hold on
+# this host, so the former `rwsafe-icap-from-servicelb` admitted nothing that arrives and is removed in the pilot
+# (50-pilot-removed.yaml). The host firewall table (step 11) still admits only the same proxies to the node's 1344.
+#
+# The committed peer is a documentation /32 (manifest_check.ICAP_CLIENTS_PLACEHOLDER), which matches no proxy: without
+# the host's file the proxy cannot connect (fail closed, never a broad allow). tools/pilot/render.py replaces it in
+# memory with one /32 per PROXY_ADDR line of the uncommitted, owner-only ~/.config/<product>/pilot/icap-clients.env
+# (written by tools/pilot/icap_clients.sh, the PO only). An address is never committed (AGENTS.md 4.2, 8).
+# tools/deploy/manifest_check.py holds this policy to the ICAP pods, Ingress, TCP 1344 and private /32 ipBlocks, at most 8.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rwsafe-icap-from-proxies
+  namespace: rwsafe
+  labels: { app.kubernetes.io/part-of: rwsafe, app.kubernetes.io/name: rwsafe-icap }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rwsafe-icap
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 203.0.113.10/32
+      ports:
+        - { protocol: TCP, port: 1344 }

@@ -827,6 +827,31 @@ PLATFORM (Notifications, System logs, System). TR/EN catalogues extended.
 - Open: the PO types the ranges on the host and the orchestrator applies step 14.5; the k3s cluster ranges in the rules
   are the k3s defaults (HOST-A's withheld cluster-cidr is UNVERIFIED; step 14.2 shows the pod range in use).
 
+## Done (pilot ICAP clients, PILOT_RUNBOOK step 11.5)
+
+- Measured on HOST-A (2026-11-03): kube-proxy DNATs the ProxySG's connection to the node's 1344 straight to an ICAP pod
+  with the proxy's own source address (ServiceLB's pod bypassed), so the ICAP pods' NetworkPolicies dropped it.
+- The pilot overlay adds `rwsafe-icap-from-proxies` (`35-pilot-icap-clients.yaml`): ICAP pods only, Ingress, TCP 1344,
+  ipBlock /32 peers; a documentation /32 placeholder admits no proxy. `rwsafe-icap-from-servicelb` is removed in the
+  pilot. `render.py` fills the policy in memory from the host's uncommitted `~/.config/<product>/pilot/icap-clients.env`
+  (`PROXY_ADDR=` lines, 1 to 8 private RFC 1918 IPv4 addresses; `tools/pilot/icap_clients.py`, file handling shared
+  with the directory ranges in `tools/pilot/host_value_file.py`) and prints counts only. `manifest_check.py` binds the
+  policy (namespace, exact ICAP pod selector, Ingress, TCP 1344, private /32 ipBlocks, no except or duplicate, at most
+  8) and admits it as the second ipBlock policy in the pilot. `tools/pilot/icap_clients.sh` (PO): `read -rs`, then
+  "Baska adres eklensin mi? (y/n)".
+- Step 11's firewall block asks 1 to 8 addresses the same way and replaces the table atomically (`table`, `delete
+  table`, definition in one `nft -f`; the former `flush table` kept old set elements, measured 2026-11-03);
+  `verify_firewall.sh --table` accepts 1 to 8 single addresses.
+- Applied on the pilot 2026-11-03: the test proxy's ICAP health check is healthy with the service's Modification Method
+  Request (Response gives "Error response from server"; PILOT_RUNBOOK step 15).
+- PR 56 review (Argon, MERGE WITH CORRECTIONS) D-01..D-05 fixed: the pilot check requires the ICAP clients policy and
+  refuses the ServiceLB policy and any other ICAP ingress; a filled render goes only to a pipe or a regular `--output`
+  outside the repository; step 11 and `verify_firewall --table` take RFC 1918 addresses outside the cluster ranges only;
+  symbolic links refused up to ~/.config for reading and writing; runbook re-render and undo wording.
+- Open (production design): the k3s overlay's
+  `rwsafe-icap-from-servicelb` has the same flaw (PLAT-F2 measured wrong); the k3s ICAP ingress needs an address-based
+  design before production (not redesigned here).
+
 ## Not done
 
 ICAP engine, later slices: decompression and base64 layers, the file pipeline, login-step tenant rules, flow shape

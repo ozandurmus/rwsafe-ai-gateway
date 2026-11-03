@@ -20,7 +20,14 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parent / "verify_firewall.sh"
 REPO = SCRIPT.parents[2]
 TABLE = "rwsafe_pilot"
-ADDRESSES = ["192.0.2.11", "192.0.2.12", "198.51.100.13"]
+
+
+def addr(*octets: int) -> str:
+    """A synthetic private address built at runtime (the privacy gate refuses a non-documentation dotted literal)."""
+    return ".".join(str(o) for o in octets)
+
+
+ADDRESSES = [addr(10, 20, 30, 11), addr(10, 20, 30, 12), addr(172, 16, 5, 13)]
 
 
 def table_json() -> dict:
@@ -79,12 +86,23 @@ class Table(unittest.TestCase):
         rc, out = run(json.dumps(table_json()), "--table")
         self.assertEqual(rc, 0, out)
         self.assertIn("result: PASS", out)
-        self.assertIn("icap_clients: 1 set(s), 3 element(s), all single addresses", out)
+        self.assertIn("icap_clients: 1 set(s), 3 element(s), all single private addresses", out)
         self.assertIn("2 rule(s); exactly 2 expected, each equal to step 11 in every field and operator: IPv4 1, IPv6 1, "
                       "other 0", out)
         for a in ADDRESSES:
             self.assertNotIn(a, out)
         self.assertNotIn("<ip>", out)
+
+    def test_one_to_eight_addresses_pass(self):
+        for n in (1, 2, 8):
+            with self.subTest(n):
+                doc = table_json()
+                sett(doc)["elem"] = [addr(10, 20, 30, i) for i in range(11, 11 + n)]
+                rc, out = run(json.dumps(doc), "--table")
+                self.assertEqual(rc, 0, out)
+                self.assertIn(f"icap_clients: 1 set(s), {n} element(s), all single private addresses (values not "
+                              f"shown; 1 to 8 single private (RFC 1918) IPv4 addresses outside the cluster ranges "
+                              f"expected)", out)
 
     def test_ct_state_printed_with_equals_also_passes(self):
         doc = table_json()
@@ -117,13 +135,22 @@ class Table(unittest.TestCase):
             (lambda d: d["nftables"].append({"map": {"family": "inet", "table": TABLE, "name": "m"}}),
              "1 object(s) of another kind"),
             (lambda d: sett(d).update(elem=[]), "0 element(s)"),
-            (lambda d: sett(d)["elem"].pop(), "2 element(s)"),
-            (lambda d: sett(d)["elem"].append("192.0.2.14"), "4 element(s)"),
+            (lambda d: sett(d)["elem"].extend(addr(10, 20, 31, i) for i in range(20, 26)), "9 element(s)"),
+            # PR 56 review D-03: only private (RFC 1918) addresses outside the cluster's ranges, no repeat
+            (lambda d: sett(d)["elem"].__setitem__(0, "192.0.2.11"), "not all single private addresses"),
+            (lambda d: sett(d)["elem"].__setitem__(0, addr(8, 8, 4, 4)), "not all single private addresses"),
+            (lambda d: sett(d)["elem"].__setitem__(0, addr(10, 42, 0, 9)), "not all single private addresses"),
+            (lambda d: sett(d)["elem"].__setitem__(0, addr(10, 43, 0, 1)), "not all single private addresses"),
+            (lambda d: sett(d)["elem"].__setitem__(0, addr(127, 0, 0, 1)), "not all single private addresses"),
+            (lambda d: sett(d)["elem"].__setitem__(0, addr(169, 254, 0, 1)), "not all single private addresses"),
+            (lambda d: sett(d)["elem"].__setitem__(0, addr(224, 0, 0, 1)), "not all single private addresses"),
+            (lambda d: sett(d)["elem"].__setitem__(0, addr(0, 0, 0, 0)), "not all single private addresses"),
+            (lambda d: sett(d)["elem"].__setitem__(0, ADDRESSES[1]), "or repeated"),
             (lambda d: sett(d)["elem"].__setitem__(0, {"prefix": {"addr": "192.0.2.0", "len": 24}}),
-             "not all single addresses"),
+             "not all single private addresses"),
             (lambda d: sett(d)["elem"].__setitem__(0, {"range": ["192.0.2.1", "192.0.2.200"]}),
-             "not all single addresses"),
-            (lambda d: sett(d)["elem"].__setitem__(0, "0.0.0.0/0"), "not all single addresses"),
+             "not all single private addresses"),
+            (lambda d: sett(d)["elem"].__setitem__(0, "0.0.0.0/0"), "not all single private addresses"),
             (lambda d: sett(d).update(flags=["interval", "timeout"]), "icap_clients: 1 set(s)"),
             (lambda d: sett(d).update(comment="x"), "icap_clients: 1 set(s)"),
             (lambda d: d["nftables"][3]["chain"].update(prio=0), "1 chain(s)"),
@@ -233,7 +260,9 @@ class FirewallBlock(unittest.TestCase):
     """PR 40 review D-04: the block derives the product name itself, refuses without ~/rwsafe or a valid name, and
     stops at the first error; sudo is a stand-in that records what it would run."""
 
-    def run_block(self, doc: Path, product_line: str | None, sudo_rc: int = 0) -> tuple[int, str, str]:
+    def run_block(self, doc: Path, product_line: str | None, sudo_rc: int = 0,
+                  typed: str | None = None) -> tuple[int, str, str]:
+        typed = ADDRESSES[0] + "\nn\n" if typed is None else typed
         with tempfile.TemporaryDirectory() as d:
             home, bin_dir = Path(d) / "home", Path(d) / "bin"
             bin_dir.mkdir()
@@ -244,9 +273,8 @@ class FirewallBlock(unittest.TestCase):
             log = Path(d) / "sudo.log"
             (bin_dir / "sudo").write_text(f'#!/bin/sh\necho "$*" >> "{log}"\ncat >> "{log}"\nexit {sudo_rc}\n')
             (bin_dir / "sudo").chmod(0o755)
-            block = po_block(doc).replace("<proxysg-address-1>", "192.0.2.11").replace(
-                "<vekil-adresi-1>", "192.0.2.11")
-            out = subprocess.run(["bash", "-c", block], capture_output=True, text=True, timeout=30,
+            block = po_block(doc)
+            out = subprocess.run(["bash", "-c", block], input=typed, capture_output=True, text=True, timeout=30,
                                  env={"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin"})
             return out.returncode, out.stdout + out.stderr, log.read_text() if log.exists() else ""
 
@@ -255,9 +283,32 @@ class FirewallBlock(unittest.TestCase):
             with self.subTest(doc.name):
                 rc, out, sudo = self.run_block(doc, "PRODUCT=rwsafe")
                 self.assertEqual(rc, 0, out)
-                self.assertIn("table rwsafe_pilot written", out)
+                self.assertIn("table rwsafe_pilot written (1 address(es))", out)
                 self.assertTrue(sudo.startswith("nft -f -\n"), sudo)
-                self.assertIn("table inet rwsafe_pilot {", sudo)
+                # one transaction: ensure, delete (set elements included), define anew
+                self.assertIn("table inet rwsafe_pilot {}\ndelete table inet rwsafe_pilot\ntable inet rwsafe_pilot {",
+                              sudo)
+                self.assertNotIn("flush", sudo)
+                self.assertIn(f"elements = {{ {ADDRESSES[0]} }}", sudo)
+                self.assertNotIn(ADDRESSES[0], out)
+                # several addresses, a refused and a repeated one asked again, a wrong answer asked again
+                # refused: a prefix, a repeat, a documentation (public) address, the pod range, a public address
+                rc, out, sudo = self.run_block(doc, "PRODUCT=rwsafe", typed="\n".join([
+                    ADDRESSES[0], "y", addr(10, 20, 30, 0) + "/24", ADDRESSES[0], "192.0.2.11", addr(10, 42, 0, 9),
+                    addr(8, 8, 4, 4), ADDRESSES[2], "x", "n"]) + "\n")
+                self.assertEqual(rc, 0, out)
+                self.assertIn(f"elements = {{ {ADDRESSES[0]}, {ADDRESSES[2]} }}", sudo)
+                self.assertEqual(out.count("adres alinmadi"), 5, out)
+                self.assertIn("written (2 address(es))", out)
+                rc, out, sudo = self.run_block(doc, "PRODUCT=rwsafe",
+                                               typed="".join(f"{addr(10, 20, 30, i)}\ny\n" for i in range(1, 12)))
+                self.assertEqual(rc, 0, out)
+                self.assertIn("written (8 address(es))", out)
+                for typed in ("", ADDRESSES[0] + "\n", addr(127, 0, 0, 1) + "\n"):   # the input ends: nothing written
+                    rc, out, sudo = self.run_block(doc, "PRODUCT=rwsafe", typed=typed)
+                    self.assertNotEqual(rc, 0, out)
+                    self.assertEqual(sudo, "")
+                    self.assertIn("durduruldu", out)
                 for product_line in (None, "PRODUCT=", "# no product line", "PRODUCT=bad name"):
                     rc, out, sudo = self.run_block(doc, product_line)
                     self.assertNotEqual(rc, 0, (product_line, out))

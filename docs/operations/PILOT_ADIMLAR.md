@@ -23,9 +23,9 @@ komutunu çalıştırın. Ajan bu adımı hiçbir zaman çalıştırmaz ve dosya
 
 ## A. Güvenlik duvarı (11. adım, kök yetkisiyle, yalnızca siz)
 
-Sunucuda çalıştırın. Aşağıdaki bloğu olduğu gibi kopyalayın; yalnızca üç `<vekil-adresi-N>` yer tutucusunu gerçek
-ProxySG adresleriyle değiştirin (köşeli ayraçlar dahil silinir, adresler virgülle ayrılır). Başka hiçbir şeyi
-değiştirmeyin. Blok ürün adını kendisi `~/rwsafe/deploy/rwsafe/product.env` dosyasından okur; `~/rwsafe` klasörü ya da
+Sunucuda çalıştırın. Aşağıdaki bloğu olduğu gibi kopyalayın; hiçbir şeyi değiştirmeyin. Blok vekil adresini sorar
+(yazdığınız görünmez); ardından "Baska adres eklensin mi? (y/n)" sorar: y bir sonraki adresi sorar, n yazar (1 ile 8
+adres arası; bugün yalnızca test vekili). Blok ürün adını kendisi `~/rwsafe/deploy/rwsafe/product.env` dosyasından okur; `~/rwsafe` klasörü ya da
 ürün adı yoksa hiçbir şey yapmadan durur ve ilk hatada kendiliğinden durur. Ayraçlar `(` ve `)` bloğu ayrı bir kabukta
 çalıştırır; bir hata olsa da terminaliniz kapanmaz.
 
@@ -37,15 +37,45 @@ PRODUCT="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)"
 case "${PRODUCT}" in
   ""|*[!a-z0-9-]*) echo "durduruldu: ~/rwsafe/deploy/rwsafe/product.env içinde geçerli bir ürün adı yok"; exit 1 ;;
 esac
-T="${PRODUCT//-/_}_pilot"
+T="${PRODUCT//-/_}_pilot"   # nftables names take no hyphen: rwsafe_pilot
+ok_addr() { printf '%s\n' "$1" | python3 -I -c '
+import ipaddress, sys
+try:
+    a = ipaddress.ip_address(sys.stdin.readline().rstrip("\r\n"))
+except ValueError:
+    sys.exit(1)
+p = [ipaddress.IPv4Network((x << 24 | y << 16, n)) for x, y, n in ((10, 0, 8), (172, 16, 12), (192, 168, 16))]
+k = [ipaddress.IPv4Network((10 << 24 | y << 16, 16)) for y in (42, 43)]
+sys.exit(0 if a.version == 4 and any(a in n for n in p) and not any(a in n for n in k) else 1)'; }
+addrs=()
+while [ "${#addrs[@]}" -lt 8 ]; do
+  a=""
+  if ! IFS= read -rs -p "Vekil adresi $(( ${#addrs[@]} + 1 )): " a && [ -z "${a}" ]; then echo "durduruldu: giris bitti" >&2; exit 1; fi
+  echo >&2
+  a="${a%$'\r'}"
+  dup=0
+  for b in ${addrs[@]+"${addrs[@]}"}; do if [ "${b}" = "${a}" ]; then dup=1; fi; done
+  if [ "${dup}" = 1 ] || ! ok_addr "${a}"; then echo "adres alinmadi (tek ozel IPv4 adresi, tekrar yok); yeniden yazin" >&2; continue; fi
+  addrs+=("${a}")
+  [ "${#addrs[@]}" -lt 8 ] || break
+  yn=""
+  while :; do
+    if ! IFS= read -r -p "Baska adres eklensin mi? (y/n) " yn && [ -z "${yn}" ]; then echo "durduruldu: giris bitti" >&2; exit 1; fi
+    yn="${yn%$'\r'}"
+    case "${yn}" in y|Y|n|N) break ;; *) echo "y ya da n yazin" >&2 ;; esac
+  done
+  case "${yn}" in n|N) break ;; esac
+done
+elems=""
+for b in "${addrs[@]}"; do elems="${elems:+${elems}, }${b}"; done
 sudo nft -f - <<EOF
 table inet ${T} {}
-flush table inet ${T}
+delete table inet ${T}
 table inet ${T} {
   set icap_clients {
     type ipv4_addr
     flags interval
-    elements = { <vekil-adresi-1>, <vekil-adresi-2>, <vekil-adresi-3> }
+    elements = { ${elems} }
   }
   chain prerouting {
     type filter hook prerouting priority -150; policy accept;
@@ -54,7 +84,8 @@ table inet ${T} {
   }
 }
 EOF
-echo "table ${T} written"
+echo "table ${T} written (${#addrs[@]} address(es))"
+addrs=(); elems=""
 )
 ```
 
@@ -65,11 +96,11 @@ yeniden çalıştırabilirsiniz):
 (set -euo pipefail; cd ~/rwsafe; P="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)"; test -n "${P}"; sudo nft -j list table inet "${P//-/_}_pilot" | tools/pilot/verify_firewall.sh --table)
 ```
 
-Görmeniz gereken: `3 element(s)`, `IPv4 1, IPv6 1, other 0` ve en sonda `result: PASS`. Bu çıktıda hiçbir adres
-görünmez. Denetim yalnızca yukarıdaki tablonun birebir aynısını kabul eder: tam üç tek adres (adres aralığı ya da alt ağ
+Görmeniz gereken: yazdığınız adres sayısı kadar `element(s)` (bugün `1 element(s)`), `IPv4 1, IPv6 1, other 0` ve en sonda `result: PASS`. Bu çıktıda hiçbir adres
+görünmez. Denetim yalnızca yukarıdaki tablonun birebir aynısını kabul eder: 1 ile 8 arası tek adres (adres aralığı ya da alt ağ
 değil), tek zincir ve her alanı ve işleciyle birebir aynı iki kural; fazladan bir kural, zincir ya da ifade de
 başarısız sayılır. `FAIL` görürseniz durun, kuralı denetime uydurmak için değiştirmeyin ve yalnızca `FAIL` yazan satırı
-iletin. Bloğu ikinci kez çalıştırmak kuralları çoğaltmaz, yalnızca yeniler.
+iletin. Bloğu ikinci kez çalıştırmak tabloyu tümüyle siler ve yeniden yazar; eski adresler kalmaz.
 
 İsterseniz ek olarak kendi bilgisayarınızdan (vekil olmayan bir makineden) `nc -vz -w 3 <sunucu-adresi> 1344` deneyin:
 zaman aşımına uğramalıdır. "Connection refused" görürseniz kural bu sunucuda işlemiyor demektir; durun.
@@ -82,7 +113,7 @@ Geri alma (tek satır, ürün adını aynı biçimde kendisi okur):
 (set -euo pipefail; cd ~/rwsafe; P="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)"; test -n "${P}"; sudo nft delete table inet "${P//-/_}_pilot")
 ```
 
-**Ajana söyleyin:** "Güvenlik duvarı kuruldu: result PASS, 3 element." (Adres yazmayın.) Ajan bunun üzerine
+**Ajana söyleyin:** "Güvenlik duvarı kuruldu: result PASS, 1 element." (Adres yazmayın.) Ajan bunun üzerine
 `tools/pilot/verify_firewall.sh` ile küme içi trafiğin hâlâ geçtiğini ve 1344'ün hâlâ kapalı olduğunu doğrular (11.3.
 adım), onayınızı alarak 1344'ü açan hizmeti kurar (12. adım) ve pilot denetimini çalıştırır (13. adım). Vekil konsoluna
 ancak ajan "1344 açıldı, pilot denetimi PASS" dedikten sonra geçin.

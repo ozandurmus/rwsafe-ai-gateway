@@ -20,22 +20,19 @@ Usage (for tools/pilot/directory_range.sh; values travel on stdin only):
 from __future__ import annotations
 
 import argparse
-import errno
 import ipaddress
-import os
-import stat
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy"))
-import manifest_check as mc  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import host_value_file as hvf  # noqa: E402
 
+mc = hvf.mc
 KEY = "DIRECTORY_CIDR"
 MAX_RANGES = mc.DIRECTORY_MAX_BLOCKS
-
-
-class RangeFileError(Exception):
-    """The file is unusable; the message lists rules and line numbers only."""
+HEADER = "# directory ranges for NetworkPolicy <product>-control-to-directory (PILOT_RUNBOOK.md step 14.5)\n"
+# The file is unusable; the message lists rules and line numbers only (tools/pilot/host_value_file.py).
+RangeFileError = hvf.HostFileError
 
 
 def default_path(product: str) -> Path:
@@ -85,115 +82,29 @@ def next_problems(accepted: list[str], candidate: str) -> list[str]:
 
 def parse(text: str) -> tuple[list[str], list[str]]:
     """(values, problems) of the file's text."""
-    values: list[str] = []
-    problems: list[str] = []
-    for n, raw in enumerate(text.splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, sep, value = line.partition("=")
-        if not sep or key != KEY:
-            problems.append(f"line {n} is not {KEY}=<range>")
-            continue
-        values.append(value)
-    problems += entry_problems(values, "value")
-    if problems:
-        return [], problems
-    return [normalise(v) for v in values], []
+    values, problems = hvf.parse(text, KEY, entry_problems, "<range>")
+    return [normalise(v) for v in values], problems
 
 
-def _os_reason(e: OSError) -> str:
-    """An OSError's reason without its file name (PR 54 review D-02: the name carries the account's home)."""
-    return os.strerror(e.errno) if e.errno else "an operating-system error"
+_os_reason = hvf.os_reason
 
 
 def load(path: Path) -> list[str] | None:
-    """The normalised ranges of `path`, None when it does not exist; RangeFileError when it is unusable. Opened once
-    without following a symbolic link; owner and mode are checked on the open file before anything is read."""
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
-    except FileNotFoundError:
-        return None
-    except OSError as e:
-        if e.errno == errno.ELOOP:
-            raise RangeFileError("the file is not a regular file (a symbolic link or another kind)") from None
-        raise RangeFileError(f"the file cannot be opened: {_os_reason(e)}") from None
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise RangeFileError("the file is not a regular file (a symbolic link or another kind)")
-        problems: list[str] = []
-        if st.st_uid != os.getuid():
-            problems.append("the file is not owned by the user who renders")
-        if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
-            problems.append("the file is readable or writable by group or others (chmod 0600)")
-        if problems:
-            raise RangeFileError("; ".join(problems))
-        data = b""
-        while chunk := os.read(fd, 65536):
-            data += chunk
-            if len(data) > 65536:
-                raise RangeFileError("the file is larger than 64 KiB")
-    except OSError as e:
-        raise RangeFileError(f"the file cannot be read: {_os_reason(e)}") from None
-    finally:
-        os.close(fd)
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        raise RangeFileError("the file is not UTF-8 text") from None
-    values, rules = parse(text)
-    if rules:
-        raise RangeFileError("; ".join(rules))
-    return values
-
-
-def _inside(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
+    """The normalised ranges of `path`, None when it does not exist; RangeFileError when it is unusable
+    (tools/pilot/host_value_file.load: opened once without following a symbolic link, owner and mode checked on the
+    open file before anything is read)."""
+    values = hvf.load(path, KEY, entry_problems, "<range>")
+    return None if values is None else [normalise(v) for v in values]
 
 
 def write(path: Path, values: list[str]) -> int:
     """Validates `values` and replaces `path` atomically with mode 0600; returns the count. Refused inside the
     repository and when the file or one of its two nearest directories is a symbolic link; the temporary file never
-    outlives a failure."""
+    outlives a failure (tools/pilot/host_value_file.write)."""
     problems = entry_problems(values)
     if problems:
         raise RangeFileError("; ".join(problems))
-    path = path.expanduser()
-    if _inside(path, mc.REPO_ROOT):
-        raise RangeFileError("the file would be inside the repository")
-    for p in (path, path.parent, path.parent.parent):
-        if p.is_symlink():
-            raise RangeFileError("the file or one of its directories is a symbolic link")
-    text = "# directory ranges for NetworkPolicy <product>-control-to-directory (PILOT_RUNBOOK.md step 14.5)\n" + "".join(
-        f"{KEY}={normalise(v)}\n" for v in values)
-    tmp = path.with_name(f".{path.name}.incoming")
-    done = False
-    try:
-        if os.path.lexists(tmp):
-            os.unlink(tmp)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        try:
-            os.fchmod(fd, 0o600)
-            os.write(fd, text.encode("utf-8"))
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.replace(tmp, path)
-        done = True
-    except OSError as e:
-        raise RangeFileError(f"the file cannot be written: {_os_reason(e)}") from None
-    finally:
-        if not done:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-    return len(values)
+    return hvf.write(path, HEADER, KEY, [normalise(v) for v in values])
 
 
 def main(argv: list[str] | None = None) -> int:
