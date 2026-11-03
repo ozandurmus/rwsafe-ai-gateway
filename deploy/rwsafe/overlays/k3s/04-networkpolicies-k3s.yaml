@@ -26,8 +26,12 @@ spec:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
 ---
-# PLAT-F2: ServiceLB masquerades the ProxySG's address to its own pod address, so the engine admits the ServiceLB pods of
-# `rwsafe-icap-lb` only; the ProxySG allowlist is the host firewall's (H-1) and the peer's identity its client certificate.
+# PLAT-F2 assumed ServiceLB masquerades the ProxySG's address to its own pod address, so this admits the ServiceLB pods
+# of `rwsafe-icap-lb` only. MEASURED WRONG on HOST-A (2026-11-03): kube-proxy's LoadBalancer rule DNATs the proxy's
+# connection to the node address straight to an ICAP pod, bypassing the ServiceLB pod, with the proxy's own source
+# address at the network-policy check, so this policy admits nothing that arrives and the proxy is dropped. The pilot
+# replaces it with an address-based policy (overlays/pilot/35-pilot-icap-clients.yaml); this production design is an
+# Open item in CURRENT_STATE.md and is not changed here.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

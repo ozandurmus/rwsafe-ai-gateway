@@ -816,8 +816,35 @@ PLATFORM (Notifications, System logs, System). TR/EN catalogues extended.
   prints the count. `manifest_check.py` holds the directory policy to the four ports, TCP, ipBlock peers only (no
   selector, no `except`), at most 8 blocks. PILOT_RUNBOOK step 14.5 (H12); step 8 now passes `--pilot` to the release
   check (its single-approval switch and directory note need it).
+- Second review: Argon (`docs/reviews/PR54_2026_11_03_ARGON_PILOT_DIRECTORY_EGRESS.md`), MERGE WITH CORRECTIONS, no
+  P0; fixed with tests: D-01 the directory policy's namespace and control-plane selector, a CIDR with its /prefix, no
+  overlapping blocks, and in the pilot the policy must be rendered and is the only one with an ipBlock; D-02 the range
+  file is written outside the repository only, never through a symbolic link, its temporary file never outlives a
+  failure (and is git-ignored), and it is read once without following a link, owner and mode checked before reading,
+  no path in any message; D-03 `--output` is a regular file only (no link, terminal or device); D-04 the helper drops a
+  trailing CR, refuses a symlinked config directory and never passes the file's path as an argument; the runbook's
+  check takes `--product`. Q-1: RFC 1918 private ranges only (and the documentation placeholder).
 - Open: the PO types the ranges on the host and the orchestrator applies step 14.5; the k3s cluster ranges in the rules
   are the k3s defaults (HOST-A's withheld cluster-cidr is UNVERIFIED; step 14.2 shows the pod range in use).
+
+## Done (pilot ICAP clients, PILOT_RUNBOOK step 11.5)
+
+- Measured on HOST-A (2026-11-03): kube-proxy DNATs the ProxySG's connection to the node's 1344 straight to an ICAP pod
+  with the proxy's own source address (ServiceLB's pod bypassed), so the ICAP pods' NetworkPolicies dropped it.
+- The pilot overlay adds `rwsafe-icap-from-proxies` (`35-pilot-icap-clients.yaml`): ICAP pods only, Ingress, TCP 1344,
+  ipBlock /32 peers; a documentation /32 placeholder admits no proxy. `rwsafe-icap-from-servicelb` is removed in the
+  pilot. `render.py` fills the policy in memory from the host's uncommitted `~/.config/<product>/pilot/icap-clients.env`
+  (`PROXY_ADDR=` lines, 1 to 8 private RFC 1918 IPv4 addresses; `tools/pilot/icap_clients.py`, file handling shared
+  with the directory ranges in `tools/pilot/host_value_file.py`) and prints counts only. `manifest_check.py` binds the
+  policy (namespace, exact ICAP pod selector, Ingress, TCP 1344, private /32 ipBlocks, no except or duplicate, at most
+  8) and admits it as the second ipBlock policy in the pilot. `tools/pilot/icap_clients.sh` (PO): `read -rs`, then
+  "Baska adres eklensin mi? (y/n)".
+- Step 11's firewall block asks 1 to 8 addresses the same way and replaces the table atomically (`table`, `delete
+  table`, definition in one `nft -f`; the former `flush table` kept old set elements, measured 2026-11-03);
+  `verify_firewall.sh --table` accepts 1 to 8 single addresses.
+- Open: the PO runs step 11.5 on the host and the orchestrator applies it. Open (production design): the k3s overlay's
+  `rwsafe-icap-from-servicelb` has the same flaw (PLAT-F2 measured wrong); the k3s ICAP ingress needs an address-based
+  design before production (not redesigned here).
 
 ## Not done
 

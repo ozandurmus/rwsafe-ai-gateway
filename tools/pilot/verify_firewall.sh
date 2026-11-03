@@ -7,7 +7,7 @@
 #
 #   --table        the PO's one-line check (root): reads `nft -j list table inet <product>_pilot` on stdin and passes
 #                  only the exact table of step 11 (PR 40 review D-02): one table, one set icap_clients of type
-#                  ipv4_addr with flags interval and exactly three single IPv4 addresses (counted, never printed; no
+#                  ipv4_addr with flags interval and 1 to 8 single IPv4 addresses (counted, never printed; no
 #                  prefix or range), one chain prerouting (filter hook, priority -150, policy accept) and exactly two
 #                  rules whose every field and expression equals step 11's, operators included: every match is `==`
 #                  (`ct state new` is nft's `in`), the one negation is the designed `ip saddr != @icap_clients`. Any
@@ -99,8 +99,8 @@ plain = isinstance(elem, list) and all(host_v4(e) for e in elem)
 set_ok = len(sets) == 1 and set(sets[0]) - {"handle"} == {"family", "table", "name", "type", "flags", "elem"} \
     and fields({k: v for k, v in sets[0].items() if k != "elem"},
                {"family": "inet", "table": table, "name": "icap_clients", "type": "ipv4_addr", "flags": ["interval"]}) \
-    and plain and len(elem) == 3
-say("set", set_ok, "icap_clients: %d set(s), %d element(s), %s (values not shown; exactly 3 single IPv4 addresses "
+    and plain and 1 <= len(elem) <= 8
+say("set", set_ok, "icap_clients: %d set(s), %d element(s), %s (values not shown; 1 to 8 single IPv4 addresses "
     "expected)" % (len(sets), len(elem) if isinstance(elem, list) else 0,
                    "all single addresses" if plain else "not all single addresses"))
 

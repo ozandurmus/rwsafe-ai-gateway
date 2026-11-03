@@ -9,17 +9,18 @@ value is one address (no prefix) that tools/deploy/manifest_check.icap_client_pr
 1918), outside loopback, link-local, multicast, reserved, broadcast, "this network" and the cluster's pod and Service
 ranges; no duplicate. The addresses are the ones the host firewall step admits (step 11); they are typed on the host
 only (tools/pilot/icap_clients.sh), never committed, printed or passed as a command argument (AGENTS.md 4.2, 8). Every
-message names a line or entry number and a rule, never a value. File handling: tools/pilot/host_value_file.py.
+message names a line or entry number and a rule, never a value or a path. File handling: tools/pilot/host_value_file.py.
 
-Usage (for tools/pilot/icap_clients.sh; values travel on stdin only):
-  python3 -B tools/pilot/icap_clients.py --check-next    the accepted values, then the new one, one per line on stdin;
-                                                         exit 0 the new one is accepted, 1 refused
-  python3 -B tools/pilot/icap_clients.py --write FILE    one value per line on stdin; validates them all, writes FILE
-                                                         (0600, atomically), prints the count; exit 0, 1 refused
-  python3 -B tools/pilot/icap_clients.py --check FILE    validates FILE as render.py reads it; prints the count
+Usage (for tools/pilot/icap_clients.sh; values travel on stdin only, the file's path never as an argument there):
+  icap_clients.py --check-next                   the accepted values, then the new one, one per line on stdin;
+                                                 exit 0 the new one is accepted, 1 refused
+  icap_clients.py --write [FILE] [--product P]   one value per line on stdin; validates them all, replaces FILE
+                                                 (default: the product's file; 0600, atomically), prints the count
+  icap_clients.py --check [FILE] [--product P]   validates the file as render.py reads it; prints the count
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -69,8 +70,8 @@ def next_problems(accepted: list[str], candidate: str) -> list[str]:
 
 
 def load(path: Path) -> list[str] | None:
-    """The addresses of `path`, None when it does not exist; HostFileError when it is unusable."""
-    return hvf.load(path, KEY, entry_problems)
+    """The addresses of `path`, None when it does not exist; Error when it is unusable."""
+    return hvf.load(path, KEY, entry_problems, "<address>")
 
 
 def write(path: Path, values: list[str]) -> int:
@@ -81,32 +82,41 @@ def write(path: Path, values: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--check-next", action="store_true")
+    mode.add_argument("--write", action="store_true")
+    mode.add_argument("--check", action="store_true")
+    ap.add_argument("file", nargs="?", type=Path)
+    ap.add_argument("--product", help="default: the PRODUCT= line of deploy/rwsafe/product.env")
+    args = ap.parse_args(argv)
     try:
-        if argv == ["--check-next"]:
+        if args.check_next:
             values = [line.rstrip("\r\n") for line in sys.stdin.readlines()]
             problems = next_problems(values[:-1], values[-1]) if values else ["no value"]
             if problems:
                 print("refused: the address " + "; ".join(problems), file=sys.stderr)
                 return 1
             return 0
-        if len(argv) == 2 and argv[0] == "--write":
+        product = args.product or mc.default_product()
+        if mc.validate_product(product):
+            print("refused: the product name is not valid", file=sys.stderr)
+            return 2
+        path = args.file or default_path(product)
+        if args.write:
             values = [line.rstrip("\r\n") for line in sys.stdin.readlines() if line.strip()]
-            count = write(Path(argv[1]), values)
+            count = write(path, values)
             print(f"ICAP clients: {count} address(es) written (mode 0600); no value was printed")
             return 0
-        if len(argv) == 2 and argv[0] == "--check":
-            values = load(Path(argv[1]))
-            if values is None:
-                print("ICAP clients: no file", file=sys.stderr)
-                return 1
-            print(f"ICAP clients: {len(values)} address(es) valid; no value was printed")
-            return 0
-    except (Error, OSError) as e:
-        print(f"refused: {e if isinstance(e, Error) else type(e).__name__}", file=sys.stderr)
+        values = load(path)
+        if values is None:
+            print("ICAP clients: no file", file=sys.stderr)
+            return 1
+        print(f"ICAP clients: {len(values)} address(es) valid; no value was printed")
+        return 0
+    except Error as e:
+        print(f"refused: {e}", file=sys.stderr)
         return 1
-    print(__doc__.split("Usage", 1)[1], file=sys.stderr)
-    return 2
 
 
 if __name__ == "__main__":

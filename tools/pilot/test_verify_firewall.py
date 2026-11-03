@@ -86,6 +86,16 @@ class Table(unittest.TestCase):
             self.assertNotIn(a, out)
         self.assertNotIn("<ip>", out)
 
+    def test_one_to_eight_addresses_pass(self):
+        for n in (1, 2, 8):
+            with self.subTest(n):
+                doc = table_json()
+                sett(doc)["elem"] = [f"192.0.2.{i}" for i in range(11, 11 + n)]
+                rc, out = run(json.dumps(doc), "--table")
+                self.assertEqual(rc, 0, out)
+                self.assertIn(f"icap_clients: 1 set(s), {n} element(s), all single addresses (values not shown; "
+                              f"1 to 8 single IPv4 addresses expected)", out)
+
     def test_ct_state_printed_with_equals_also_passes(self):
         doc = table_json()
         v4(doc)[2]["match"].update(op="==", right=["new"])
@@ -117,8 +127,7 @@ class Table(unittest.TestCase):
             (lambda d: d["nftables"].append({"map": {"family": "inet", "table": TABLE, "name": "m"}}),
              "1 object(s) of another kind"),
             (lambda d: sett(d).update(elem=[]), "0 element(s)"),
-            (lambda d: sett(d)["elem"].pop(), "2 element(s)"),
-            (lambda d: sett(d)["elem"].append("192.0.2.14"), "4 element(s)"),
+            (lambda d: sett(d)["elem"].extend(f"192.0.2.{i}" for i in range(20, 26)), "9 element(s)"),
             (lambda d: sett(d)["elem"].__setitem__(0, {"prefix": {"addr": "192.0.2.0", "len": 24}}),
              "not all single addresses"),
             (lambda d: sett(d)["elem"].__setitem__(0, {"range": ["192.0.2.1", "192.0.2.200"]}),
@@ -233,7 +242,8 @@ class FirewallBlock(unittest.TestCase):
     """PR 40 review D-04: the block derives the product name itself, refuses without ~/rwsafe or a valid name, and
     stops at the first error; sudo is a stand-in that records what it would run."""
 
-    def run_block(self, doc: Path, product_line: str | None, sudo_rc: int = 0) -> tuple[int, str, str]:
+    def run_block(self, doc: Path, product_line: str | None, sudo_rc: int = 0,
+                  typed: str = "192.0.2.11\nn\n") -> tuple[int, str, str]:
         with tempfile.TemporaryDirectory() as d:
             home, bin_dir = Path(d) / "home", Path(d) / "bin"
             bin_dir.mkdir()
@@ -246,7 +256,7 @@ class FirewallBlock(unittest.TestCase):
             (bin_dir / "sudo").chmod(0o755)
             block = po_block(doc).replace("<proxysg-address-1>", "192.0.2.11").replace(
                 "<vekil-adresi-1>", "192.0.2.11")
-            out = subprocess.run(["bash", "-c", block], capture_output=True, text=True, timeout=30,
+            out = subprocess.run(["bash", "-c", block], input=typed, capture_output=True, text=True, timeout=30,
                                  env={"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin"})
             return out.returncode, out.stdout + out.stderr, log.read_text() if log.exists() else ""
 
@@ -255,9 +265,30 @@ class FirewallBlock(unittest.TestCase):
             with self.subTest(doc.name):
                 rc, out, sudo = self.run_block(doc, "PRODUCT=rwsafe")
                 self.assertEqual(rc, 0, out)
-                self.assertIn("table rwsafe_pilot written", out)
+                self.assertIn("table rwsafe_pilot written (1 address(es))", out)
                 self.assertTrue(sudo.startswith("nft -f -\n"), sudo)
-                self.assertIn("table inet rwsafe_pilot {", sudo)
+                # one transaction: ensure, delete (set elements included), define anew
+                self.assertIn("table inet rwsafe_pilot {}\ndelete table inet rwsafe_pilot\ntable inet rwsafe_pilot {",
+                              sudo)
+                self.assertNotIn("flush", sudo)
+                self.assertIn("elements = { 192.0.2.11 }", sudo)
+                self.assertNotIn("192.0.2.11", out)
+                # several addresses, a refused and a repeated one asked again, a wrong answer asked again
+                rc, out, sudo = self.run_block(doc, "PRODUCT=rwsafe", typed="192.0.2.11\ny\n192.0.2.0/24\n"
+                                               "192.0.2.11\n198.51.100.13\nx\nn\n")
+                self.assertEqual(rc, 0, out)
+                self.assertIn("elements = { 192.0.2.11, 198.51.100.13 }", sudo)
+                self.assertEqual(out.count("adres alinmadi"), 2, out)
+                self.assertIn("written (2 address(es))", out)
+                rc, out, sudo = self.run_block(doc, "PRODUCT=rwsafe",
+                                               typed="".join(f"192.0.2.{i}\ny\n" for i in range(1, 12)))
+                self.assertEqual(rc, 0, out)
+                self.assertIn("written (8 address(es))", out)
+                for typed in ("", "192.0.2.11\n", "127.0.0.1\n"):   # the input ends: nothing written
+                    rc, out, sudo = self.run_block(doc, "PRODUCT=rwsafe", typed=typed)
+                    self.assertNotEqual(rc, 0, out)
+                    self.assertEqual(sudo, "")
+                    self.assertIn("durduruldu", out)
                 for product_line in (None, "PRODUCT=", "# no product line", "PRODUCT=bad name"):
                     rc, out, sudo = self.run_block(doc, product_line)
                     self.assertNotEqual(rc, 0, (product_line, out))

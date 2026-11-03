@@ -67,6 +67,7 @@ that the root filesystem is below 85 % used (`df -h /`; 69 % on 2026-10-31, HOST
 | H9 | 12 | the ServiceLB Service that opens **1344 on the node** (no node-port range port: `allocateLoadBalancerNodePorts: false`, externalTrafficPolicy Cluster) | step 18 |
 | H10 | 14.1 | the pilot's admin CA in `~/.config/<product>/admin-ca/` on the host (key 0600, never in the cluster) and the TLS Secret `${PRODUCT}-admin-tls` (a leaf for `ui.<product>.local` only) | deleted with the namespace; the CA directory: step 18 |
 | H11 | 14.3 | the Ingress `${PRODUCT}-admin` (one host rule `ui.<product>.local` to `${PRODUCT}-control:8080`, class traefik) and the NetworkPolicy `${PRODUCT}-control-from-traefik` (Traefik's pods to 8080 only) | step 18 |
+| H13 | 11.5 | the NetworkPolicy `${PRODUCT}-icap-from-proxies` filled with the proxies' addresses from `~/.config/<product>/pilot/icap-clients.env` (typed on the host by the PO): the ICAP pods admit TCP 1344 from those /32 addresses only; `${PRODUCT}-icap-from-servicelb` deleted | delete the file, render and apply again (the placeholder returns, no proxy connects); step 18 |
 | H12 | 14.5 | the NetworkPolicy `${PRODUCT}-control-to-directory` filled with the directory's ranges from `~/.config/<product>/pilot/directory.env` (typed on the host by the PO): the control plane may open TCP 389, 636, 3268 and 3269 to those ranges only | delete the file, render and apply again (the placeholder returns); step 18 |
 | P1 | 15 | **proxy**: a new ICAP service pointing at `<node-address>:1344` | delete the service |
 | P2 | 16 | **proxy**: one policy rule sending only the test user's AI-category requests to it, fail-closed | step 17.6, one step |
@@ -371,8 +372,10 @@ worth keeping, so step 18 and a fresh install is the reset (a password-reset com
 
 ServiceLB answers on the node's 1344 for every source, and plain ICAP has no peer authentication, so the ProxySG
 allowlist (H-1) must be in place before step 12. The rule lives in its **own** nftables table; neXus's table
-`inet nexus_host` is neither read nor changed. Fill the three addresses on the host only; nothing else in the block is
-edited. The block derives the product name itself from `~/rwsafe/deploy/rwsafe/product.env` and runs in a subshell
+`inet nexus_host` is neither read nor changed. Nothing in the block is edited: it asks for the proxy addresses (today
+the one test proxy, PO 2026-11-03) one at a time with `read -rs` (never echoed, stored or passed as an argument), each
+checked to be one IPv4 address with no repeat, then "Baska adres eklensin mi? (y/n)": y asks the next, n writes (1 to 8
+addresses). The block derives the product name itself from `~/rwsafe/deploy/rwsafe/product.env` and runs in a subshell
 with `set -euo pipefail` (PR 40 review D-04): it refuses to run when `~/rwsafe` or the name is missing or the name is not
 a product name (an empty name would otherwise create a table `inet _pilot`), and stops at the first failing command
 without closing the PO's terminal.
@@ -386,14 +389,42 @@ case "${PRODUCT}" in
   ""|*[!a-z0-9-]*) echo "stopped: no valid PRODUCT in ~/rwsafe/deploy/rwsafe/product.env"; exit 1 ;;
 esac
 T="${PRODUCT//-/_}_pilot"   # nftables names take no hyphen: rwsafe_pilot
+ok_addr() { printf '%s\n' "$1" | python3 -I -c '
+import ipaddress, sys
+try:
+    a = ipaddress.ip_address(sys.stdin.readline().rstrip("\r\n"))
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if a.version == 4 and not (a.is_loopback or a.is_multicast or a.is_unspecified or a.is_link_local or a.is_reserved) else 1)'; }
+addrs=()
+while [ "${#addrs[@]}" -lt 8 ]; do
+  a=""
+  if ! IFS= read -rs -p "Vekil adresi $(( ${#addrs[@]} + 1 )): " a && [ -z "${a}" ]; then echo "durduruldu: giris bitti" >&2; exit 1; fi
+  echo >&2
+  a="${a%$'\r'}"
+  dup=0
+  for b in ${addrs[@]+"${addrs[@]}"}; do if [ "${b}" = "${a}" ]; then dup=1; fi; done
+  if [ "${dup}" = 1 ] || ! ok_addr "${a}"; then echo "adres alinmadi (tek IPv4 adresi, tekrar yok); yeniden yazin" >&2; continue; fi
+  addrs+=("${a}")
+  [ "${#addrs[@]}" -lt 8 ] || break
+  yn=""
+  while :; do
+    if ! IFS= read -r -p "Baska adres eklensin mi? (y/n) " yn && [ -z "${yn}" ]; then echo "durduruldu: giris bitti" >&2; exit 1; fi
+    yn="${yn%$'\r'}"
+    case "${yn}" in y|Y|n|N) break ;; *) echo "y ya da n yazin" >&2 ;; esac
+  done
+  case "${yn}" in n|N) break ;; esac
+done
+elems=""
+for b in "${addrs[@]}"; do elems="${elems:+${elems}, }${b}"; done
 sudo nft -f - <<EOF
 table inet ${T} {}
-flush table inet ${T}
+delete table inet ${T}
 table inet ${T} {
   set icap_clients {
     type ipv4_addr
     flags interval
-    elements = { <proxysg-address-1>, <proxysg-address-2>, <proxysg-address-3> }
+    elements = { ${elems} }
   }
   chain prerouting {
     type filter hook prerouting priority -150; policy accept;
@@ -402,13 +433,14 @@ table inet ${T} {
   }
 }
 EOF
-echo "table ${T} written"
+echo "table ${T} written (${#addrs[@]} address(es))"
+addrs=(); elems=""
 )
 ```
 
 When the PO's sudo-capable account is not the account that holds `~/rwsafe` (HOST-A, 2026-11-03), the block cannot
 read `product.env`: the PO ran an equivalent block over `ssh -t` in their own account with `T=rwsafe_pilot` fixed, the
-three addresses read with `read -rs` (never echoed or stored; each checked to be one IPv4 address) and two count lines at
+addresses read with `read -rs` (never echoed or stored; each checked to be one IPv4 address) and two count lines at
 the end instead of the JSON check (`adres sayisi: 3`, `kural sayisi: 2`). The rule set written is exactly the one above.
 
 The one-line check (read only; it derives the name the same way and may be run again at any time):
@@ -417,20 +449,22 @@ The one-line check (read only; it derives the name the same way and may be run a
 (set -euo pipefail; cd ~/rwsafe; P="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)"; test -n "${P}"; sudo nft -j list table inet "${P//-/_}_pilot" | tools/pilot/verify_firewall.sh --table)
 ```
 
-Expected: `table rwsafe_pilot written` from the block; then from the check (counts only, never an address):
+Expected: `table rwsafe_pilot written (1 address(es))` from the block; then from the check (counts only, never an address):
 
 ```text
 firewall table check, product rwsafe
 objects        ok   0 object(s) of another kind than table, set, chain, rule
 table          ok   inet rwsafe_pilot: 1 table(s) in the input, exactly 1 expected
-set            ok   icap_clients: 1 set(s), 3 element(s), all single addresses (values not shown; exactly 3 single IPv4 addresses expected)
+set            ok   icap_clients: 1 set(s), 1 element(s), all single addresses (values not shown; 1 to 8 single IPv4 addresses expected)
 chain          ok   1 chain(s); exactly 1 expected: prerouting, type filter, hook prerouting, priority -150, policy accept
 rules          ok   2 rule(s); exactly 2 expected, each equal to step 11 in every field and operator: IPv4 1, IPv6 1, other 0
 result: PASS
 ```
 
-Running the block again replaces the table's content (the empty `table` line and `flush` make it idempotent; no
-duplicate rules). The check passes only the exact table above (PR 40 review D-02): exactly three single IPv4 addresses
+Running the block again replaces the whole table in one `nft -f` transaction: the empty `table` line makes sure it
+exists, `delete table` removes it with its set elements, and the definition writes it anew (measured on HOST-A
+2026-11-03: the former `flush table` kept the old set elements, so a second run added the new addresses to the old
+ones). The check passes only the exact table above (PR 40 review D-02): 1 to 8 single IPv4 addresses
 (no prefix or range), the one chain, and exactly the two rules with every field, expression and operator as written
 (every match `==`, `ct state new` printed by nft as `in`; the only negation is the designed `ip saddr != @icap_clients`);
 an extra object, chain, rule, expression or field fails, and so does a shape it does not recognise (UNVERIFIED
@@ -489,6 +523,49 @@ The rule is not persistent: **after a host reboot run this step again before the
 fail-closed). UNVERIFIED (2026-10-31) on HOST-A's kernel and k3s release, proved by step 11.3 and step 13 in both
 directions. Undo (the PO; it derives the name the same way):
 `(set -euo pipefail; cd ~/rwsafe; P="$(sed -n 's/^PRODUCT=//p' deploy/rwsafe/product.env)"; test -n "${P}"; sudo nft delete table inet "${P//-/_}_pilot")`.
+
+### 11.5 ICAP clients in the product's network policy (PO on the host, then HOST CHANGE H13)
+
+Measured on HOST-A (2026-11-03): the ProxySG's connection to the node's 1344 is DNATed by kube-proxy's LoadBalancer rule
+for the node address straight to an ICAP pod (the ServiceLB pod is bypassed) and keeps the proxy's own source address
+until the POSTROUTING masquerade; k3s's network-policy controller checks the ICAP pods' ingress in FORWARD, before that,
+and dropped it, because the ICAP policies admitted only the in-cluster probe and e2e pods and the ServiceLB pods
+(PLAT-F2's masquerade assumption, not true here). So the ICAP pods admit TCP 1344 from the proxies' addresses: the
+NetworkPolicy `${PRODUCT}-icap-from-proxies` (35-pilot-icap-clients.yaml) holds a documentation /32 placeholder that
+admits no proxy until the render fills it from the host's uncommitted, owner-only `~/.config/<product>/pilot/icap-clients.env`.
+The pilot no longer renders `${PRODUCT}-icap-from-servicelb` (it admitted nothing that arrives).
+
+1. **PO, in a terminal on the host, as the account the orchestrator renders from**, with the same addresses as step 11:
+
+   ```bash
+   cd ~/rwsafe && tools/pilot/icap_clients.sh
+   ```
+
+   Type the address and Enter (nothing is shown), then answer `Baska adres eklensin mi? (y/n)`: `y` asks the next, `n`
+   writes (1 to 8; only single private (RFC 1918) IPv4 addresses). Expected: `ICAP clients: N address(es) written (mode
+   0600); no value was printed`. Tell the orchestrator "ICAP clients written, N".
+
+2. **Orchestrator (HOST CHANGE H13, confirmed on its own)**: the ICAP phase's NetworkPolicies only; no pod restarts, and
+   no file holding the addresses is written:
+
+   ```bash
+   python3 -B tools/pilot/icap_clients.py --check --product "${PRODUCT}"
+   python3 -B tools/pilot/render.py --product "${PRODUCT}" --phase icap --kinds NetworkPolicy \
+     | kubectl apply --server-side -f -
+   kubectl -n "${PRODUCT}" delete networkpolicy "${PRODUCT}-icap-from-servicelb" --ignore-not-found
+   kubectl -n "${PRODUCT}" get networkpolicy "${PRODUCT}-icap-from-proxies" \
+     -o jsonpath='{range .spec.ingress[*].from[*]}{.ipBlock.cidr}{"\n"}{end}' | grep -vc '^203\.0\.113\.10/32$' || true
+   ```
+
+   Expected: `ICAP clients: N address(es) valid`; on stderr `render: icap clients: N address(es)`; the policies
+   `serverside-applied`; the leftover ServiceLB policy deleted (or not found); the last line prints `N` (a count, never
+   an address). `0` means the placeholder is still there: the file was not found in this account's home.
+
+3. **PO, on the proxy console**: repeat the ICAP service's health check. Expected: healthy. Still failing: report the
+   health check's text class only; the orchestrator re-runs step 13.
+
+Undo: shred the file (`shred -u ~/.config/<product>/pilot/icap-clients.env`) and run step 2 again (the placeholder
+returns and no proxy can connect: fail closed).
 
 ## 12. HOST CHANGE H9: the ServiceLB Service (opens 1344 on the node)
 
@@ -735,20 +812,22 @@ never go into the repository, a chat, a ticket or a command argument (AGENTS.md 
    ```
 
    Type each range (an IPv4 CIDR such as a /24, or one address) and Enter; nothing is shown; an empty line ends (at most
-   8). Expected: `directory ranges: N range(s) written (mode 0600); no value was printed` and `written:
+   8). Only RFC 1918 private ranges are accepted (PR 54 review Q-1): a directory in public address space is refused, so
+   a mistyped range can never open the directory ports towards the internet. Expected: `directory ranges: N range(s) written (mode 0600); no value was printed` and `written:
    ~/.config/<product>/pilot/directory.env`. A refused range is named by its number and rule only (broader than /16,
-   loopback, link-local, multicast, the cluster's own pod or Service range, an overlap) and can be typed again. Running
+   not private, loopback, link-local, multicast, the cluster's own pod or Service range, an overlap) and can be typed
+   again. A symbolic link anywhere in `~/.config/<product>/pilot/` is refused. Running
    it again replaces the whole list. Tell the orchestrator "ranges written, N".
 
 2. **Orchestrator (HOST CHANGE H12, confirmed on its own)**: the control phase's NetworkPolicies only; the control plane
    is not restarted (a NetworkPolicy applies to running pods), and no file holding the ranges is written:
 
    ```bash
-   python3 -B tools/pilot/directory_range.py --check ~/.config/"${PRODUCT}"/pilot/directory.env
+   python3 -B tools/pilot/directory_range.py --check --product "${PRODUCT}"
    python3 -B tools/pilot/render.py --product "${PRODUCT}" --phase control --kinds NetworkPolicy \
      | kubectl apply --server-side -f -
    kubectl -n "${PRODUCT}" get networkpolicy "${PRODUCT}-control-to-directory" \
-     -o jsonpath='{range .spec.egress[*].to[*]}{.ipBlock.cidr}{"\n"}{end}' | grep -vc '^192\.0\.2\.0/24$'
+     -o jsonpath='{range .spec.egress[*].to[*]}{.ipBlock.cidr}{"\n"}{end}' | grep -vc '^192\.0\.2\.0/24$' || true
    ```
 
    Expected: `directory ranges: N range(s) valid`; on stderr `render: directory egress: N range(s)` and the policies

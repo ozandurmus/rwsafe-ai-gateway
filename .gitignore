@@ -50,3 +50,8 @@ deploy/images/gradle-dist/*
 
 # The pilot directory range file (PILOT_RUNBOOK.md step 14.5) lives only in ~/.config/<product>/pilot/ on the host.
 directory.env
+.directory.env.incoming
+
+# The pilot ICAP clients file (PILOT_RUNBOOK.md step 11.5) lives only in ~/.config/<product>/pilot/ on the host.
+icap-clients.env
+.icap-clients.env.incoming
