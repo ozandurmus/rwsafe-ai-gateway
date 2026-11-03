@@ -28,6 +28,7 @@ to the "Decided" table. Chat answers in Turkish are quoted in the record; the qu
 | LR-1..LR-7 | `PO_DECISION_RECORD_2026_10_31_END_USER_NOTICE_LEGAL_REVIEW.md`: end-user notice texts approved; full-text tier text and the objection sentence removed, catalogue `tr-3` | 2026-10-31 |
 | Q-39 | `PO_DECISION_RECORD_2026_10_30_POLICY_SCOPE_AND_PLATFORM_RETIREMENT.md`: every rule version has a source scope (ANY or directory groups); no mandatory staging | 2026-10-30 |
 | Q-40 | `PO_DECISION_RECORD_2026_10_30_POLICY_SCOPE_AND_PLATFORM_RETIREMENT.md`: a security_admin alone retires a platform row, audited, history kept | 2026-10-30 |
+| Q-48 | `PO_DECISION_RECORD_2026_11_03_Q48_ICAP_INGRESS_FROM_PROXIES.md`: the ICAP pods' NetworkPolicy admits the ProxySG addresses themselves (typed on the host), alongside the host firewall table | 2026-11-03 |
 | Q-47 | `PO_DECISION_RECORD_2026_11_02_Q47_ADMIN_SECTION.md`: an Administration section like the other product's (users, roles, sessions; LDAP settings and group binding; records; system), pilot-only single approval, the other product's layout | 2026-11-02 |
 | Q-46 | `PO_DECISION_RECORD_2026_10_31_PILOT_ICAP_OPEN_AND_ADMIN_ACCESS.md`: ICAP 1344 opened before the firewall rule (residual risk accepted); admin UI through Traefik with a host rule, temporary `.pilot.test` name | 2026-10-31 |
 | Q-45 | `PO_DECISION_RECORD_2026_10_31_AGENT_APPLIES_PILOT.md`: the orchestrator builds and applies on HOST-A in the product's own namespaces, each step confirmed by the PO; product name a parameter | 2026-10-31 |
