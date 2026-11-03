@@ -402,6 +402,11 @@ echo "table ${T} written"
 )
 ```
 
+When the PO's sudo-capable account is not the account that holds `~/rwsafe` (HOST-A, 2026-11-03), the block cannot
+read `product.env`: the PO ran an equivalent block over `ssh -t` in their own account with `T=rwsafe_pilot` fixed, the
+three addresses read with `read -rs` (never echoed or stored; each checked to be one IPv4 address) and two count lines at
+the end instead of the JSON check (`adres sayisi: 3`, `kural sayisi: 2`). The rule set written is exactly the one above.
+
 The one-line check (read only; it derives the name the same way and may be run again at any time):
 
 ```bash
@@ -435,6 +440,11 @@ with the ICAP engine and the probe of step 9b in place:
 tools/pilot/verify_firewall.sh            # creates one probe Job from the CronJob (H8b, confirmed on its own)
 tools/pilot/verify_firewall.sh --latest   # alternative that changes nothing: the newest scheduled probe Job
 ```
+
+When step 12 already ran (PO decision Q-46 opened 1344 before this step), the two `node 1344` lines report FAIL by
+design (a LoadBalancer Service and the ServiceLB pod exist, and the host's own connection takes the output path, which
+the rule does not see); `through svc` is then the line that matters, and step 13 confirms the rest (2026-11-03: through
+svc PASS 7/7, step 13 PASS).
 
 Expected:
 
