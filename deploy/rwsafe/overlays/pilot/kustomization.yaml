@@ -8,9 +8,12 @@ kind: Kustomization
 #     ClusterIP Service and the ICAP NetworkPolicies (the engine opens no TLS listener without RWSAFE_TLS_CERT)
 #   - two ICAP replicas kept: with one, the PodDisruptionBudget (minAvailable 1) would forbid every eviction and the
 #     manifest check refuses it; the rollout rules (maxSurge 1, maxUnavailable 0) stay as in the base
-#   - sign-in with the local break-glass account only: no directory (no LDAP environment, no rwsafe-ldap-bind Secret,
-#     no rwsafe-control-to-directory NetworkPolicy, no directory CIDR); the generated initial password is written by the
-#     control plane to its own small PVC (tools/pilot/fetch_break_glass.sh copies it to an owner-only file on the host)
+#   - sign-in with the local break-glass account first: no LDAP environment and no rwsafe-ldap-bind Secret; the
+#     generated initial password is written by the control plane to its own small PVC (tools/pilot/fetch_break_glass.sh
+#     copies it to an owner-only file on the host). The directory is set later on the LDAP settings screen; its egress
+#     NetworkPolicy rwsafe-control-to-directory keeps the documentation-range placeholder with the screen's four ports
+#     (55-pilot-directory-egress.yaml) until tools/pilot/render.py fills it from the host's uncommitted range file
+#     (PILOT_RUNBOOK.md step 14.5)
 #   - the admin UI through the host's Traefik (70-admin-ingress.yaml): one Ingress with the one host rule
 #     `ui.<product>.local`, TLS from `<product>-admin-tls` (the pilot's own CA, tools/pilot/admin_tls.sh), backend
 #     `<product>-control:8080` only; no catch-all rule, so neXus's catch-all Ingress (Q-13) is not touched; Traefik's
@@ -33,6 +36,7 @@ patches:
   - path: 20-pilot-control.yaml
   - path: 30-pilot-icap.yaml
   - path: 50-pilot-removed.yaml
+  - path: 55-pilot-directory-egress.yaml
 # The k3s overlay's image transformer covers only its own resources; the probe (added here) names the data plane image
 # the same way, with the same all-zero placeholder digest that tools/pilot/render.py replaces.
 images:

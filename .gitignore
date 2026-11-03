@@ -47,3 +47,6 @@ deploy/images/ca/*
 # The pinned Gradle distribution placed in the build context when the build host cannot download it (pilot step 4).
 deploy/images/gradle-dist/*
 !deploy/images/gradle-dist/.gitkeep
+
+# The pilot directory range file (PILOT_RUNBOOK.md step 14.5) lives only in ~/.config/<product>/pilot/ on the host.
+directory.env

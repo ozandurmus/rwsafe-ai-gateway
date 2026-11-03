@@ -10,16 +10,23 @@ import contextlib
 import copy
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import directory_range  # noqa: E402
 import proxy_settings  # noqa: E402
 import render  # noqa: E402
 
 mc = render.mc
+# Hermetic: never the host's own directory range file (PILOT_RUNBOOK.md step 14.5), which may exist where this runs.
+_NO_RANGE_DIR = tempfile.TemporaryDirectory()
+render.default_directory_env = lambda product: Path(_NO_RANGE_DIR.name) / "absent" / "directory.env"
+HELPER = Path(__file__).resolve().parent / "directory_range.sh"
 DIGESTS = {"dataplane": "sha256:" + "a" * 64, "control": "sha256:" + "b" * 64}
 _BUILD = {p: render.render_target("build", p) for p in ("rwsafe", "acme")}
 _CONTRACTS = {p: mc.rename_contracts(json.loads(mc.DEFAULT_CONTRACTS.read_text()), p) for p in ("rwsafe", "acme")}
@@ -73,7 +80,8 @@ class PilotTarget(unittest.TestCase):
         self.assertEqual(key["secret"]["secretName"], "rwsafe-directory-key")
         self.assertTrue(key["secret"]["optional"])
         policies = {o["metadata"]["name"] for o in objects if o["kind"] == "NetworkPolicy"}
-        self.assertFalse({"rwsafe-control-to-directory", "rwsafe-control-to-siem"} & policies)
+        self.assertNotIn("rwsafe-control-to-siem", policies)
+        self.assertIn("rwsafe-control-to-directory", policies)
         self.assertIn("rwsafe-control-from-traefik", policies)
         self.assertEqual([mc.ident(o) for o in objects if o["kind"] == "Ingress"], ["Ingress/rwsafe/rwsafe-admin"])
         icap = next(o for o in objects if o["kind"] == "Deployment" and o["metadata"]["name"] == "rwsafe-icap")
@@ -274,6 +282,230 @@ class K3sTarget(unittest.TestCase):
         lb = next(o for o in objects if o["kind"] == "Service" and o["spec"].get("type") == "LoadBalancer")
         self.assertEqual((lb["metadata"]["name"], lb["spec"]["allocateLoadBalancerNodePorts"],
                           lb["spec"]["externalTrafficPolicy"]), ("acme-icap-lb", False, "Cluster"))
+
+
+def v4(*octets: int, prefix: int | None = None) -> str:
+    """A synthetic address built at runtime (the privacy gate refuses a non-documentation dotted literal)."""
+    return ".".join(str(o) for o in octets) + (f"/{prefix}" if prefix is not None else "")
+
+
+GOOD_RANGES = ["192.0.2.0/24", "198.51.100.7"]
+# What the range rules refuse, with the rule each one breaks.
+BAD_RANGES = {
+    v4(0, 0, 0, 0, prefix=0): "broader than /16",
+    v4(10, 0, 0, 0, prefix=8): "broader than /16",
+    v4(10, 42, 3, 0, prefix=24): "the cluster's pod range",
+    v4(10, 43, 0, 10): "the cluster's Service range",
+    v4(127, 0, 0, 1): "loopback",
+    v4(169, 254, 1, 0, prefix=24): "link-local",
+    v4(224, 0, 0, 0, prefix=24): "multicast",
+    v4(255, 255, 255, 255): "reserved or broadcast",
+    v4(0, 0, 0, 0): "\"this network\"",
+    "192.0.2.1/24": "host bits",
+    "2001:db8::/64": "not IPv4",
+    "dc-one.example.invalid": "not an IPv4",
+    " 192.0.2.0/24": "spaces",
+}
+
+
+def range_file(directory: str, text: str, mode: int = 0o600) -> Path:
+    path = Path(directory) / "directory.env"
+    path.write_text(text)
+    os.chmod(path, mode)
+    return path
+
+
+def directory_rule(objects: list[dict], product: str) -> dict:
+    policy = render.directory_policy(objects, product)
+    return policy["spec"]["egress"][0]
+
+
+class DirectoryEgress(unittest.TestCase):
+    """PILOT_RUNBOOK.md step 14.5: the pilot keeps the directory egress with the screen's four ports and a placeholder
+    that reaches nothing; the render fills it from the host's owner-only range file and prints counts only."""
+
+    def test_committed_pilot_policy_is_the_placeholder_on_the_four_ports(self):
+        for product, objects in _PILOT.items():
+            with self.subTest(product):
+                policy = render.directory_policy(objects, product)
+                self.assertEqual(policy["spec"]["policyTypes"], ["Egress"])
+                self.assertEqual(policy["spec"]["podSelector"],
+                                 {"matchLabels": {"app.kubernetes.io/name": f"{product}-control"}})
+                rule = directory_rule(objects, product)
+                self.assertEqual(rule["to"], [{"ipBlock": {"cidr": "192.0.2.0/24"}}])
+                self.assertEqual(sorted((p["protocol"], p["port"]) for p in rule["ports"]),
+                                 [("TCP", 389), ("TCP", 636), ("TCP", 3268), ("TCP", 3269)])
+                # the control phase applies it (step 9 and 14.5)
+                self.assertIn(policy, render.select_phase(objects, product, "control"))
+
+    def test_render_target_fills_the_ranges_and_passes_the_release_check(self):
+        objects = render.render_target("pilot", "acme", DIGESTS, directory_ranges=["192.0.2.0/25", "203.0.113.9/32"])
+        rule = directory_rule(objects, "acme")
+        self.assertEqual(rule["to"], [{"ipBlock": {"cidr": "192.0.2.0/25"}}, {"ipBlock": {"cidr": "203.0.113.9/32"}}])
+        self.assertEqual(len(rule["ports"]), 4)
+
+    def test_render_target_refuses_bad_ranges_through_the_check(self):
+        for bad in (v4(10, 42, 0, 0, prefix=16), v4(10, 0, 0, 0, prefix=8)):
+            with self.subTest(bad), self.assertRaises(render.Refused) as ctx:
+                render.render_target("pilot", "rwsafe", DIGESTS, directory_ranges=[bad])
+            self.assertNotIn(bad, str(ctx.exception))
+        with self.assertRaises(render.Refused):
+            render.render_target("k3s", "rwsafe", directory_ranges=["192.0.2.0/24"])
+
+    def test_main_with_a_range_file_prints_only_the_count(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out_dir:
+            path = range_file(d, "# synthetic\nDIRECTORY_CIDR=203.0.113.0/26\n\nDIRECTORY_CIDR=198.51.100.7\n")
+            target = Path(out_dir) / "app-control.json"
+            rc, out, err = run(["--product", "acme", "--dataplane-digest", DIGESTS["dataplane"],
+                                "--control-digest", DIGESTS["control"], "--phase", "control",
+                                "--directory-env", str(path), "--output", str(target)])
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(out, "")
+            self.assertIn("directory egress: 2 range(s)", err)
+            for value in ("203.0.113", "198.51.100"):
+                self.assertNotIn(value, err)
+            self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+            items = json.loads(target.read_text())["items"]
+            self.assertEqual(directory_rule(items, "acme")["to"],
+                             [{"ipBlock": {"cidr": "203.0.113.0/26"}}, {"ipBlock": {"cidr": "198.51.100.7/32"}}])
+            check_out = io.StringIO()
+            with contextlib.redirect_stdout(check_out):
+                rc = mc.main(["--rendered", str(target), "--release", "--product", "acme", "--pilot"])
+            self.assertEqual(rc, 0, check_out.getvalue())
+            # The NetworkPolicies of the control phase alone need no digests (step 14.5).
+            rc, out, err = run(["--product", "acme", "--phase", "control", "--kinds", "NetworkPolicy",
+                                "--directory-env", str(path)])
+            self.assertEqual(rc, 0, err)
+            self.assertIn("directory egress: 2 range(s)", err)
+            self.assertTrue(all(o["kind"] == "NetworkPolicy" for o in json.loads(out)["items"]))
+
+    def test_main_without_the_file_keeps_the_placeholder_with_a_note(self):
+        rc, out, err = run(["--product", "acme", "--dataplane-digest", DIGESTS["dataplane"],
+                            "--control-digest", DIGESTS["control"], "--phase", "control"])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("directory egress: no range file; the policy keeps its placeholder", err)
+        items = json.loads(out)["items"]
+        self.assertEqual(directory_rule(items, "acme")["to"], [{"ipBlock": {"cidr": "192.0.2.0/24"}}])
+        # Another phase does not hold the policy and says nothing about it.
+        rc, _, err = run(["--product", "acme", "--dataplane-digest", DIGESTS["dataplane"],
+                          "--control-digest", DIGESTS["control"], "--phase", "ingress"])
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("directory egress", err)
+
+    def test_main_refuses_an_unusable_file_without_printing_a_value(self):
+        cases = {
+            "loose mode": ("DIRECTORY_CIDR=192.0.2.0/24\n", 0o644, "group or others"),
+            "unknown key": ("LDAP_CIDR=192.0.2.0/24\n", 0o600, "line 1 is not DIRECTORY_CIDR"),
+            "empty": ("# nothing\n", 0o600, "no DIRECTORY_CIDR value"),
+            "overlap": ("DIRECTORY_CIDR=192.0.2.0/24\nDIRECTORY_CIDR=192.0.2.64/26\n", 0o600, "value 2 overlaps value 1"),
+            "too many": ("".join(f"DIRECTORY_CIDR=203.0.113.{i * 16}/28\n" for i in range(9)), 0o600, "more than 8"),
+        }
+        for bad, rule in BAD_RANGES.items():
+            cases[rule] = (f"DIRECTORY_CIDR={bad}\n", 0o600, rule)
+        for name, (text, mode, rule) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                path = range_file(d, text, mode)
+                rc, out, err = run(["--product", "acme", "--phase", "control", "--kinds", "NetworkPolicy",
+                                    "--directory-env", str(path)])
+                self.assertEqual(rc, 1, err)
+                self.assertEqual(out, "")
+                self.assertIn(rule, err)
+                for line in text.splitlines():
+                    value = line.partition("=")[2].strip()
+                    if value:
+                        self.assertNotIn(value, err)
+
+    def test_main_refuses_a_symlink_a_missing_named_file_and_another_target(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = range_file(d, "DIRECTORY_CIDR=192.0.2.0/24\n")
+            link = Path(d) / "link.env"
+            link.symlink_to(real)
+            rc, _, err = run(["--product", "acme", "--phase", "control", "--kinds", "NetworkPolicy",
+                              "--directory-env", str(link)])
+            self.assertEqual(rc, 1)
+            self.assertIn("not a regular file", err)
+            rc, _, err = run(["--product", "acme", "--phase", "control", "--kinds", "NetworkPolicy",
+                              "--directory-env", str(Path(d) / "missing.env")])
+            self.assertEqual(rc, 1)
+            self.assertIn("does not exist", err)
+            rc, _, _ = run(["--target", "k3s", "--directory-env", str(real)])
+            self.assertEqual(rc, 2)
+
+    def test_a_filled_render_is_never_written_into_the_repository(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = range_file(d, "DIRECTORY_CIDR=192.0.2.0/24\n")
+            target = mc.REPO_ROOT / "build" / "never-written.json"
+            rc, out, err = run(["--product", "acme", "--phase", "control", "--kinds", "NetworkPolicy",
+                                "--directory-env", str(path), "--output", str(target)])
+            self.assertEqual(rc, 1)
+            self.assertIn("outside the repository", err)
+            self.assertFalse(target.exists())
+
+    def test_the_committed_tree_holds_no_range_file(self):
+        tracked = subprocess.run(["git", "-C", str(mc.REPO_ROOT), "ls-files"], capture_output=True, text=True)
+        if tracked.returncode != 0:   # a `git archive` copy on the host has no .git
+            self.skipTest("not a git checkout")
+        self.assertFalse([f for f in tracked.stdout.splitlines() if f.endswith("directory.env")])
+
+
+class DirectoryRangeHelper(unittest.TestCase):
+    """tools/pilot/directory_range.sh (the PO, on the host): reads ranges without echo, checks each, writes the 0600
+    file, prints only the count; tools/pilot/directory_range.py holds the rules."""
+
+    def helper(self, typed: str, dest: Path) -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items() if k not in ("PRODUCT", "DIRECTORY_ENV")}
+        env["DIRECTORY_ENV"] = str(dest)
+        return subprocess.run(["bash", str(HELPER)], input=typed, capture_output=True, text=True, env=env, timeout=60)
+
+    def test_rules(self):
+        self.assertEqual(directory_range.entry_problems(GOOD_RANGES), [])
+        for bad, rule in BAD_RANGES.items():
+            with self.subTest(rule):
+                problems = directory_range.entry_problems([bad])
+                self.assertTrue(problems and rule in problems[0], problems)
+                self.assertNotIn(bad.strip(), " ".join(problems))
+        self.assertEqual(directory_range.normalise("198.51.100.7"), "198.51.100.7/32")
+
+    def test_helper_writes_the_accepted_ranges_and_prints_the_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / "directory.env"
+            refused = v4(10, 42, 7, 0, prefix=24)
+            typed = "\n".join(["192.0.2.0/24", refused, "198.51.100.7", "192.0.2.128/25", ""]) + "\n"
+            res = self.helper(typed, dest)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("2 range(s) written", res.stdout)
+            self.assertIn("range 2 not taken", res.stderr)
+            self.assertIn("range 4 not taken", res.stderr)
+            for value in ("192.0.2", "198.51.100", refused):
+                self.assertNotIn(value, res.stdout + res.stderr)
+            self.assertEqual(os.stat(dest).st_mode & 0o777, 0o600)
+            self.assertEqual(directory_range.load(dest), ["192.0.2.0/24", "198.51.100.7/32"])
+            # Running it again replaces the file as a whole.
+            res = self.helper("203.0.113.0/24\n", dest)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(directory_range.load(dest), ["203.0.113.0/24"])
+
+    def test_helper_writes_nothing_without_an_accepted_range(self):
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / "directory.env"
+            res = self.helper(v4(10, 0, 0, 0, prefix=8) + "\n\n", dest)
+            self.assertEqual(res.returncode, 1)
+            self.assertIn("no range accepted", res.stderr)
+            self.assertFalse(dest.exists())
+
+    def test_helper_takes_at_most_eight(self):
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / "directory.env"
+            typed = "".join(f"203.0.113.{i * 16}/28\n" for i in range(10))
+            res = self.helper(typed, dest)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("8 range(s) written", res.stdout)
+            self.assertEqual(len(directory_range.load(dest)), 8)
+
+    def test_helper_refuses_arguments(self):
+        res = subprocess.run(["bash", str(HELPER), "192.0.2.0/24"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(res.returncode, 2)
+        self.assertNotIn("192.0.2", res.stderr)
 
 
 class ProxySettings(unittest.TestCase):
